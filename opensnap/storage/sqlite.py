@@ -3,7 +3,13 @@
 import sqlite3
 
 from opensnap.config import LobbyConfig, UserConfig
-from opensnap.core.accounts import Account, build_account, normalize_password_record, normalize_seed
+from opensnap.core.accounts import (
+    Account,
+    build_account,
+    derive_password_material,
+    normalize_password_record,
+    normalize_seed,
+)
 from opensnap.core.lobbies import Lobby
 from opensnap.core.rooms import GameRoom
 from opensnap.core.sessions import Session, create_session_id
@@ -19,6 +25,19 @@ class SqliteDatabase:
         self._connection.row_factory = sqlite3.Row
         self._connection.execute('PRAGMA foreign_keys = ON')
         self._setup_schema()
+
+    def close(self) -> None:
+        """Close SQLite connection."""
+
+        self._connection.close()
+
+    def __del__(self) -> None:
+        """Best-effort connection cleanup."""
+
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001
+            pass
 
     def execute(self, query: str, parameters: tuple[object, ...] = ()) -> sqlite3.Cursor:
         """Execute write query and commit."""
@@ -46,9 +65,9 @@ class SqliteDatabase:
             self.execute(
                 (
                     'INSERT OR IGNORE INTO users '
-                    '(user_id, username, password, seed, team) VALUES (?, ?, ?, ?, ?)'
+                    '(username, password, seed, team) VALUES (?, ?, ?, ?)'
                 ),
-                (user.user_id, user.username, password_record, seed, user.team),
+                (user.username, password_record, seed, user.team),
             )
 
         for lobby in lobbies:
@@ -180,6 +199,31 @@ class SqliteAccountDirectory:
         """Set account team."""
 
         self._database.execute('UPDATE users SET team = ? WHERE user_id = ?', (team, user_id))
+
+    def create_user(self, username: str, password: str) -> Account:
+        """Create account with encoded credentials."""
+
+        seed = normalize_seed('')
+        password_record = normalize_password_record(password, seed)
+        cursor = self._database.execute(
+            'INSERT INTO users (username, password, seed, team) VALUES (?, ?, ?, ?)',
+            (username, password_record, seed, ''),
+        )
+        user_id = int(cursor.lastrowid)
+        return build_account(
+            user_id=user_id,
+            username=username,
+            password_record=password_record,
+            seed=seed,
+            team='',
+        )
+
+    @staticmethod
+    def verify_password(account: Account, password: str) -> bool:
+        """Check cleartext password against account verifier."""
+
+        verifier, _ = derive_password_material(password, account.seed)
+        return verifier == account.password_verifier
 
 
 class SqliteSessionRegistry:

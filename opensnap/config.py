@@ -3,6 +3,18 @@
 from dataclasses import dataclass
 import os
 
+from opensnap.env_loader import load_env_file
+
+DEFAULT_SERVER_HOST = '0.0.0.0'
+DEFAULT_SERVER_PORT = 9090
+DEFAULT_GAME_PLUGIN = 'automodellista'
+DEFAULT_SERVER_SECRET = 'Totally secret server secret!'
+DEFAULT_BOOTSTRAP_KEY = 'SNAP-SWAN'
+DEFAULT_TICK_INTERVAL_SECONDS = 10.0
+DEFAULT_STORAGE_BACKEND = 'sqlite'
+DEFAULT_SQLITE_PATH = 'opensnap.db'
+DEFAULT_SQLITE_USERS = 'test:1111'
+
 
 @dataclass(frozen=True, slots=True)
 class UserConfig:
@@ -28,20 +40,20 @@ class LobbyConfig:
 class ServerConfig:
     """Server runtime settings."""
 
-    host: str = '0.0.0.0'
-    port: int = 9090
-    game_plugin: str = 'automodellista'
-    server_secret: str = 'Totally secret server secret!'
-    bootstrap_key: bytes = b'SNAP-SWAN'
-    tick_interval_seconds: float = 10.0
+    host: str = DEFAULT_SERVER_HOST
+    port: int = DEFAULT_SERVER_PORT
+    game_plugin: str = DEFAULT_GAME_PLUGIN
+    server_secret: str = DEFAULT_SERVER_SECRET
+    bootstrap_key: bytes = DEFAULT_BOOTSTRAP_KEY.encode('utf-8')
+    tick_interval_seconds: float = DEFAULT_TICK_INTERVAL_SECONDS
 
 
 @dataclass(frozen=True, slots=True)
 class StorageConfig:
     """Storage backend configuration."""
 
-    backend: str = 'memory'
-    sqlite_path: str = 'opensnap.db'
+    backend: str = DEFAULT_STORAGE_BACKEND
+    sqlite_path: str = DEFAULT_SQLITE_PATH
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,18 +69,32 @@ class AppConfig:
 def default_app_config() -> AppConfig:
     """Build default settings for local development."""
 
-    game_plugin = os.getenv('OPENSNAP_GAME_PLUGIN', 'automodellista').strip().lower()
+    load_env_file()
+    host = os.getenv('OPENSNAP_HOST', DEFAULT_SERVER_HOST).strip() or DEFAULT_SERVER_HOST
+    port = _read_int_env('OPENSNAP_PORT', DEFAULT_SERVER_PORT)
+    game_plugin = os.getenv('OPENSNAP_GAME_PLUGIN', DEFAULT_GAME_PLUGIN).strip().lower() or DEFAULT_GAME_PLUGIN
+    server_secret = os.getenv('OPENSNAP_SERVER_SECRET', DEFAULT_SERVER_SECRET) or DEFAULT_SERVER_SECRET
+    bootstrap_key = (
+        os.getenv('OPENSNAP_BOOTSTRAP_KEY', DEFAULT_BOOTSTRAP_KEY).strip() or DEFAULT_BOOTSTRAP_KEY
+    ).encode('utf-8')
+    tick_interval_seconds = _read_float_env('OPENSNAP_TICK_INTERVAL_SECONDS', DEFAULT_TICK_INTERVAL_SECONDS)
+    storage_backend = DEFAULT_STORAGE_BACKEND
+    sqlite_path = os.getenv('OPENSNAP_SQLITE_PATH', DEFAULT_SQLITE_PATH).strip() or DEFAULT_SQLITE_PATH
+
     return AppConfig(
-        server=ServerConfig(game_plugin=game_plugin),
+        server=ServerConfig(
+            host=host,
+            port=port,
+            game_plugin=game_plugin,
+            server_secret=server_secret,
+            bootstrap_key=bootstrap_key,
+            tick_interval_seconds=tick_interval_seconds,
+        ),
         storage=StorageConfig(
-            backend=os.getenv('OPENSNAP_STORAGE_BACKEND', 'memory').strip().lower(),
-            sqlite_path=os.getenv('OPENSNAP_SQLITE_PATH', 'opensnap.db').strip(),
+            backend=storage_backend,
+            sqlite_path=sqlite_path,
         ),
-        users=(
-            UserConfig(user_id=1, username='gh0st', password='1111'),
-            UserConfig(user_id=2, username='no23', password='1111'),
-            UserConfig(user_id=3, username='test', password='1111'),
-        ),
+        users=_read_default_users(),
         # Lobby naming keeps three race groups plus event and club-meeting groups.
         # m-* is mountain, c-* is city, s-* is circuit, plus event and cm.
         lobbies=(
@@ -94,3 +120,72 @@ def default_app_config() -> AppConfig:
             LobbyConfig(lobby_id=20, name='cm'),
         ),
     )
+
+
+def _read_default_users() -> tuple[UserConfig, ...]:
+    """Read default SQLite users from environment override."""
+
+    users_raw = os.getenv('OPENSNAP_DEFAULT_USERS', DEFAULT_SQLITE_USERS).strip()
+    users = _parse_default_users(users_raw)
+    if users:
+        return users
+    return _parse_default_users(DEFAULT_SQLITE_USERS)
+
+
+def _parse_default_users(raw: str) -> tuple[UserConfig, ...]:
+    """Parse `username:password[:seed[:team]]` default-user entries."""
+
+    users: list[UserConfig] = []
+    for entry in raw.split(','):
+        token = entry.strip()
+        if not token:
+            continue
+
+        parts = token.split(':')
+        if len(parts) < 2:
+            continue
+
+        username = parts[0].strip()
+        password = parts[1].strip()
+        if not username or not password:
+            continue
+
+        seed = parts[2].strip() if len(parts) >= 3 else ''
+        team = ':'.join(parts[3:]).strip() if len(parts) >= 4 else ''
+        users.append(
+            UserConfig(
+                user_id=len(users) + 1,
+                username=username,
+                password=password,
+                seed=seed,
+                team=team,
+            )
+        )
+
+    return tuple(users)
+
+
+def _read_int_env(key: str, default: int) -> int:
+    """Read integer environment value with fallback."""
+
+    raw = os.getenv(key)
+    if raw is None:
+        return default
+
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return default
+
+
+def _read_float_env(key: str, default: float) -> float:
+    """Read float environment value with fallback."""
+
+    raw = os.getenv(key)
+    if raw is None:
+        return default
+
+    try:
+        return float(raw.strip())
+    except ValueError:
+        return default

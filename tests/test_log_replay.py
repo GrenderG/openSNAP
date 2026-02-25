@@ -18,15 +18,23 @@ HEX_LINE_PATTERN = re.compile(r'^[0-9a-fA-F]{8}\s+(.*?)\s+\|')
 class LogReplayTests(unittest.TestCase):
     """Replay captured datagrams through the protocol engine."""
 
-    def test_replay_logs_on_memory_backend(self) -> None:
-        engine = SnapProtocolEngine(config=default_app_config(), plugin=AutoModellistaPlugin())
-        datagrams = _load_captured_datagrams()
-        if not datagrams:
-            self.skipTest('Replay logs are unavailable.')
-        self.assertGreater(len(datagrams), 100)
+    def test_replay_logs_on_default_sqlite_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            config = replace(
+                default_app_config(),
+                storage=StorageConfig(
+                    backend='sqlite',
+                    sqlite_path=f'{temp_directory}/replay-default.sqlite',
+                ),
+            )
+            engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+            datagrams = _load_captured_datagrams()
+            if not datagrams:
+                self.skipTest('Replay logs are unavailable.')
+            self.assertGreater(len(datagrams), 100)
 
-        errors = _replay(engine, datagrams)
-        self.assertFalse(errors, '\n'.join(errors[:10]))
+            errors = _replay(engine, datagrams)
+            self.assertFalse(errors, '\n'.join(errors[:10]))
 
     def test_replay_logs_on_sqlite_backend(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

@@ -1,6 +1,7 @@
 """Protocol engine orchestrating decode, dispatch, and tick."""
 
 from dataclasses import dataclass
+import logging
 
 from opensnap.config import AppConfig
 from opensnap.core.auth import BootstrapAuthenticator
@@ -34,6 +35,7 @@ class SnapProtocolEngine:
     def __init__(self, *, config: AppConfig, plugin: GamePlugin) -> None:
         self._config = config
         self._plugin = plugin
+        self._logger = logging.getLogger('opensnap.engine')
 
         storage = create_storage(config)
         self._accounts = storage.accounts
@@ -61,23 +63,83 @@ class SnapProtocolEngine:
         try:
             messages = decode_datagram(payload, endpoint)
         except PacketDecodeError as exc:
+            self._logger.warning(
+                'Decode error from %s:%d: %s',
+                endpoint.host,
+                endpoint.port,
+                exc,
+            )
             return EngineResult(messages=[], errors=[str(exc)])
 
+        self._logger.debug(
+            'Decoded %d message(s) from %s:%d.',
+            len(messages),
+            endpoint.host,
+            endpoint.port,
+        )
         outbound: list[SnapMessage] = []
         errors: list[str] = []
         for message in messages:
+            self._logger.debug(
+                (
+                    'Handling command 0x%02x from %s:%d '
+                    '(type=0x%04x sess=0x%08x seq=%d ack=%d payload=%d).'
+                ),
+                message.command,
+                message.endpoint.host,
+                message.endpoint.port,
+                message.type_flags,
+                message.session_id,
+                message.sequence_number,
+                message.acknowledge_number,
+                len(message.payload),
+            )
             # Ignore bare ACK frames that do not carry command payload.
             if message.command == commands.CMD_ACK and (message.type_flags & 0x6000) == 0x6000:
+                self._logger.debug(
+                    'Ignoring bare ACK frame from %s:%d.',
+                    message.endpoint.host,
+                    message.endpoint.port,
+                )
                 continue
 
             if not self._accept_message_sequence(message):
+                self._logger.debug(
+                    (
+                        'Rejected out-of-order/duplicate command 0x%02x '
+                        'from %s:%d with sequence %d.'
+                    ),
+                    message.command,
+                    message.endpoint.host,
+                    message.endpoint.port,
+                    message.sequence_number,
+                )
                 continue
 
             try:
-                outbound.extend(self._router.dispatch(self._context, message))
+                produced = self._router.dispatch(self._context, message)
+                outbound.extend(produced)
+                self._logger.debug(
+                    'Handler for command 0x%02x produced %d outbound message(s).',
+                    message.command,
+                    len(produced),
+                )
             except Exception as exc:  # noqa: BLE001
+                self._logger.exception(
+                    'Handler failure for command 0x%02x from %s:%d.',
+                    message.command,
+                    message.endpoint.host,
+                    message.endpoint.port,
+                )
                 errors.append(f'Handler error for command 0x{message.command:02x}: {exc}')
 
+        self._logger.debug(
+            'Datagram from %s:%d produced %d outbound message(s) and %d error(s).',
+            endpoint.host,
+            endpoint.port,
+            len(outbound),
+            len(errors),
+        )
         return EngineResult(messages=outbound, errors=errors)
 
     def tick(self) -> list[SnapMessage]:
@@ -92,6 +154,7 @@ class SnapProtocolEngine:
         self._router.register(commands.CMD_BOOTSTRAP_LOGIN_SWAN_CHECK, self._auth.handle_bootstrap_check)
         self._router.register(commands.CMD_LOGIN_TO_KICS, self._auth.handle_login_to_kics)
         self._router.register(commands.CMD_SEND_ECHO, self._handle_echo)
+        self._router.register(commands.CMD_LOGOUT_CLIENT, self._handle_logout)
 
     def _accept_message_sequence(self, message: SnapMessage) -> bool:
         """Reject duplicate or out-of-order messages by sequence number."""
@@ -138,3 +201,9 @@ class SnapProtocolEngine:
                 command=commands.CMD_SEND_ECHO,
             )
         ]
+
+    def _handle_logout(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
+        """Handle `kkLogout` as a no-op, matching snapsi behavior."""
+
+        del context, message
+        return []

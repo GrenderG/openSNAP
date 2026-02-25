@@ -1,13 +1,15 @@
 """Engine integration tests."""
 
+from dataclasses import replace
 import struct
+import tempfile
 import unittest
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.decrepit.ciphers import algorithms as decrepit_algorithms
 from cryptography.hazmat.primitives.ciphers import Cipher, modes
 
-from opensnap.config import default_app_config
+from opensnap.config import StorageConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.protocol import commands
@@ -19,8 +21,19 @@ from opensnap.protocol.models import Endpoint, SnapMessage
 class EngineFlowTests(unittest.TestCase):
     """Smoke tests for main login and lobby flow."""
 
+    def setUp(self) -> None:
+        self._temp_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp_directory.cleanup)
+        self._config = replace(
+            default_app_config(),
+            storage=StorageConfig(
+                backend='sqlite',
+                sqlite_path=f'{self._temp_directory.name}/engine-flow.sqlite',
+            ),
+        )
+
     def test_login_and_kics_flow(self) -> None:
-        config = default_app_config()
+        config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint = Endpoint(host='127.0.0.1', port=50000)
 
@@ -74,7 +87,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(get_u32(kics_result.messages[0].payload, 8), session_id)
 
     def test_lobby_query_returns_all_configured_lobbies(self) -> None:
-        config = default_app_config()
+        config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint = Endpoint(host='127.0.0.1', port=50001)
 
@@ -97,13 +110,13 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(lobby_count, len(config.lobbies))
 
     def test_lobby_chat_broadcasts_to_lobby_members_and_acks_sender(self) -> None:
-        config = default_app_config()
+        config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint_one = Endpoint(host='127.0.0.1', port=50010)
-        endpoint_two = Endpoint(host='127.0.0.1', port=50011)
+        endpoint_two = Endpoint(host='127.0.0.2', port=50011)
 
         sender_session = _create_session_via_login(engine, endpoint_one, 'test')
-        receiver_session = _create_session_via_login(engine, endpoint_two, 'no23')
+        receiver_session = _create_session_via_login(engine, endpoint_two, 'test')
 
         _join_lobby(engine, endpoint_one, sender_session, lobby_id=1, sequence=3)
         _join_lobby(engine, endpoint_two, receiver_session, lobby_id=1, sequence=3)
@@ -137,13 +150,13 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(chat_endpoints, {endpoint_one, endpoint_two})
 
     def test_room_chat_broadcasts_to_room_members_and_acks_sender(self) -> None:
-        config = default_app_config()
+        config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint_one = Endpoint(host='127.0.0.1', port=50020)
-        endpoint_two = Endpoint(host='127.0.0.1', port=50021)
+        endpoint_two = Endpoint(host='127.0.0.2', port=50021)
 
         sender_session = _create_session_via_login(engine, endpoint_one, 'test')
-        receiver_session = _create_session_via_login(engine, endpoint_two, 'no23')
+        receiver_session = _create_session_via_login(engine, endpoint_two, 'test')
         _join_lobby(engine, endpoint_one, sender_session, lobby_id=1, sequence=3)
         _join_lobby(engine, endpoint_two, receiver_session, lobby_id=1, sequence=3)
 
@@ -176,13 +189,13 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(chat_endpoints, {endpoint_one, endpoint_two})
 
     def test_send_subcommand_8006_broadcasts_to_other_room_members(self) -> None:
-        config = default_app_config()
+        config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint_one = Endpoint(host='127.0.0.1', port=50030)
-        endpoint_two = Endpoint(host='127.0.0.1', port=50031)
+        endpoint_two = Endpoint(host='127.0.0.2', port=50031)
 
         sender_session = _create_session_via_login(engine, endpoint_one, 'test')
-        receiver_session = _create_session_via_login(engine, endpoint_two, 'no23')
+        receiver_session = _create_session_via_login(engine, endpoint_two, 'test')
         _join_lobby(engine, endpoint_one, sender_session, lobby_id=1, sequence=3)
         _join_lobby(engine, endpoint_two, receiver_session, lobby_id=1, sequence=3)
 
@@ -213,7 +226,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(relay.payload, game_request.payload)
 
     def test_create_room_rejects_when_lobby_has_50_rooms(self) -> None:
-        config = default_app_config()
+        config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint = Endpoint(host='127.0.0.1', port=50040)
 
@@ -237,7 +250,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from('>2L', overflow_result.messages[0].payload), (0x04, 1))
 
     def test_out_of_order_sequence_is_rejected_for_authenticated_session(self) -> None:
-        config = default_app_config()
+        config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint = Endpoint(host='127.0.0.1', port=50050)
 
@@ -283,6 +296,32 @@ class EngineFlowTests(unittest.TestCase):
         older_result = engine.handle_datagram(_encode(older), endpoint)
         self.assertFalse(older_result.errors)
         self.assertEqual(older_result.messages, [])
+
+    def test_router_contains_all_snapsi_handler_commands(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        registered = set(engine._router._handlers.keys())  # noqa: SLF001
+
+        expected_from_snapsi = {
+            commands.CMD_LOGIN_CLIENT,
+            commands.CMD_BOOTSTRAP_LOGIN_SWAN_CHECK,
+            commands.CMD_LOGIN_TO_KICS,
+            commands.CMD_SEND_ECHO,
+            commands.CMD_LOGOUT_CLIENT,
+            commands.CMD_QUERY_LOBBIES,
+            commands.CMD_QUERY_ATTRIBUTE,
+            commands.CMD_JOIN,
+            commands.CMD_LEAVE,
+            commands.CMD_SEND,
+            commands.CMD_SEND_TARGET,
+            commands.CMD_QUERY_GAME_ROOMS,
+            commands.CMD_QUERY_USER,
+            commands.CMD_CREATE_GAME_ROOM,
+            commands.CMD_CHANGE_USER_STATUS,
+            commands.CMD_CHANGE_USER_PROPERTY,
+            commands.CMD_CHANGE_ATTRIBUTE,
+        }
+        self.assertTrue(expected_from_snapsi.issubset(registered))
 
 
 def _encode(message: SnapMessage) -> bytes:

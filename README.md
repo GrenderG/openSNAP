@@ -80,18 +80,27 @@ python3 -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-4. Verify imports.
+4. Create local configuration file (optional).
+
+```bash
+cp .env.dist .env
+```
+
+Edit `.env` as needed for your machine. Local `.env` files are gitignored so local changes are not committed.
+If `.env` is missing, openSNAP automatically creates it from `.env.dist` on first run.
+
+5. Verify imports.
 
 ```bash
 python3 -c "import cryptography; import opensnap"
 ```
 
-## Run openSNAP
+## Run openSNAP (UDP)
 
-Start the server:
+Start the SNAP UDP service:
 
 ```bash
-python3 run.py
+python3 run.py udp
 ```
 
 Expected startup output includes:
@@ -102,19 +111,72 @@ openSNAP listening on 0.0.0.0:9090 using plugin automodellista.
 
 Stop the server with `Ctrl+C`.
 
+`python3 run.py` without arguments is equivalent to `python3 run.py udp`.
+
+## Core Server Configuration
+
+Environment variables for the UDP server:
+
+- `OPENSNAP_HOST`: bind host (default: `0.0.0.0`).
+- `OPENSNAP_PORT`: bind port (default: `9090`).
+- `OPENSNAP_GAME_PLUGIN`: game plugin name (default: `automodellista`).
+- `OPENSNAP_SERVER_SECRET`: bootstrap server secret string.
+- `OPENSNAP_BOOTSTRAP_KEY`: bootstrap encryption key string (default: `SNAP-SWAN`).
+- `OPENSNAP_TICK_INTERVAL_SECONDS`: periodic tick interval (default: `10.0`).
+
+## Run Web Bootstrap Service
+
+Start the web service (separate process):
+
+```bash
+python3 run.py web
+```
+
+Run web and UDP services with the same `OPENSNAP_SQLITE_PATH` so account creation/login from the web page is immediately available to the UDP server.
+
+Expected startup output includes:
+
+```text
+openSNAP web listening on 0.0.0.0:80 using plugin automodellista.
+```
+
+The web service includes routes based on `snapsi/www`:
+
+- `/login.php`
+- `/amweb/index.jsp`
+- `/amweb/create_id.html` (`username` and `password` parameters)
+- `/amweb/create_id_<username>.html` (password can be provided as query/body parameter)
+- `/amusa/am_info.html`
+- `/amusa/am_rule.html`
+- `/amusa/am_rank.html`
+- `/amusa/am_taboo.html`
+- `/amusa/am_up.php`
+
+The signup flow is user-driven. `/amweb/index.jsp` provides a form where the player chooses the username to encode in the signup payload.
+Usernames are limited to 10 characters and accepted characters are `A-Z`, `a-z`, `0-9`, `_`, `.`, and `-`.
+Passwords are required and limited to 8 characters.
+The form uses simple legacy-compatible HTML input controls for old console browsers.
+The page acts as create/login: missing users are created in SQLite, existing users must provide the matching password.
+
+For reverse-engineering support, unknown routes trigger a full terminal request dump (method, URL, query, headers, form/body, and source address).
+
+Web routes are modular by game plugin. Each game can implement its own route set in `opensnap_web/games`.
+
 ## Storage Configuration
 
-By default, openSNAP uses in-memory storage.
+openSNAP uses SQLite storage by default.
 
 Environment variables:
 
-- `OPENSNAP_STORAGE_BACKEND`: `memory` (default) or `sqlite`.
-- `OPENSNAP_SQLITE_PATH`: path to SQLite file when backend is `sqlite` (default: `opensnap.db`).
+- `OPENSNAP_SQLITE_PATH`: path to SQLite database file (default: `opensnap.db`).
+- `OPENSNAP_DEFAULT_USERS`: users seeded at startup as `username:password[:seed[:team]]`, comma-separated.
 
-Run with SQLite:
+The default `.env.dist` includes `test:1111` in `OPENSNAP_DEFAULT_USERS`.
+
+Run with custom SQLite path:
 
 ```bash
-OPENSNAP_STORAGE_BACKEND=sqlite OPENSNAP_SQLITE_PATH=./opensnap.sqlite python3 run.py
+OPENSNAP_SQLITE_PATH=./opensnap.sqlite python3 run.py udp
 ```
 
 ## Game Plugin Configuration
@@ -128,8 +190,61 @@ Environment variable:
 Run with explicit plugin selection:
 
 ```bash
-OPENSNAP_GAME_PLUGIN=automodellista python3 run.py
+OPENSNAP_GAME_PLUGIN=automodellista python3 run.py udp
 ```
+
+## Web Service Configuration
+
+Environment variables for the Flask service:
+
+- `OPENSNAP_WEB_HOST`: bind host (default: `0.0.0.0`).
+- `OPENSNAP_WEB_PORT`: bind port (default: `80`).
+- `OPENSNAP_WEB_GAME_PLUGIN`: web game module name (default: value of `OPENSNAP_GAME_PLUGIN`, otherwise `automodellista`).
+
+Example:
+
+```bash
+OPENSNAP_WEB_PORT=80 python3 run.py web
+```
+
+## Logging Configuration
+
+`openSNAP` uses Python's standard logging module with runtime level selection.
+
+Environment variables:
+
+- `OPENSNAP_LOG_LEVEL`: one of `debug`, `info`, `warn`, `warning`, `error`, `critical` (default: `debug`).
+- `OPENSNAP_LOG_HEXDUMP_LIMIT`: max bytes rendered in received-packet hexdumps (default: `1024`).
+
+Examples:
+
+```bash
+OPENSNAP_LOG_LEVEL=debug python3 run.py udp
+```
+
+```bash
+OPENSNAP_LOG_LEVEL=debug OPENSNAP_LOG_HEXDUMP_LIMIT=4096 python3 run.py udp
+```
+
+With `debug` level enabled, received UDP datagrams include a formatted hexdump in logs.
+
+## WSGI Deployment
+
+The web service is WSGI-compatible and exposes these callables:
+
+- `opensnap_web.wsgi:app`
+- `opensnap_web.wsgi:application`
+
+Example with Gunicorn:
+
+```bash
+gunicorn opensnap_web.wsgi:app --bind 0.0.0.0:80
+```
+
+Example with Nginx Unit:
+
+- module: `opensnap_web.wsgi`
+- callable: `app` (or `application`)
 
 ## Run Tests
 
@@ -147,6 +262,7 @@ Note: replay regression tests use optional local packet-capture logs. If those l
 - `opensnap/core`: engine, auth, routing, and shared state services.
 - `opensnap/storage`: backend factory and storage implementations.
 - `opensnap/plugins`: extension points for game-specific behavior.
+- `opensnap_web`: separate web bootstrap/login service package.
 - `tests`: unit and regression tests.
 
 ## Acknowledgements
@@ -156,5 +272,5 @@ This project has been possible thanks to No23 and his previous private work on `
 ## Troubleshooting
 
 - `python3: command not found`: install Python 3.11+ and reopen your shell.
-- `No module named 'opensnap'`: start the server from the repository root using `python3 run.py`.
+- `No module named 'opensnap'`: start services from the repository root using `python3 run.py udp` or `python3 run.py web`.
 - `Address already in use`: another process is using UDP port `9090`; stop that process or change server settings before starting openSNAP.

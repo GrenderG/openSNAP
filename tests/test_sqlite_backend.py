@@ -130,7 +130,8 @@ class SqliteBackendTests(unittest.TestCase):
             self.assertEqual(len(rows), len(config.users))
             seeds = [str(row[0]) for row in rows]
             self.assertTrue(all(seed for seed in seeds))
-            self.assertGreater(len(set(seeds)), 1)
+            if len(seeds) > 1:
+                self.assertGreater(len(set(seeds)), 1)
 
 
 def _encode(message: SnapMessage) -> bytes:
