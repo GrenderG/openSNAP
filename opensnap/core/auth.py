@@ -21,6 +21,7 @@ class BootstrapAuthenticator:
     def handle_login_client(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         """Handle `kkLoginClient`."""
 
+        # Clients often include a trailing newline in login strings.
         login = get_c_string(message.payload, 0).rstrip('\n')
         account = context.accounts.get_by_name(login)
         if account is None:
@@ -104,6 +105,8 @@ class BootstrapAuthenticator:
         if session is None:
             return []
 
+        # Captures place the team string at offset 0x128.
+        # TODO: Parse the remaining KICS payload fields once their meaning is confirmed.
         team = get_c_string(message.payload, 0x128)
         context.accounts.set_team(session.user_id, team)
         payload = struct.pack('>3L', context.config.server.port, 0x01234567, session.session_id)
@@ -112,7 +115,7 @@ class BootstrapAuthenticator:
             context.reply(
                 message,
                 type_flags=CHANNEL_LOBBY,
-                command=0x29,
+                command=commands.CMD_RESULT_LOGIN_TO_KICS,
                 payload=payload,
                 session_id=session.session_id,
             )
@@ -159,6 +162,7 @@ def _build_bootstrap_login_payload(
     seed_bytes = seed.encode('utf-8')
     server_secret_bytes = server_secret.encode('utf-8')
 
+    # Key derivation uses SHA-1(password + seed).
     digest = hashlib.sha1()
     digest.update(account_password.encode('utf-8'))
     digest.update(seed_bytes)
@@ -167,6 +171,8 @@ def _build_bootstrap_login_payload(
     packed_secret = struct.pack('128s', server_secret_bytes)
     magic = _encrypt_blowfish_ecb(magic_key, packed_secret)
 
+    # The challenge payload matches the observed struct layout.
+    # Fields include server port, seed length and data, and encrypted magic blob.
     challenge = struct.pack(
         '>HHL128s3L128sL',
         0,
@@ -203,6 +209,7 @@ def _build_login_success_payload(
     if host == '0.0.0.0':
         host = '127.0.0.1'
 
+    # Clients expect a newline after the username in this payload.
     login_bytes = f'{login}\n'.encode('utf-8')
     ip_int = int.from_bytes(socket.inet_aton(host), byteorder='big', signed=False)
     plaintext = struct.pack('>40s6L', login_bytes, ip_int, server_port, server_port, 0xBB, 0xCC, 0xDD)

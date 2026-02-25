@@ -36,6 +36,7 @@ def decode_datagram(data: bytes, endpoint: Endpoint) -> list[SnapMessage]:
             raise PacketDecodeError('Message header crosses datagram boundary.')
 
         size_word, packet_and_command, session_id, seq, ack = struct.unpack_from('>2H3L', data, offset)
+        # High bits carry type flags and low bits carry encoded message length.
         type_flags = size_word & TYPE_MASK
         encoded_length = size_word & LENGTH_MASK
 
@@ -64,6 +65,8 @@ def decode_datagram(data: bytes, endpoint: Endpoint) -> list[SnapMessage]:
         messages.append(message)
 
         if type_flags & FLAG_MULTI:
+            # Multi-message handling currently treats the packet as one logical unit.
+            # TODO: Decode and dispatch each embedded message entry independently.
             offset = payload_limit
         else:
             offset = next_offset
@@ -80,8 +83,10 @@ def encode_messages(messages: Sequence[SnapMessage]) -> bytes:
     encoded = bytearray()
     for message in messages:
         if message.size_word_override is None:
+            # For regular packets, length is header plus payload length.
             size_word = message.type_flags | (len(message.payload) + HEADER_SIZE)
         else:
+            # Multi-message payloads already carry a precomputed size word.
             size_word = message.size_word_override
 
         packet_and_command = ((message.packet_number & 0xFF) << 8) | (message.command & 0xFF)

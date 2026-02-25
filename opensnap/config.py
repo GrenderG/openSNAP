@@ -66,6 +66,8 @@ def default_app_config() -> AppConfig:
             UserConfig(user_id=2, username='no23', password='1111'),
             UserConfig(user_id=3, username='test', password='1111'),
         ),
+        # Lobby naming keeps three race groups plus event and club-meeting groups.
+        # m-* is mountain, c-* is city, s-* is circuit, plus event and cm.
         lobbies=(
             LobbyConfig(lobby_id=1, name='m-0'),
             LobbyConfig(lobby_id=2, name='m-1'),

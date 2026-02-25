@@ -114,7 +114,7 @@ class SessionRegistry:
 
 
 def create_session_id(host: str, account: Account) -> int:
-    """Create deterministic session id compatible with legacy behavior."""
+    """Create deterministic session id compatible with observed behavior."""
 
     digest = hashlib.md5()
     digest.update(host.encode('utf-8'))

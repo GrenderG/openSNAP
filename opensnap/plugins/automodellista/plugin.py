@@ -16,10 +16,9 @@ class AutoModellistaPlugin:
 
     name = 'automodellista'
 
-    def register_handlers(self, router: CommandRouter, context: HandlerContext) -> None:
+    def register_handlers(self, router: CommandRouter, _context: HandlerContext) -> None:
         """Register plugin handlers."""
 
-        del context
         router.register(commands.CMD_QUERY_LOBBIES, self._handle_query_lobbies)
         router.register(commands.CMD_QUERY_ATTRIBUTE, self._handle_query_attribute)
         router.register(commands.CMD_QUERY_GAME_ROOMS, self._handle_query_game_rooms)
@@ -33,10 +32,9 @@ class AutoModellistaPlugin:
         router.register(commands.CMD_CHANGE_USER_PROPERTY, self._handle_change_user_property)
         router.register(commands.CMD_CHANGE_ATTRIBUTE, self._handle_change_attribute)
 
-    def on_tick(self, context: HandlerContext) -> list[SnapMessage]:
+    def on_tick(self, _context: HandlerContext) -> list[SnapMessage]:
         """No periodic game-specific packets yet."""
 
-        del context
         return []
 
     def _handle_query_lobbies(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -57,6 +55,7 @@ class AutoModellistaPlugin:
 
     def _handle_query_attribute(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         if message.type_flags & FLAG_MULTI:
+            # Keep behavior where one multi-packet contains lobby USER counts.
             payload = self._build_multi_lobby_user_query_payload(context, message)
             type_flags = CHANNEL_LOBBY | FLAG_RESPONSE | FLAG_MULTI
             size_word_override = type_flags | 0x001C
@@ -153,6 +152,7 @@ class AutoModellistaPlugin:
         max_players = max(get_u32(message.payload, 0x10), 1)
         rules = get_u32(message.payload, 0x28)
 
+        # TODO: Enforce the room limit of 50 and return a proper error code.
         room = context.rooms.create_room(
             name=room_name,
             password=room_password,
@@ -168,7 +168,7 @@ class AutoModellistaPlugin:
             context.reply(
                 message,
                 type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
-                command=0x28,
+                command=commands.CMD_RESULT_WRAPPER,
                 payload=payload,
                 session_id=session.session_id,
             )
@@ -188,7 +188,7 @@ class AutoModellistaPlugin:
                 context.reply(
                     message,
                     type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
-                    command=0x28,
+                    command=commands.CMD_RESULT_WRAPPER,
                     payload=payload,
                     session_id=session.session_id,
                 )
@@ -207,7 +207,7 @@ class AutoModellistaPlugin:
                 context.reply(
                     message,
                     type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
-                    command=0x28,
+                    command=commands.CMD_RESULT_WRAPPER,
                     payload=payload,
                     session_id=session.session_id,
                 )
@@ -227,7 +227,7 @@ class AutoModellistaPlugin:
                 context.reply(
                     message,
                     type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
-                    command=0x28,
+                    command=commands.CMD_RESULT_WRAPPER,
                     payload=payload,
                     session_id=session.session_id,
                 )
@@ -241,7 +241,7 @@ class AutoModellistaPlugin:
                 context.reply(
                     message,
                     type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
-                    command=0x28,
+                    command=commands.CMD_RESULT_WRAPPER,
                     payload=payload,
                     session_id=session.session_id,
                 )
@@ -255,6 +255,7 @@ class AutoModellistaPlugin:
             return []
 
         if message.type_flags & FLAG_MULTI:
+            # Captures use this special case while leaving a room.
             context.rooms.leave(session.room_id, session.session_id)
             context.sessions.set_room(session.session_id, 0)
             payload = struct.pack('>2L', 0x07, 0)
@@ -262,17 +263,18 @@ class AutoModellistaPlugin:
                 context.reply(
                     message,
                     type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
-                    command=0x28,
+                    command=commands.CMD_RESULT_WRAPPER,
                     payload=payload,
                     session_id=session.session_id,
                 )
             ]
 
         if (message.type_flags & 0x3400) == 0x1400:
+            # TODO: Broadcast lobby chat to all lobby members and ACK only sender.
             ack = context.reply(
                 message,
                 type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
-                command=0x00,
+                command=commands.CMD_ACK,
                 session_id=session.session_id,
             )
             chat_payload = _build_chat_echo_payload(session, message.payload)
@@ -286,21 +288,23 @@ class AutoModellistaPlugin:
             return [ack, chat]
 
         if (message.type_flags & 0x3400) == 0x2400:
+            # TODO: Broadcast room chat to room members and ACK only sender.
             return [
                 context.reply(
                     message,
                     type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
-                    command=0x00,
+                    command=commands.CMD_ACK,
                     session_id=session.session_id,
                 )
             ]
 
         if message.type_flags & CHANNEL_ROOM:
+            # TODO: Decode and route game packet subcommands such as 0x8006 broadcasts.
             return [
                 context.reply(
                     message,
                     type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
-                    command=0x00,
+                    command=commands.CMD_ACK,
                     session_id=session.session_id,
                 )
             ]
@@ -316,7 +320,7 @@ class AutoModellistaPlugin:
             context.reply(
                 message,
                 type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
-                command=0x00,
+                command=commands.CMD_ACK,
                 session_id=session.session_id,
             )
         ]
@@ -370,7 +374,7 @@ class AutoModellistaPlugin:
             context.reply(
                 message,
                 type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
-                command=0x28,
+                command=commands.CMD_RESULT_WRAPPER,
                 payload=payload,
                 session_id=session.session_id,
             )
@@ -391,6 +395,7 @@ class AutoModellistaPlugin:
 
         follow_up_size_word = (CHANNEL_LOBBY | FLAG_RESPONSE) | 0x001C
         for index, lobby in enumerate(lobbies[1:], start=1):
+            # Keep format where additional USER entries are packed inline.
             payload += struct.pack(
                 '>HBB3LL4sL',
                 follow_up_size_word,
@@ -457,15 +462,18 @@ def _build_send_target_payload(subcommand: int, payload: bytes) -> bytes | None:
     """Build relay payload for known send-target subcommands."""
 
     if subcommand == 0x8005 and len(payload) >= 14:
+        # Traces use 0x8005 for player-id sync messages.
         player_id = get_u32(payload, 10)
         return struct.pack('>2LHL', 1, 0, 0x8005, player_id)
 
     if subcommand == 0x8102 and len(payload) >= 15:
+        # Traces use 0x8102 for target state updates.
         user_value = get_u32(payload, 10)
         user_flag = get_u8(payload, 14)
         return struct.pack('>2LHLB', 1, 0, 0x8102, user_value, user_flag)
 
     if subcommand == 0x8008 and len(payload) >= 12:
+        # Traces use 0x8008 for small 3-byte target payloads.
         value_1 = get_u8(payload, 9)
         value_2 = get_u8(payload, 10)
         value_3 = get_u8(payload, 11)

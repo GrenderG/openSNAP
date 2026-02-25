@@ -11,7 +11,9 @@ class Account:
 
     user_id: int
     username: str
+    # TODO: Move away from cleartext password storage while preserving login compatibility.
     password: str
+    # TODO: Consider per-account random seeds instead of one static default seed.
     seed: str
     team: str
 

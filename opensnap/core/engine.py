@@ -59,9 +59,12 @@ class SnapProtocolEngine:
         outbound: list[SnapMessage] = []
         errors: list[str] = []
         for message in messages:
-            if message.command == 0 and (message.type_flags & 0x6000) == 0x6000:
+            # Ignore bare ACK frames that do not carry command payload.
+            if message.command == commands.CMD_ACK and (message.type_flags & 0x6000) == 0x6000:
                 continue
 
+            # TODO: Introduce explicit pre-auth session scaffolding for bootstrap-only flows.
+            # TODO: Add duplicate/out-of-order sequence rejection per session.
             try:
                 outbound.extend(self._router.dispatch(self._context, message))
             except Exception as exc:  # noqa: BLE001
