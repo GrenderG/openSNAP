@@ -73,17 +73,17 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
-3. Upgrade packaging tools and install openSNAP.
+3. Install dependencies.
 
 ```bash
-python -m pip install --upgrade pip setuptools wheel
-pip install -e .
+python3 -m pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-4. Verify installation.
+4. Verify imports.
 
 ```bash
-python -c "import opensnap; print(opensnap.__version__)"
+python3 -c "import cryptography; import opensnap"
 ```
 
 ## Run openSNAP
@@ -91,13 +91,13 @@ python -c "import opensnap; print(opensnap.__version__)"
 Start the server:
 
 ```bash
-opensnap-server
+python3 run.py
 ```
 
 Expected startup output includes:
 
 ```text
-openSNAP listening on 0.0.0.0:9090.
+openSNAP listening on 0.0.0.0:9090 using plugin automodellista.
 ```
 
 Stop the server with `Ctrl+C`.
@@ -114,7 +114,7 @@ Environment variables:
 Run with SQLite:
 
 ```bash
-OPENSNAP_STORAGE_BACKEND=sqlite OPENSNAP_SQLITE_PATH=./opensnap.sqlite opensnap-server
+OPENSNAP_STORAGE_BACKEND=sqlite OPENSNAP_SQLITE_PATH=./opensnap.sqlite python3 run.py
 ```
 
 ## Game Plugin Configuration
@@ -128,7 +128,7 @@ Environment variable:
 Run with explicit plugin selection:
 
 ```bash
-OPENSNAP_GAME_PLUGIN=automodellista opensnap-server
+OPENSNAP_GAME_PLUGIN=automodellista python3 run.py
 ```
 
 ## Run Tests
@@ -156,5 +156,5 @@ This project has been possible thanks to No23 and his previous private work on `
 ## Troubleshooting
 
 - `python3: command not found`: install Python 3.11+ and reopen your shell.
-- `opensnap-server: command not found`: make sure your virtual environment is activated and `pip install -e .` completed successfully.
+- `No module named 'opensnap'`: start the server from the repository root using `python3 run.py`.
 - `Address already in use`: another process is using UDP port `9090`; stop that process or change server settings before starting openSNAP.
