@@ -169,6 +169,7 @@ openSNAP uses SQLite storage by default.
 Environment variables:
 
 - `OPENSNAP_SQLITE_PATH`: path to SQLite database file (default: `opensnap.db`).
+- `OPENSNAP_RESET_RUNTIME_ON_STARTUP`: clears runtime tables (`sessions`, `rooms`, `room_members`) when the server starts (default: `true`).
 - `OPENSNAP_DEFAULT_USERS`: users seeded at startup as `username:password[:seed[:team]]`, comma-separated.
 
 The default `.env.dist` includes `test:1111` in `OPENSNAP_DEFAULT_USERS`.
@@ -214,7 +215,7 @@ OPENSNAP_WEB_PORT=80 python3 run.py web
 Environment variables:
 
 - `OPENSNAP_LOG_LEVEL`: one of `debug`, `info`, `warn`, `warning`, `error`, `critical` (default: `debug`).
-- `OPENSNAP_LOG_HEXDUMP_LIMIT`: max bytes rendered in received-packet hexdumps (default: `1024`).
+- `OPENSNAP_LOG_HEXDUMP_LIMIT`: max bytes rendered in packet hexdumps (default: `16384`). Set to `0` for unlimited output.
 
 Examples:
 

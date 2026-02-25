@@ -104,6 +104,12 @@ class SnapUdpServer:
                 endpoint.port,
                 commands,
             )
+            self._logger.debug(
+                'Outbound hexdump to %s:%d\n%s',
+                endpoint.host,
+                endpoint.port,
+                format_hexdump(datagram),
+            )
             udp_socket.sendto(datagram, (endpoint.host, endpoint.port))
 
 

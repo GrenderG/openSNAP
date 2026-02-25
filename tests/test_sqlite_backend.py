@@ -133,6 +133,51 @@ class SqliteBackendTests(unittest.TestCase):
             if len(seeds) > 1:
                 self.assertGreater(len(set(seeds)), 1)
 
+    def test_sqlite_resets_runtime_tables_on_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            database_path = f'{temp_directory}/opensnap.sqlite'
+            config = replace(
+                default_app_config(),
+                storage=StorageConfig(backend='sqlite', sqlite_path=database_path),
+            )
+            SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+
+            with sqlite3.connect(database_path) as connection:
+                connection.execute(
+                    (
+                        'INSERT INTO sessions '
+                        '(session_id, user_id, username, host, port, request_number, sequence_number, '
+                        'last_incoming_sequence, lobby_id, room_id) '
+                        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                    ),
+                    (123, 1, 'test', '127.0.0.1', 2000, 0, 0, -1, 1, 1),
+                )
+                connection.execute(
+                    (
+                        'INSERT INTO rooms '
+                        '(name, password, rules, max_players, lobby_id, host_session_id) '
+                        'VALUES (?, ?, ?, ?, ?, ?)'
+                    ),
+                    ('stale', 'pw', 1, 4, 1, 123),
+                )
+                room_id = int(connection.execute('SELECT last_insert_rowid()').fetchone()[0])
+                connection.execute(
+                    'INSERT INTO room_members (room_id, session_id) VALUES (?, ?)',
+                    (room_id, 123),
+                )
+                connection.commit()
+
+            SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+
+            with sqlite3.connect(database_path) as connection:
+                sessions_count = int(connection.execute('SELECT COUNT(*) FROM sessions').fetchone()[0])
+                rooms_count = int(connection.execute('SELECT COUNT(*) FROM rooms').fetchone()[0])
+                members_count = int(connection.execute('SELECT COUNT(*) FROM room_members').fetchone()[0])
+
+            self.assertEqual(sessions_count, 0)
+            self.assertEqual(rooms_count, 0)
+            self.assertEqual(members_count, 0)
+
 
 def _encode(message: SnapMessage) -> bytes:
     """Encode request message as datagram."""

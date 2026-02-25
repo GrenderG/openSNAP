@@ -5,7 +5,7 @@ import logging
 import os
 
 DEFAULT_LOG_LEVEL = 'debug'
-DEFAULT_HEXDUMP_LIMIT = 1024
+DEFAULT_HEXDUMP_LIMIT = 16384
 LOG_LEVELS: dict[str, int] = {
     'critical': logging.CRITICAL,
     'error': logging.ERROR,
@@ -49,7 +49,9 @@ def parse_hexdump_limit(limit_value: str | None) -> int:
     except ValueError:
         return DEFAULT_HEXDUMP_LIMIT
 
-    if limit <= 0:
+    if limit == 0:
+        return 0
+    if limit < 0:
         return DEFAULT_HEXDUMP_LIMIT
     return limit
 
@@ -64,12 +66,12 @@ def format_hexdump(data: bytes, *, width: int = 16, max_bytes: int | None = None
     if limit is None:
         limit = parse_hexdump_limit(os.getenv('OPENSNAP_LOG_HEXDUMP_LIMIT'))
 
-    view = data[:limit]
+    view = data if limit == 0 else data[:limit]
     lines = list(_iter_hexdump_lines(view, width=width))
     if len(data) > len(view):
         lines.append(
             f'... truncated {len(data) - len(view)} byte(s); '
-            f'raise OPENSNAP_LOG_HEXDUMP_LIMIT to view more.'
+            f'raise OPENSNAP_LOG_HEXDUMP_LIMIT or set it to 0 for unlimited output.'
         )
     return '\n'.join(lines)
 

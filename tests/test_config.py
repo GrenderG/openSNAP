@@ -50,6 +50,16 @@ class AppConfigTests(unittest.TestCase):
 
         self.assertEqual(config.storage.backend, 'sqlite')
 
+    def test_runtime_reset_flag_can_be_overridden(self) -> None:
+        with patch.dict(
+            os.environ,
+            {'OPENSNAP_RESET_RUNTIME_ON_STARTUP': 'false'},
+            clear=True,
+        ):
+            config = default_app_config()
+
+        self.assertFalse(config.storage.reset_runtime_on_startup)
+
 
 if __name__ == '__main__':
     unittest.main()

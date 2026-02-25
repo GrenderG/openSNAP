@@ -13,7 +13,7 @@ from opensnap.config import StorageConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.protocol import commands
-from opensnap.protocol.constants import CHANNEL_LOBBY, CHANNEL_ROOM, FLAG_RELIABLE
+from opensnap.protocol.constants import CHANNEL_LOBBY, CHANNEL_ROOM, FLAG_MULTI, FLAG_RELIABLE
 from opensnap.protocol.fields import get_u32
 from opensnap.protocol.models import Endpoint, SnapMessage
 
@@ -86,6 +86,62 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(kics_result.messages[0].command, 0x29)
         self.assertEqual(get_u32(kics_result.messages[0].payload, 8), session_id)
 
+    def test_login_and_kics_flow_tolerates_zero_sequence_reuse(self) -> None:
+        """Keep snapsi-compatible behavior when bootstrap/login reuses sequence 0."""
+
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50002)
+
+        login_request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY,
+            packet_number=0,
+            command=commands.CMD_LOGIN_CLIENT,
+            session_id=0,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=b'test\n\x00',
+        )
+        login_result = engine.handle_datagram(_encode(login_request), endpoint)
+        self.assertFalse(login_result.errors)
+        self.assertEqual(len(login_result.messages), 1)
+        self.assertEqual(login_result.messages[0].command, commands.CMD_BOOTSTRAP_LOGIN_SWAN)
+
+        session_id = login_result.messages[0].session_id
+        check_request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY,
+            packet_number=0,
+            command=commands.CMD_BOOTSTRAP_LOGIN_SWAN_CHECK,
+            session_id=session_id,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=_build_valid_bootstrap_check_payload(config.server.bootstrap_key, config.server.server_secret),
+        )
+        check_result = engine.handle_datagram(_encode(check_request), endpoint)
+        self.assertFalse(check_result.errors)
+        self.assertEqual(len(check_result.messages), 1)
+        self.assertEqual(check_result.messages[0].command, commands.CMD_BOOTSTRAP_LOGIN_SUCCESS)
+
+        team_payload = bytearray(0x130)
+        team_payload[0x128:0x12F] = b'team-a\x00'
+        kics_request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY,
+            packet_number=0,
+            command=commands.CMD_LOGIN_TO_KICS,
+            session_id=session_id,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=bytes(team_payload),
+        )
+        kics_result = engine.handle_datagram(_encode(kics_request), endpoint)
+        self.assertFalse(kics_result.errors)
+        self.assertEqual(len(kics_result.messages), 1)
+        self.assertEqual(kics_result.messages[0].command, commands.CMD_RESULT_LOGIN_TO_KICS)
+        self.assertEqual(get_u32(kics_result.messages[0].payload, 8), session_id)
+
     def test_lobby_query_returns_all_configured_lobbies(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
@@ -108,6 +164,44 @@ class EngineFlowTests(unittest.TestCase):
         payload = result.messages[0].payload
         lobby_count = struct.unpack_from('>L', payload, 8)[0]
         self.assertEqual(lobby_count, len(config.lobbies))
+
+    def test_multi_query_attribute_burst_is_handled_once(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50003)
+        session_id = _create_session_via_login(engine, endpoint, 'test')
+
+        first = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY | FLAG_MULTI,
+            packet_number=0,
+            command=commands.CMD_QUERY_ATTRIBUTE,
+            session_id=session_id,
+            sequence_number=2,
+            acknowledge_number=0,
+            payload=struct.pack('>L4s', 1, b'USER'),
+            size_word_override=(CHANNEL_LOBBY | FLAG_MULTI) | 0x0018,
+        )
+        second = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY,
+            packet_number=1,
+            command=commands.CMD_QUERY_ATTRIBUTE,
+            session_id=session_id,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=struct.pack('>L4s', 2, b'USER'),
+        )
+        burst = _encode_many([first, second])
+
+        result = engine.handle_datagram(burst, endpoint)
+        self.assertFalse(result.errors)
+        self.assertEqual(len(result.messages), 1)
+        self.assertEqual(result.messages[0].command, commands.CMD_QUERY_ATTRIBUTE)
+
+        payload = result.messages[0].payload
+        self.assertEqual(struct.unpack_from('>L', payload, 8)[0], 1)
+        self.assertEqual(struct.unpack_from('>H', payload, 12)[0], 0x501C)
 
     def test_lobby_chat_broadcasts_to_lobby_members_and_acks_sender(self) -> None:
         config = self._config
@@ -249,7 +343,63 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(overflow_result.messages[0].command, commands.CMD_RESULT_WRAPPER)
         self.assertEqual(struct.unpack_from('>2L', overflow_result.messages[0].payload), (0x04, 1))
 
-    def test_out_of_order_sequence_is_rejected_for_authenticated_session(self) -> None:
+    def test_create_room_reliable_retransmit_reuses_previous_result(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50041)
+
+        session_id = _create_session_via_login(engine, endpoint, 'test')
+        _join_lobby(engine, endpoint, session_id, lobby_id=1, sequence=3)
+
+        request = _build_create_room_request(
+            endpoint=endpoint,
+            session_id=session_id,
+            sequence=4,
+            room_name='dup-room',
+        )
+        first_result = engine.handle_datagram(_encode(request), endpoint)
+        self.assertFalse(first_result.errors)
+        self.assertEqual(len(first_result.messages), 1)
+        _, first_room_id = struct.unpack_from('>2L', first_result.messages[0].payload)
+        self.assertGreater(first_room_id, 0)
+
+        second_result = engine.handle_datagram(_encode(request), endpoint)
+        self.assertFalse(second_result.errors)
+        self.assertEqual(len(second_result.messages), 1)
+        _, second_room_id = struct.unpack_from('>2L', second_result.messages[0].payload)
+        self.assertEqual(first_room_id, second_room_id)
+
+    def test_query_game_rooms_prunes_members_without_matching_session_room(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50042)
+
+        session_id = _create_session_via_login(engine, endpoint, 'test')
+        _join_lobby(engine, endpoint, session_id, lobby_id=1, sequence=3)
+        room_id = _create_room(engine, endpoint, session_id, sequence=4, room_name='stale-room')
+        self.assertGreater(room_id, 0)
+
+        # Simulate stale persistent membership where the session no longer points to this room.
+        engine._sessions.set_room(session_id, 0)  # noqa: SLF001
+
+        request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_QUERY_GAME_ROOMS,
+            session_id=session_id,
+            sequence_number=5,
+            acknowledge_number=0,
+            payload=struct.pack('>L', 1),
+        )
+        result = engine.handle_datagram(_encode(request), endpoint)
+        self.assertFalse(result.errors)
+        self.assertEqual(len(result.messages), 1)
+        payload = result.messages[0].payload
+        room_count = struct.unpack_from('>L', payload, 8)[0]
+        self.assertEqual(room_count, 0)
+
+    def test_duplicate_or_older_sequence_is_tolerated_for_authenticated_session(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint = Endpoint(host='127.0.0.1', port=50050)
@@ -281,7 +431,7 @@ class EngineFlowTests(unittest.TestCase):
         )
         duplicate_result = engine.handle_datagram(_encode(duplicate), endpoint)
         self.assertFalse(duplicate_result.errors)
-        self.assertEqual(duplicate_result.messages, [])
+        self.assertEqual(len(duplicate_result.messages), 1)
 
         older = SnapMessage(
             endpoint=endpoint,
@@ -295,7 +445,7 @@ class EngineFlowTests(unittest.TestCase):
         )
         older_result = engine.handle_datagram(_encode(older), endpoint)
         self.assertFalse(older_result.errors)
-        self.assertEqual(older_result.messages, [])
+        self.assertEqual(len(older_result.messages), 1)
 
     def test_router_contains_all_snapsi_handler_commands(self) -> None:
         config = self._config
@@ -330,6 +480,14 @@ def _encode(message: SnapMessage) -> bytes:
     from opensnap.protocol.codec import encode_messages
 
     return encode_messages([message])
+
+
+def _encode_many(messages: list[SnapMessage]) -> bytes:
+    """Encode multiple request messages in one datagram."""
+
+    from opensnap.protocol.codec import encode_messages
+
+    return encode_messages(messages)
 
 
 def _create_session_via_login(engine: SnapProtocolEngine, endpoint: Endpoint, username: str) -> int:

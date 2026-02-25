@@ -14,6 +14,7 @@ DEFAULT_TICK_INTERVAL_SECONDS = 10.0
 DEFAULT_STORAGE_BACKEND = 'sqlite'
 DEFAULT_SQLITE_PATH = 'opensnap.db'
 DEFAULT_SQLITE_USERS = 'test:1111'
+DEFAULT_RESET_RUNTIME_ON_STARTUP = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +55,7 @@ class StorageConfig:
 
     backend: str = DEFAULT_STORAGE_BACKEND
     sqlite_path: str = DEFAULT_SQLITE_PATH
+    reset_runtime_on_startup: bool = DEFAULT_RESET_RUNTIME_ON_STARTUP
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +82,10 @@ def default_app_config() -> AppConfig:
     tick_interval_seconds = _read_float_env('OPENSNAP_TICK_INTERVAL_SECONDS', DEFAULT_TICK_INTERVAL_SECONDS)
     storage_backend = DEFAULT_STORAGE_BACKEND
     sqlite_path = os.getenv('OPENSNAP_SQLITE_PATH', DEFAULT_SQLITE_PATH).strip() or DEFAULT_SQLITE_PATH
+    reset_runtime_on_startup = _read_bool_env(
+        'OPENSNAP_RESET_RUNTIME_ON_STARTUP',
+        DEFAULT_RESET_RUNTIME_ON_STARTUP,
+    )
 
     return AppConfig(
         server=ServerConfig(
@@ -93,6 +99,7 @@ def default_app_config() -> AppConfig:
         storage=StorageConfig(
             backend=storage_backend,
             sqlite_path=sqlite_path,
+            reset_runtime_on_startup=reset_runtime_on_startup,
         ),
         users=_read_default_users(),
         # Lobby naming keeps three race groups plus event and club-meeting groups.
@@ -189,3 +196,18 @@ def _read_float_env(key: str, default: float) -> float:
         return float(raw.strip())
     except ValueError:
         return default
+
+
+def _read_bool_env(key: str, default: bool) -> bool:
+    """Read boolean environment value with fallback."""
+
+    raw = os.getenv(key)
+    if raw is None:
+        return default
+
+    normalized = raw.strip().lower()
+    if normalized in {'1', 'true', 'yes', 'on'}:
+        return True
+    if normalized in {'0', 'false', 'no', 'off'}:
+        return False
+    return default

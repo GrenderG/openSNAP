@@ -19,6 +19,8 @@ def create_storage(config: AppConfig) -> StorageBundle:
         raise ValueError(f'Unsupported storage backend: {backend}.')
 
     database = SqliteDatabase(config.storage.sqlite_path)
+    if config.storage.reset_runtime_on_startup:
+        database.reset_runtime_state()
     database.seed(config.users, config.lobbies)
     return StorageBundle(
         accounts=SqliteAccountDirectory(database),

@@ -40,7 +40,7 @@ class CodecTests(unittest.TestCase):
         with self.assertRaises(PacketDecodeError):
             decode_datagram(b'\x00' * 20, endpoint)
 
-    def test_decode_multi_message_datagram_splits_embedded_entries(self) -> None:
+    def test_decode_multi_message_datagram_keeps_first_embedded_entry_only(self) -> None:
         endpoint = Endpoint(host='127.0.0.1', port=2222)
         first = SnapMessage(
             endpoint=endpoint,
@@ -67,10 +67,9 @@ class CodecTests(unittest.TestCase):
         encoded = encode_messages([first, second])
         decoded = decode_datagram(encoded, endpoint)
 
-        self.assertEqual(len(decoded), 2)
+        self.assertEqual(len(decoded), 1)
         self.assertEqual(decoded[0].command, 0x0F)
         self.assertEqual(decoded[0].payload, b'\x80\x02')
-        self.assertEqual(decoded[1].command, 0x07)
 
 
 if __name__ == '__main__':

@@ -31,6 +31,13 @@ class SqliteDatabase:
 
         self._connection.close()
 
+    def reset_runtime_state(self) -> None:
+        """Clear transient runtime tables from previous server runs."""
+
+        self.execute('DELETE FROM room_members')
+        self.execute('DELETE FROM rooms')
+        self.execute('DELETE FROM sessions')
+
     def __del__(self) -> None:
         """Best-effort connection cleanup."""
 

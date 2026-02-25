@@ -82,7 +82,7 @@ class AutoModellistaWebModule:
                 '<input type="submit" value="Create/Login ID">\n'
                 '</form>\n'
                 '<br>\n'
-                'After creation of ID, press Start and End browser.\n'
+                'After creation of ID, press Start to select End Browser.\n'
                 '</body>\n'
                 '</html>\n'
             )

@@ -18,6 +18,10 @@ class AutoModellistaPlugin:
 
     name = 'automodellista'
 
+    def __init__(self) -> None:
+        # Retransmitted reliable create-room packets reuse sequence numbers.
+        self._create_room_results: dict[tuple[int, int], int] = {}
+
     def register_handlers(self, router: CommandRouter, context: HandlerContext) -> None:
         """Register plugin handlers."""
 
@@ -91,6 +95,7 @@ class AutoModellistaPlugin:
 
     def _handle_query_game_rooms(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         lobby_id = get_u32(message.payload, 0)
+        _prune_stale_rooms_in_lobby(context, lobby_id)
         rooms = context.rooms.list_for_lobby(lobby_id)
         entries = []
         for room in rooms:
@@ -151,6 +156,20 @@ class AutoModellistaPlugin:
         if session is None:
             return []
 
+        cache_key = (session.session_id, message.sequence_number)
+        cached_result = self._create_room_results.get(cache_key)
+        if cached_result is not None:
+            return [
+                context.reply(
+                    message,
+                    type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                    command=commands.CMD_RESULT_WRAPPER,
+                    payload=struct.pack('>2L', 0x04, cached_result),
+                    session_id=session.session_id,
+                )
+            ]
+
+        _prune_stale_rooms_in_lobby(context, session.lobby_id)
         room_name = get_c_string(message.payload, 0)
         room_password = get_c_string(message.payload, 0x14)
         max_players = max(get_u32(message.payload, 0x10), 1)
@@ -158,6 +177,7 @@ class AutoModellistaPlugin:
 
         room_count = len(context.rooms.list_for_lobby(session.lobby_id))
         if room_count >= MAX_ROOMS_PER_LOBBY:
+            self._create_room_results[cache_key] = 1
             return [
                 context.reply(
                     message,
@@ -177,6 +197,7 @@ class AutoModellistaPlugin:
             host_session_id=session.session_id,
         )
         context.sessions.set_room(session.session_id, room.room_id)
+        self._create_room_results[cache_key] = room.room_id
 
         payload = struct.pack('>2L', 0x04, room.room_id)
         return [
@@ -195,6 +216,9 @@ class AutoModellistaPlugin:
             return []
 
         if (message.type_flags & 0x3000) == CHANNEL_LOBBY:
+            if session.room_id > 0:
+                context.rooms.leave(session.room_id, session.session_id)
+                context.sessions.set_room(session.session_id, 0)
             lobby_id = get_u32(message.payload, 0)
             context.sessions.set_lobby(session.session_id, lobby_id)
             context.sessions.set_room(session.session_id, 0)
@@ -211,6 +235,7 @@ class AutoModellistaPlugin:
 
         if (message.type_flags & 0x3000) == CHANNEL_ROOM:
             room_id = get_u32(message.payload, 0)
+            _prune_stale_room_members(context, room_id)
             success = context.rooms.join(room_id, session.session_id)
             if success:
                 context.sessions.set_room(session.session_id, room_id)
@@ -236,6 +261,9 @@ class AutoModellistaPlugin:
             return []
 
         if (message.type_flags & 0x3000) == CHANNEL_LOBBY:
+            if session.room_id > 0:
+                context.rooms.leave(session.room_id, session.session_id)
+                context.sessions.set_room(session.session_id, 0)
             context.sessions.set_lobby(session.session_id, 0)
             payload = struct.pack('>2L', 0x07, 0)
             return [
@@ -402,32 +430,23 @@ class AutoModellistaPlugin:
         ]
 
     def _build_multi_lobby_user_query_payload(self, context: HandlerContext, message: SnapMessage) -> bytes:
-        lobbies = context.lobbies.list()
-        if not lobbies:
-            return struct.pack('>L4sL', 0, b'USER', 0)
+        # snapsi keeps this first entry special: lobby id 1 uses the count from lobby 0.
+        payload = struct.pack('>L4sL', 1, b'USER', context.sessions.count_users_in_lobby(0))
 
-        first_lobby = lobbies[0]
-        payload = struct.pack(
-            '>L4sL',
-            first_lobby.lobby_id,
-            b'USER',
-            context.sessions.count_users_in_lobby(first_lobby.lobby_id),
-        )
-
-        follow_up_size_word = (CHANNEL_LOBBY | FLAG_RESPONSE) | 0x001C
-        for index, lobby in enumerate(lobbies[1:], start=1):
-            # Keep format where additional USER entries are packed inline.
+        # Keep snapsi's embedded-entry header word (0x501C), packet numbering, and id range.
+        follow_up_size_word = 0x501C
+        for lobby_id in range(1, 0x13):
             payload += struct.pack(
                 '>HBB3LL4sL',
                 follow_up_size_word,
-                index & 0xFF,
+                lobby_id & 0xFF,
                 commands.CMD_QUERY_ATTRIBUTE,
                 message.session_id,
                 0,
                 message.sequence_number,
-                lobby.lobby_id,
+                lobby_id,
                 b'USER',
-                context.sessions.count_users_in_lobby(lobby.lobby_id),
+                context.sessions.count_users_in_lobby(lobby_id),
             )
         return payload
 
@@ -439,6 +458,26 @@ def _resolve_session(context: HandlerContext, message: SnapMessage) -> Session |
     if session is not None:
         return session
     return context.sessions.get_by_endpoint(message.endpoint)
+
+
+def _prune_stale_rooms_in_lobby(context: HandlerContext, lobby_id: int) -> None:
+    """Remove stale room members and empty rooms in one lobby."""
+
+    for room in context.rooms.list_for_lobby(lobby_id):
+        _prune_stale_room_members(context, room.room_id)
+
+
+def _prune_stale_room_members(context: HandlerContext, room_id: int) -> None:
+    """Remove room members whose session state no longer points to this room."""
+
+    room = context.rooms.get(room_id)
+    if room is None:
+        return
+
+    for member_session_id in tuple(room.members):
+        member_session = context.sessions.get(member_session_id)
+        if member_session is None or member_session.room_id == 0:
+            context.rooms.leave(room_id, member_session_id)
 
 
 def _pack_fixed(value: str, size: int) -> bytes:

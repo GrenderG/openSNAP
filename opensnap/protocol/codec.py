@@ -63,6 +63,12 @@ def decode_datagram(data: bytes, endpoint: Endpoint) -> list[SnapMessage]:
             size_word_override=size_word if type_flags & FLAG_MULTI else None,
         )
         messages.append(message)
+
+        # snapsi processes only the first entry of incoming multi datagrams.
+        # Keeping this behavior avoids over-dispatching embedded query entries.
+        if type_flags & FLAG_MULTI:
+            break
+
         offset = next_offset
 
     return messages
