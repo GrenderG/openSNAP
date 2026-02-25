@@ -1,0 +1,474 @@
+"""Auto Modellista game plugin."""
+
+import struct
+
+from opensnap.core.context import HandlerContext
+from opensnap.core.router import CommandRouter
+from opensnap.core.sessions import Session
+from opensnap.protocol import commands
+from opensnap.protocol.constants import CHANNEL_LOBBY, CHANNEL_ROOM, FLAG_MULTI, FLAG_RELIABLE, FLAG_RESPONSE
+from opensnap.protocol.fields import get_c_string, get_u16, get_u32, get_u8
+from opensnap.protocol.models import SnapMessage
+
+
+class AutoModellistaPlugin:
+    """Command handlers for Auto Modellista behavior."""
+
+    name = 'automodellista'
+
+    def register_handlers(self, router: CommandRouter, context: HandlerContext) -> None:
+        """Register plugin handlers."""
+
+        del context
+        router.register(commands.CMD_QUERY_LOBBIES, self._handle_query_lobbies)
+        router.register(commands.CMD_QUERY_ATTRIBUTE, self._handle_query_attribute)
+        router.register(commands.CMD_QUERY_GAME_ROOMS, self._handle_query_game_rooms)
+        router.register(commands.CMD_QUERY_USER, self._handle_query_user)
+        router.register(commands.CMD_CREATE_GAME_ROOM, self._handle_create_game_room)
+        router.register(commands.CMD_JOIN, self._handle_join)
+        router.register(commands.CMD_LEAVE, self._handle_leave)
+        router.register(commands.CMD_SEND, self._handle_send)
+        router.register(commands.CMD_SEND_TARGET, self._handle_send_target)
+        router.register(commands.CMD_CHANGE_USER_STATUS, self._handle_change_user_status)
+        router.register(commands.CMD_CHANGE_USER_PROPERTY, self._handle_change_user_property)
+        router.register(commands.CMD_CHANGE_ATTRIBUTE, self._handle_change_attribute)
+
+    def on_tick(self, context: HandlerContext) -> list[SnapMessage]:
+        """No periodic game-specific packets yet."""
+
+        del context
+        return []
+
+    def _handle_query_lobbies(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
+        entries = []
+        for lobby in context.lobbies.list():
+            users_in = context.sessions.count_users_in_lobby(lobby.lobby_id)
+            entries.append(struct.pack('>16s3L', _pack_fixed(lobby.name, 16), users_in, 0, lobby.lobby_id))
+
+        payload = struct.pack('>3L', 0, 1, len(entries)) + b''.join(entries)
+        return [
+            context.reply(
+                message,
+                type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                command=commands.CMD_QUERY_LOBBIES,
+                payload=payload,
+            )
+        ]
+
+    def _handle_query_attribute(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
+        if message.type_flags & FLAG_MULTI:
+            payload = self._build_multi_lobby_user_query_payload(context, message)
+            type_flags = CHANNEL_LOBBY | FLAG_RESPONSE | FLAG_MULTI
+            size_word_override = type_flags | 0x001C
+            return [
+                context.reply(
+                    message,
+                    type_flags=type_flags,
+                    command=commands.CMD_QUERY_ATTRIBUTE,
+                    payload=payload,
+                    size_word_override=size_word_override,
+                )
+            ]
+
+        lobby_id = get_u32(message.payload, 0)
+        payload = struct.pack(
+            '>L4sL',
+            lobby_id,
+            b'USER',
+            context.sessions.count_users_in_lobby(lobby_id),
+        )
+        return [
+            context.reply(
+                message,
+                type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                command=commands.CMD_QUERY_ATTRIBUTE,
+                payload=payload,
+            )
+        ]
+
+    def _handle_query_game_rooms(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
+        lobby_id = get_u32(message.payload, 0)
+        rooms = context.rooms.list_for_lobby(lobby_id)
+        entries = []
+        for room in rooms:
+            entries.append(
+                struct.pack(
+                    '>16s5L',
+                    _pack_fixed(room.name, 16),
+                    len(room.members),
+                    0,
+                    room.rules,
+                    room.max_players,
+                    room.room_id,
+                )
+            )
+
+        payload = struct.pack('>3L', 0, 1, len(entries)) + b''.join(entries)
+        return [
+            context.reply(
+                message,
+                type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                command=commands.CMD_QUERY_GAME_ROOMS,
+                payload=payload,
+            )
+        ]
+
+    def _handle_query_user(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
+        if (message.type_flags & 0x3000) != CHANNEL_ROOM:
+            return []
+
+        room_id = get_u32(message.payload, 0)
+        members = context.sessions.list_room_members(room_id)
+        entries = []
+        for session in members:
+            account = context.accounts.get_by_id(session.user_id)
+            team = '' if account is None else account.team
+            entries.append(
+                struct.pack(
+                    '>16s2L32s',
+                    _pack_fixed(session.username, 16),
+                    session.session_id,
+                    32,
+                    _pack_fixed(team, 32),
+                )
+            )
+
+        payload = struct.pack('>3L', room_id, len(entries), len(entries)) + b''.join(entries)
+        return [
+            context.reply(
+                message,
+                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                command=commands.CMD_QUERY_USER,
+                payload=payload,
+            )
+        ]
+
+    def _handle_create_game_room(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
+        session = _resolve_session(context, message)
+        if session is None:
+            return []
+
+        room_name = get_c_string(message.payload, 0)
+        room_password = get_c_string(message.payload, 0x14)
+        max_players = max(get_u32(message.payload, 0x10), 1)
+        rules = get_u32(message.payload, 0x28)
+
+        room = context.rooms.create_room(
+            name=room_name,
+            password=room_password,
+            rules=rules,
+            max_players=max_players,
+            lobby_id=session.lobby_id,
+            host_session_id=session.session_id,
+        )
+        context.sessions.set_room(session.session_id, room.room_id)
+
+        payload = struct.pack('>2L', 0x04, room.room_id)
+        return [
+            context.reply(
+                message,
+                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                command=0x28,
+                payload=payload,
+                session_id=session.session_id,
+            )
+        ]
+
+    def _handle_join(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
+        session = _resolve_session(context, message)
+        if session is None:
+            return []
+
+        if (message.type_flags & 0x3000) == CHANNEL_LOBBY:
+            lobby_id = get_u32(message.payload, 0)
+            context.sessions.set_lobby(session.session_id, lobby_id)
+            context.sessions.set_room(session.session_id, 0)
+            payload = struct.pack('>2L', 0x06, 0)
+            return [
+                context.reply(
+                    message,
+                    type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                    command=0x28,
+                    payload=payload,
+                    session_id=session.session_id,
+                )
+            ]
+
+        if (message.type_flags & 0x3000) == CHANNEL_ROOM:
+            room_id = get_u32(message.payload, 0)
+            success = context.rooms.join(room_id, session.session_id)
+            if success:
+                context.sessions.set_room(session.session_id, room_id)
+                payload = struct.pack('>2L', 0x06, 0)
+            else:
+                payload = struct.pack('>2L', 0x06, 1)
+
+            return [
+                context.reply(
+                    message,
+                    type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                    command=0x28,
+                    payload=payload,
+                    session_id=session.session_id,
+                )
+            ]
+
+        return []
+
+    def _handle_leave(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
+        session = _resolve_session(context, message)
+        if session is None:
+            return []
+
+        if (message.type_flags & 0x3000) == CHANNEL_LOBBY:
+            context.sessions.set_lobby(session.session_id, 0)
+            payload = struct.pack('>2L', 0x07, 0)
+            return [
+                context.reply(
+                    message,
+                    type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                    command=0x28,
+                    payload=payload,
+                    session_id=session.session_id,
+                )
+            ]
+
+        if (message.type_flags & 0x3000) == CHANNEL_ROOM:
+            context.rooms.leave(session.room_id, session.session_id)
+            context.sessions.set_room(session.session_id, 0)
+            payload = struct.pack('>2L', 0x07, 0)
+            return [
+                context.reply(
+                    message,
+                    type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                    command=0x28,
+                    payload=payload,
+                    session_id=session.session_id,
+                )
+            ]
+
+        return []
+
+    def _handle_send(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
+        session = _resolve_session(context, message)
+        if session is None:
+            return []
+
+        if message.type_flags & FLAG_MULTI:
+            context.rooms.leave(session.room_id, session.session_id)
+            context.sessions.set_room(session.session_id, 0)
+            payload = struct.pack('>2L', 0x07, 0)
+            return [
+                context.reply(
+                    message,
+                    type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                    command=0x28,
+                    payload=payload,
+                    session_id=session.session_id,
+                )
+            ]
+
+        if (message.type_flags & 0x3400) == 0x1400:
+            ack = context.reply(
+                message,
+                type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                command=0x00,
+                session_id=session.session_id,
+            )
+            chat_payload = _build_chat_echo_payload(session, message.payload)
+            chat = context.reply(
+                message,
+                type_flags=0x1400 | FLAG_RESPONSE,
+                command=commands.CMD_SEND,
+                payload=chat_payload,
+                session_id=session.session_id,
+            )
+            return [ack, chat]
+
+        if (message.type_flags & 0x3400) == 0x2400:
+            return [
+                context.reply(
+                    message,
+                    type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                    command=0x00,
+                    session_id=session.session_id,
+                )
+            ]
+
+        if message.type_flags & CHANNEL_ROOM:
+            return [
+                context.reply(
+                    message,
+                    type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                    command=0x00,
+                    session_id=session.session_id,
+                )
+            ]
+
+        return []
+
+    def _handle_send_target(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
+        session = _resolve_session(context, message)
+        if session is None:
+            return []
+
+        response = [
+            context.reply(
+                message,
+                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                command=0x00,
+                session_id=session.session_id,
+            )
+        ]
+
+        if len(message.payload) < 10:
+            return response
+
+        target_session_id = get_u32(message.payload, 4)
+        target = context.sessions.get(target_session_id)
+        if target is None:
+            return response
+
+        subcommand = get_u16(message.payload, 8)
+        relay_payload = _build_send_target_payload(subcommand, message.payload)
+        if relay_payload is None:
+            return response
+
+        response.append(
+            context.direct(
+                endpoint=target.endpoint,
+                session_id=target.session_id,
+                type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                command=commands.CMD_SEND_TARGET,
+                payload=relay_payload,
+                acknowledge_number=target.sequence_number,
+            )
+        )
+        return response
+
+    def _handle_change_user_status(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
+        return self._simple_change_ack(context, message, 0x0D)
+
+    def _handle_change_user_property(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
+        return self._simple_change_ack(context, message, 0x0C)
+
+    def _handle_change_attribute(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
+        return self._simple_change_ack(context, message, 0x08)
+
+    def _simple_change_ack(
+        self,
+        context: HandlerContext,
+        message: SnapMessage,
+        subcommand: int,
+    ) -> list[SnapMessage]:
+        session = _resolve_session(context, message)
+        if session is None:
+            return []
+
+        payload = struct.pack('>2L', subcommand, 0)
+        return [
+            context.reply(
+                message,
+                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                command=0x28,
+                payload=payload,
+                session_id=session.session_id,
+            )
+        ]
+
+    def _build_multi_lobby_user_query_payload(self, context: HandlerContext, message: SnapMessage) -> bytes:
+        lobbies = context.lobbies.list()
+        if not lobbies:
+            return struct.pack('>L4sL', 0, b'USER', 0)
+
+        first_lobby = lobbies[0]
+        payload = struct.pack(
+            '>L4sL',
+            first_lobby.lobby_id,
+            b'USER',
+            context.sessions.count_users_in_lobby(first_lobby.lobby_id),
+        )
+
+        follow_up_size_word = (CHANNEL_LOBBY | FLAG_RESPONSE) | 0x001C
+        for index, lobby in enumerate(lobbies[1:], start=1):
+            payload += struct.pack(
+                '>HBB3LL4sL',
+                follow_up_size_word,
+                index & 0xFF,
+                commands.CMD_QUERY_ATTRIBUTE,
+                message.session_id,
+                0,
+                message.sequence_number,
+                lobby.lobby_id,
+                b'USER',
+                context.sessions.count_users_in_lobby(lobby.lobby_id),
+            )
+        return payload
+
+
+def _resolve_session(context: HandlerContext, message: SnapMessage) -> Session | None:
+    """Find session by id first, then by endpoint."""
+
+    session = context.sessions.get(message.session_id)
+    if session is not None:
+        return session
+    return context.sessions.get_by_endpoint(message.endpoint)
+
+
+def _pack_fixed(value: str, size: int) -> bytes:
+    """Pack text into fixed-size null-padded bytes."""
+
+    encoded = value.encode('utf-8', errors='ignore')[:size]
+    return struct.pack(f'{size}s', encoded)
+
+
+def _build_chat_echo_payload(session: Session, payload: bytes) -> bytes:
+    """Mirror chat payload with user identity."""
+
+    username = session.username
+    team = 'team'
+    message = 'openSNAP message.'
+
+    if len(payload) >= 2:
+        user_len = payload[0]
+        team_len = payload[1]
+        user_start = 2
+        team_start = user_start + user_len
+        body_start = team_start + team_len
+        if body_start <= len(payload):
+            username = payload[user_start:team_start].decode('utf-8', errors='ignore')
+            team = payload[team_start:body_start].decode('utf-8', errors='ignore')
+            message = payload[body_start:].decode('utf-8', errors='ignore') or message
+
+    username_bytes = username.encode('utf-8')
+    team_bytes = team.encode('utf-8')
+    message_bytes = message.encode('utf-8')
+    return struct.pack(
+        f'>2B{len(username_bytes)}s{len(team_bytes)}s{len(message_bytes)}s',
+        len(username_bytes),
+        len(team_bytes),
+        username_bytes,
+        team_bytes,
+        message_bytes,
+    )
+
+
+def _build_send_target_payload(subcommand: int, payload: bytes) -> bytes | None:
+    """Build relay payload for known send-target subcommands."""
+
+    if subcommand == 0x8005 and len(payload) >= 14:
+        player_id = get_u32(payload, 10)
+        return struct.pack('>2LHL', 1, 0, 0x8005, player_id)
+
+    if subcommand == 0x8102 and len(payload) >= 15:
+        user_value = get_u32(payload, 10)
+        user_flag = get_u8(payload, 14)
+        return struct.pack('>2LHLB', 1, 0, 0x8102, user_value, user_flag)
+
+    if subcommand == 0x8008 and len(payload) >= 12:
+        value_1 = get_u8(payload, 9)
+        value_2 = get_u8(payload, 10)
+        value_3 = get_u8(payload, 11)
+        return struct.pack('>2LH3B', 1, 0, 0x8008, value_1, value_2, value_3)
+
+    return None
