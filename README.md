@@ -12,6 +12,12 @@ openSNAP is designed with a strict separation between:
 
 This keeps core behavior reusable while allowing game integrations to be added independently.
 
+## Project Status
+
+openSNAP is still in an early work-in-progress stage.
+
+More help is needed, especially for protocol research, packet analysis, compatibility testing, and implementation work.
+
 ## SNAP History (Brief)
 
 SN@P started as **SEGA Network Application Package**, created by Sega.com as middleware for online multiplayer game services.
@@ -109,6 +115,20 @@ Run with SQLite:
 
 ```bash
 OPENSNAP_STORAGE_BACKEND=sqlite OPENSNAP_SQLITE_PATH=./opensnap.sqlite opensnap-server
+```
+
+## Game Plugin Configuration
+
+Game behavior is loaded through a plugin selected in server config.
+
+Environment variable:
+
+- `OPENSNAP_GAME_PLUGIN`: plugin name to load (default: `automodellista`).
+
+Run with explicit plugin selection:
+
+```bash
+OPENSNAP_GAME_PLUGIN=automodellista opensnap-server
 ```
 
 ## Run Tests

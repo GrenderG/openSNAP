@@ -6,7 +6,7 @@ import time
 
 from opensnap.config import ServerConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
-from opensnap.plugins.automodellista import AutoModellistaPlugin
+from opensnap.plugins import create_game_plugin
 from opensnap.protocol.codec import encode_messages
 from opensnap.protocol.models import Endpoint, SnapMessage
 
@@ -71,9 +71,13 @@ def main() -> None:
     """CLI entrypoint."""
 
     config = default_app_config()
-    engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+    plugin = create_game_plugin(config.server.game_plugin)
+    engine = SnapProtocolEngine(config=config, plugin=plugin)
     server = SnapUdpServer(config=config.server, engine=engine)
-    print(f'openSNAP listening on {config.server.host}:{config.server.port}.')
+    print(
+        f'openSNAP listening on {config.server.host}:{config.server.port} '
+        f'using plugin {plugin.name}.'
+    )
     try:
         server.run()
     except KeyboardInterrupt:

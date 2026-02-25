@@ -30,6 +30,7 @@ class ServerConfig:
 
     host: str = '0.0.0.0'
     port: int = 9090
+    game_plugin: str = 'automodellista'
     server_secret: str = 'Totally secret server secret!'
     bootstrap_key: bytes = b'SNAP-SWAN'
     tick_interval_seconds: float = 10.0
@@ -56,8 +57,9 @@ class AppConfig:
 def default_app_config() -> AppConfig:
     """Build default settings for local development."""
 
+    game_plugin = os.getenv('OPENSNAP_GAME_PLUGIN', 'automodellista').strip().lower()
     return AppConfig(
-        server=ServerConfig(),
+        server=ServerConfig(game_plugin=game_plugin),
         storage=StorageConfig(
             backend=os.getenv('OPENSNAP_STORAGE_BACKEND', 'memory').strip().lower(),
             sqlite_path=os.getenv('OPENSNAP_SQLITE_PATH', 'opensnap.db').strip(),
