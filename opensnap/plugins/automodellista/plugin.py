@@ -10,15 +10,18 @@ from opensnap.protocol.constants import CHANNEL_LOBBY, CHANNEL_ROOM, FLAG_MULTI,
 from opensnap.protocol.fields import get_c_string, get_u16, get_u32, get_u8
 from opensnap.protocol.models import SnapMessage
 
+MAX_ROOMS_PER_LOBBY = 50
+
 
 class AutoModellistaPlugin:
     """Command handlers for Auto Modellista behavior."""
 
     name = 'automodellista'
 
-    def register_handlers(self, router: CommandRouter, _context: HandlerContext) -> None:
+    def register_handlers(self, router: CommandRouter, context: HandlerContext) -> None:
         """Register plugin handlers."""
 
+        del context
         router.register(commands.CMD_QUERY_LOBBIES, self._handle_query_lobbies)
         router.register(commands.CMD_QUERY_ATTRIBUTE, self._handle_query_attribute)
         router.register(commands.CMD_QUERY_GAME_ROOMS, self._handle_query_game_rooms)
@@ -32,9 +35,10 @@ class AutoModellistaPlugin:
         router.register(commands.CMD_CHANGE_USER_PROPERTY, self._handle_change_user_property)
         router.register(commands.CMD_CHANGE_ATTRIBUTE, self._handle_change_attribute)
 
-    def on_tick(self, _context: HandlerContext) -> list[SnapMessage]:
+    def on_tick(self, context: HandlerContext) -> list[SnapMessage]:
         """No periodic game-specific packets yet."""
 
+        del context
         return []
 
     def _handle_query_lobbies(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -152,7 +156,18 @@ class AutoModellistaPlugin:
         max_players = max(get_u32(message.payload, 0x10), 1)
         rules = get_u32(message.payload, 0x28)
 
-        # TODO: Enforce the room limit of 50 and return a proper error code.
+        room_count = len(context.rooms.list_for_lobby(session.lobby_id))
+        if room_count >= MAX_ROOMS_PER_LOBBY:
+            return [
+                context.reply(
+                    message,
+                    type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                    command=commands.CMD_RESULT_WRAPPER,
+                    payload=struct.pack('>2L', 0x04, 1),
+                    session_id=session.session_id,
+                )
+            ]
+
         room = context.rooms.create_room(
             name=room_name,
             password=room_password,
@@ -270,44 +285,50 @@ class AutoModellistaPlugin:
             ]
 
         if (message.type_flags & 0x3400) == 0x1400:
-            # TODO: Broadcast lobby chat to all lobby members and ACK only sender.
-            ack = context.reply(
+            ack_to_sender = context.reply(
                 message,
                 type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
                 command=commands.CMD_ACK,
                 session_id=session.session_id,
             )
             chat_payload = _build_chat_echo_payload(session, message.payload)
-            chat = context.reply(
-                message,
-                type_flags=0x1400 | FLAG_RESPONSE,
-                command=commands.CMD_SEND,
-                payload=chat_payload,
-                session_id=session.session_id,
-            )
-            return [ack, chat]
+            chats = _broadcast_lobby_chat(context, session.lobby_id, chat_payload)
+            return [ack_to_sender] + chats
 
         if (message.type_flags & 0x3400) == 0x2400:
-            # TODO: Broadcast room chat to room members and ACK only sender.
-            return [
-                context.reply(
-                    message,
-                    type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
-                    command=commands.CMD_ACK,
-                    session_id=session.session_id,
-                )
-            ]
+            ack_to_sender = context.reply(
+                message,
+                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                command=commands.CMD_ACK,
+                session_id=session.session_id,
+            )
+            chat_payload = _build_chat_echo_payload(session, message.payload)
+            chats = _broadcast_room_chat(context, session.room_id, chat_payload)
+            return [ack_to_sender] + chats
 
         if message.type_flags & CHANNEL_ROOM:
-            # TODO: Decode and route game packet subcommands such as 0x8006 broadcasts.
-            return [
-                context.reply(
-                    message,
-                    type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
-                    command=commands.CMD_ACK,
-                    session_id=session.session_id,
+            ack_to_sender = context.reply(
+                message,
+                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                command=commands.CMD_ACK,
+                session_id=session.session_id,
+            )
+
+            if len(message.payload) < 2:
+                return [ack_to_sender]
+
+            subcommand = get_u16(message.payload, 0)
+            if subcommand == 0x8006:
+                broadcasts = _broadcast_room_game_packet(
+                    context=context,
+                    request=message,
+                    room_id=session.room_id,
+                    payload=message.payload,
+                    exclude_session_id=session.session_id,
                 )
-            ]
+                return [ack_to_sender] + broadcasts
+
+            return [ack_to_sender]
 
         return []
 
@@ -456,6 +477,80 @@ def _build_chat_echo_payload(session: Session, payload: bytes) -> bytes:
         team_bytes,
         message_bytes,
     )
+
+
+def _broadcast_lobby_chat(context: HandlerContext, lobby_id: int, payload: bytes) -> list[SnapMessage]:
+    """Create one lobby chat callback packet per lobby member."""
+
+    if lobby_id <= 0:
+        return []
+
+    messages: list[SnapMessage] = []
+    for member in context.sessions.list_lobby_members(lobby_id):
+        messages.append(
+            context.direct(
+                endpoint=member.endpoint,
+                session_id=member.session_id,
+                type_flags=0x1400 | FLAG_RESPONSE,
+                command=commands.CMD_SEND,
+                payload=payload,
+                acknowledge_number=member.sequence_number,
+            )
+        )
+    return messages
+
+
+def _broadcast_room_chat(context: HandlerContext, room_id: int, payload: bytes) -> list[SnapMessage]:
+    """Create one room chat callback packet per room member."""
+
+    if room_id <= 0:
+        return []
+
+    messages: list[SnapMessage] = []
+    for member in context.sessions.list_room_members(room_id):
+        messages.append(
+            context.direct(
+                endpoint=member.endpoint,
+                session_id=member.session_id,
+                type_flags=0x2400 | FLAG_RESPONSE,
+                command=commands.CMD_SEND,
+                payload=payload,
+                acknowledge_number=member.sequence_number,
+            )
+        )
+    return messages
+
+
+def _broadcast_room_game_packet(
+    *,
+    context: HandlerContext,
+    request: SnapMessage,
+    room_id: int,
+    payload: bytes,
+    exclude_session_id: int,
+) -> list[SnapMessage]:
+    """Relay game packet to other room members."""
+
+    if room_id <= 0:
+        return []
+
+    messages: list[SnapMessage] = []
+    for member in context.sessions.list_room_members(room_id):
+        if member.session_id == exclude_session_id:
+            continue
+
+        messages.append(
+            context.direct(
+                endpoint=member.endpoint,
+                session_id=member.session_id,
+                type_flags=request.type_flags,
+                command=commands.CMD_SEND,
+                payload=payload,
+                packet_number=request.packet_number,
+                acknowledge_number=member.sequence_number,
+            )
+        )
+    return messages
 
 
 def _build_send_target_payload(subcommand: int, payload: bytes) -> bytes | None:

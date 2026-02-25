@@ -3,7 +3,7 @@
 import unittest
 
 from opensnap.protocol.codec import PacketDecodeError, decode_datagram, encode_messages
-from opensnap.protocol.constants import CHANNEL_LOBBY, FLAG_RESPONSE
+from opensnap.protocol.constants import CHANNEL_LOBBY, CHANNEL_ROOM, FLAG_MULTI, FLAG_RESPONSE
 from opensnap.protocol.models import Endpoint, SnapMessage
 
 
@@ -39,6 +39,38 @@ class CodecTests(unittest.TestCase):
         endpoint = Endpoint(host='127.0.0.1', port=1111)
         with self.assertRaises(PacketDecodeError):
             decode_datagram(b'\x00' * 20, endpoint)
+
+    def test_decode_multi_message_datagram_splits_embedded_entries(self) -> None:
+        endpoint = Endpoint(host='127.0.0.1', port=2222)
+        first = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_ROOM | FLAG_MULTI,
+            packet_number=0,
+            command=0x0F,
+            session_id=0x12345678,
+            sequence_number=7,
+            acknowledge_number=0,
+            payload=b'\x80\x02',
+            size_word_override=(CHANNEL_ROOM | FLAG_MULTI) | 0x0012,
+        )
+        second = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_ROOM,
+            packet_number=0,
+            command=0x07,
+            session_id=0x12345678,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=b'',
+        )
+
+        encoded = encode_messages([first, second])
+        decoded = decode_datagram(encoded, endpoint)
+
+        self.assertEqual(len(decoded), 2)
+        self.assertEqual(decoded[0].command, 0x0F)
+        self.assertEqual(decoded[0].payload, b'\x80\x02')
+        self.assertEqual(decoded[1].command, 0x07)
 
 
 if __name__ == '__main__':

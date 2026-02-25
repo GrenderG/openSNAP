@@ -11,7 +11,8 @@ class UserConfig:
     user_id: int
     username: str
     password: str
-    seed: str = 'some server seed'
+    # Empty seed means "generate one secure seed per account".
+    seed: str = ''
     team: str = ''
 
 

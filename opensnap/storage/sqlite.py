@@ -3,7 +3,7 @@
 import sqlite3
 
 from opensnap.config import LobbyConfig, UserConfig
-from opensnap.core.accounts import Account
+from opensnap.core.accounts import Account, build_account, normalize_password_record, normalize_seed
 from opensnap.core.lobbies import Lobby
 from opensnap.core.rooms import GameRoom
 from opensnap.core.sessions import Session, create_session_id
@@ -41,12 +41,14 @@ class SqliteDatabase:
         """Seed static accounts and lobbies."""
 
         for user in users:
+            seed = normalize_seed(user.seed)
+            password_record = normalize_password_record(user.password, seed)
             self.execute(
                 (
                     'INSERT OR IGNORE INTO users '
                     '(user_id, username, password, seed, team) VALUES (?, ?, ?, ?, ?)'
                 ),
-                (user.user_id, user.username, user.password, user.seed, user.team),
+                (user.user_id, user.username, password_record, seed, user.team),
             )
 
         for lobby in lobbies:
@@ -54,6 +56,8 @@ class SqliteDatabase:
                 'INSERT OR IGNORE INTO lobbies (lobby_id, name) VALUES (?, ?)',
                 (lobby.lobby_id, lobby.name),
             )
+
+        self._migrate_password_records()
 
     def _setup_schema(self) -> None:
         """Create required tables."""
@@ -87,6 +91,7 @@ class SqliteDatabase:
                 'port INTEGER NOT NULL, '
                 'request_number INTEGER NOT NULL DEFAULT 0, '
                 'sequence_number INTEGER NOT NULL DEFAULT 0, '
+                'last_incoming_sequence INTEGER NOT NULL DEFAULT -1, '
                 'lobby_id INTEGER NOT NULL DEFAULT 0, '
                 'room_id INTEGER NOT NULL DEFAULT 0'
                 ')'
@@ -115,6 +120,36 @@ class SqliteDatabase:
                 ')'
             )
         )
+        self._ensure_sessions_columns()
+
+    def _ensure_sessions_columns(self) -> None:
+        """Backfill new session columns in existing databases."""
+
+        rows = self.query_all('PRAGMA table_info(sessions)')
+        columns = {str(row['name']) for row in rows}
+        if 'last_incoming_sequence' not in columns:
+            self.execute(
+                (
+                    'ALTER TABLE sessions '
+                    'ADD COLUMN last_incoming_sequence INTEGER NOT NULL DEFAULT -1'
+                )
+            )
+
+    def _migrate_password_records(self) -> None:
+        """Migrate cleartext password rows to encoded records."""
+
+        rows = self.query_all('SELECT user_id, password, seed FROM users')
+        for row in rows:
+            user_id = int(row['user_id'])
+            seed = normalize_seed(str(row['seed']))
+            password_record = normalize_password_record(str(row['password']), seed)
+            if password_record == str(row['password']) and seed == str(row['seed']):
+                continue
+
+            self.execute(
+                'UPDATE users SET password = ?, seed = ? WHERE user_id = ?',
+                (password_record, seed, user_id),
+            )
 
 
 class SqliteAccountDirectory:
@@ -165,8 +200,11 @@ class SqliteSessionRegistry:
         self._database.execute(
             (
                 'INSERT INTO sessions '
-                '(session_id, user_id, username, host, port, request_number, sequence_number, lobby_id, room_id) '
-                'VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0)'
+                '('
+                'session_id, user_id, username, host, port, '
+                'request_number, sequence_number, last_incoming_sequence, lobby_id, room_id'
+                ') '
+                'VALUES (?, ?, ?, ?, ?, 0, 0, -1, 0, 0)'
             ),
             (session_id, account.user_id, account.username, endpoint.host, endpoint.port),
         )
@@ -226,6 +264,26 @@ class SqliteSessionRegistry:
         )
         return int(value)
 
+    def accept_incoming(self, session_id: int, sequence_number: int) -> bool:
+        """Accept or reject incoming sequence number."""
+
+        row = self._database.query_one(
+            'SELECT last_incoming_sequence FROM sessions WHERE session_id = ?',
+            (session_id,),
+        )
+        if row is None:
+            return False
+
+        last_incoming = int(row['last_incoming_sequence'])
+        if sequence_number <= last_incoming:
+            return False
+
+        self._database.execute(
+            'UPDATE sessions SET last_incoming_sequence = ? WHERE session_id = ?',
+            (sequence_number, session_id),
+        )
+        return True
+
     def set_lobby(self, session_id: int, lobby_id: int) -> None:
         """Set current lobby for a session."""
 
@@ -252,6 +310,15 @@ class SqliteSessionRegistry:
         if row is None:
             return 0
         return int(row['count'])
+
+    def list_lobby_members(self, lobby_id: int) -> list[Session]:
+        """List lobby members."""
+
+        rows = self._database.query_all(
+            'SELECT * FROM sessions WHERE lobby_id = ?',
+            (lobby_id,),
+        )
+        return [_session_from_row(row) for row in rows if row is not None]
 
     def list_room_members(self, room_id: int) -> list[Session]:
         """List room members."""
@@ -416,10 +483,11 @@ def _account_from_row(row: sqlite3.Row | None) -> Account | None:
 
     if row is None:
         return None
-    return Account(
+
+    return build_account(
         user_id=int(row['user_id']),
         username=str(row['username']),
-        password=str(row['password']),
+        password_record=str(row['password']),
         seed=str(row['seed']),
         team=str(row['team']),
     )
@@ -438,6 +506,7 @@ def _session_from_row(row: sqlite3.Row | None) -> Session | None:
         endpoint=Endpoint(host=str(row['host']), port=int(row['port'])),
         request_number=int(row['request_number']),
         sequence_number=int(row['sequence_number']),
+        last_incoming_sequence=int(row['last_incoming_sequence']),
         lobby_id=int(row['lobby_id']),
         room_id=int(row['room_id']),
     )

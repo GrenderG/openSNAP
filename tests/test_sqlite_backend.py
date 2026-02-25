@@ -92,11 +92,13 @@ class SqliteBackendTests(unittest.TestCase):
 
             with sqlite3.connect(database_path) as connection:
                 row = connection.execute(
-                    'SELECT team FROM users WHERE username = ?',
+                    'SELECT team, password FROM users WHERE username = ?',
                     ('test',),
                 ).fetchone()
             self.assertIsNotNone(row)
             self.assertEqual(row[0], 'sql')
+            self.assertTrue(str(row[1]).startswith('v1$'))
+            self.assertNotEqual(row[1], '1111')
 
     def test_sqlite_seed_is_stable_for_lobbies(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -112,6 +114,23 @@ class SqliteBackendTests(unittest.TestCase):
                 row = connection.execute('SELECT COUNT(*) FROM lobbies').fetchone()
             self.assertIsNotNone(row)
             self.assertEqual(row[0], len(config.lobbies))
+
+    def test_sqlite_generates_non_empty_per_account_seeds(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            database_path = f'{temp_directory}/opensnap.sqlite'
+            config = replace(
+                default_app_config(),
+                storage=StorageConfig(backend='sqlite', sqlite_path=database_path),
+            )
+            SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+
+            with sqlite3.connect(database_path) as connection:
+                rows = connection.execute('SELECT seed FROM users ORDER BY user_id').fetchall()
+
+            self.assertEqual(len(rows), len(config.users))
+            seeds = [str(row[0]) for row in rows]
+            self.assertTrue(all(seed for seed in seeds))
+            self.assertGreater(len(set(seeds)), 1)
 
 
 def _encode(message: SnapMessage) -> bytes:

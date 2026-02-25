@@ -41,6 +41,9 @@ class SessionStore(Protocol):
     def allocate_sequence(self, session_id: int, type_flags: int) -> int:
         """Allocate outbound sequence number."""
 
+    def accept_incoming(self, session_id: int, sequence_number: int) -> bool:
+        """Accept or reject incoming sequence number for a session."""
+
     def set_lobby(self, session_id: int, lobby_id: int) -> None:
         """Set lobby for session."""
 
@@ -49,6 +52,9 @@ class SessionStore(Protocol):
 
     def count_users_in_lobby(self, lobby_id: int) -> int:
         """Count users in lobby."""
+
+    def list_lobby_members(self, lobby_id: int) -> list[Session]:
+        """List lobby members."""
 
     def list_room_members(self, room_id: int) -> list[Session]:
         """List room members."""

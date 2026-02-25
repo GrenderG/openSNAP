@@ -1,6 +1,6 @@
 """SNAP bootstrap authentication handlers."""
 
-import hashlib
+from dataclasses import dataclass
 import socket
 import struct
 
@@ -35,7 +35,7 @@ class BootstrapAuthenticator:
 
         session = context.sessions.create_or_replace(message.endpoint, account)
         challenge_payload = _build_bootstrap_login_payload(
-            account_password=account.password,
+            magic_key=account.bootstrap_magic_key,
             seed=account.seed,
             server_secret=context.config.server.server_secret,
             server_port=context.config.server.port,
@@ -105,10 +105,8 @@ class BootstrapAuthenticator:
         if session is None:
             return []
 
-        # Captures place the team string at offset 0x128.
-        # TODO: Parse the remaining KICS payload fields once their meaning is confirmed.
-        team = get_c_string(message.payload, 0x128)
-        context.accounts.set_team(session.user_id, team)
+        parsed = _parse_kics_login_payload(message.payload)
+        context.accounts.set_team(session.user_id, parsed.team)
         payload = struct.pack('>3L', context.config.server.port, 0x01234567, session.session_id)
 
         return [
@@ -151,7 +149,7 @@ def _pad_block(payload: bytes, block_size: int) -> bytes:
 
 def _build_bootstrap_login_payload(
     *,
-    account_password: str,
+    magic_key: bytes,
     seed: str,
     server_secret: str,
     server_port: int,
@@ -161,12 +159,6 @@ def _build_bootstrap_login_payload(
 
     seed_bytes = seed.encode('utf-8')
     server_secret_bytes = server_secret.encode('utf-8')
-
-    # Key derivation uses SHA-1(password + seed).
-    digest = hashlib.sha1()
-    digest.update(account_password.encode('utf-8'))
-    digest.update(seed_bytes)
-    magic_key = digest.digest()
 
     packed_secret = struct.pack('128s', server_secret_bytes)
     magic = _encrypt_blowfish_ecb(magic_key, packed_secret)
@@ -220,3 +212,63 @@ def _build_login_fail_payload() -> bytes:
     """Build login failure payload."""
 
     return struct.pack('>2L', 0, 0x01)
+
+
+@dataclass(frozen=True, slots=True)
+class KicsLoginPayload:
+    """Structured view of observed `kkLoginToKICS` payload fields."""
+
+    client_ip: str
+    mtu_hint: int
+    client_flags: int
+    version_code: int
+    login: str
+    region_code: int
+    marker_bb: int
+    marker_dd: int
+    auth_blob: bytes
+    team: str
+
+
+def _parse_kics_login_payload(payload: bytes) -> KicsLoginPayload:
+    """Parse known `kkLoginToKICS` payload offsets from packet captures."""
+
+    return KicsLoginPayload(
+        client_ip=_read_ipv4(payload, 0),
+        mtu_hint=_read_u32(payload, 4),
+        client_flags=_read_u32(payload, 8),
+        version_code=_read_u32(payload, 12),
+        login=get_c_string(payload, 16).rstrip('\n'),
+        region_code=_read_u32(payload, 0x20),
+        marker_bb=_read_u32(payload, 0x24),
+        marker_dd=_read_u32(payload, 0x28),
+        auth_blob=_slice(payload, 0x80, 0x80),
+        team=get_c_string(payload, 0x128),
+    )
+
+
+def _read_u32(payload: bytes, offset: int) -> int:
+    """Read uint32 from payload offset with zero fallback."""
+
+    if offset + 4 > len(payload):
+        return 0
+    return struct.unpack_from('>L', payload, offset)[0]
+
+
+def _read_ipv4(payload: bytes, offset: int) -> str:
+    """Read IPv4 address from payload offset with loopback fallback."""
+
+    raw_ip = _read_u32(payload, offset)
+    try:
+        return socket.inet_ntoa(struct.pack('>L', raw_ip))
+    except OSError:
+        return '127.0.0.1'
+
+
+def _slice(payload: bytes, offset: int, length: int) -> bytes:
+    """Return bounded payload slice."""
+
+    if offset >= len(payload):
+        return b''
+    end = min(len(payload), offset + length)
+    return payload[offset:end]

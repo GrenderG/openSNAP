@@ -13,6 +13,12 @@ from opensnap.protocol.constants import CHANNEL_ROOM, FLAG_RESPONSE
 from opensnap.protocol.models import Endpoint, SnapMessage
 from opensnap.storage.factory import create_storage
 
+PRE_AUTH_COMMANDS = {
+    commands.CMD_LOGIN_CLIENT,
+    commands.CMD_BOOTSTRAP_LOGIN_SWAN_CHECK,
+    commands.CMD_LOGIN_TO_KICS,
+}
+
 
 @dataclass(slots=True)
 class EngineResult:
@@ -35,6 +41,7 @@ class SnapProtocolEngine:
         self._lobbies = storage.lobbies
         self._rooms = storage.rooms
         self._router = CommandRouter()
+        self._preauth_sequences: dict[Endpoint, int] = {}
 
         self._context = HandlerContext(
             config=config,
@@ -63,8 +70,9 @@ class SnapProtocolEngine:
             if message.command == commands.CMD_ACK and (message.type_flags & 0x6000) == 0x6000:
                 continue
 
-            # TODO: Introduce explicit pre-auth session scaffolding for bootstrap-only flows.
-            # TODO: Add duplicate/out-of-order sequence rejection per session.
+            if not self._accept_message_sequence(message):
+                continue
+
             try:
                 outbound.extend(self._router.dispatch(self._context, message))
             except Exception as exc:  # noqa: BLE001
@@ -84,6 +92,41 @@ class SnapProtocolEngine:
         self._router.register(commands.CMD_BOOTSTRAP_LOGIN_SWAN_CHECK, self._auth.handle_bootstrap_check)
         self._router.register(commands.CMD_LOGIN_TO_KICS, self._auth.handle_login_to_kics)
         self._router.register(commands.CMD_SEND_ECHO, self._handle_echo)
+
+    def _accept_message_sequence(self, message: SnapMessage) -> bool:
+        """Reject duplicate or out-of-order messages by sequence number."""
+
+        if message.command == commands.CMD_LOGIN_CLIENT:
+            # A fresh login request starts a new bootstrap flow for the endpoint.
+            if message.sequence_number == 0:
+                self._preauth_sequences[message.endpoint] = 0
+                return True
+            return self._accept_preauth_sequence(message.endpoint, message.sequence_number)
+
+        session = self._sessions.get(message.session_id)
+        if session is None:
+            session = self._sessions.get_by_endpoint(message.endpoint)
+
+        if session is not None:
+            if message.session_id != session.session_id:
+                message.session_id = session.session_id
+            self._preauth_sequences.pop(message.endpoint, None)
+            return self._sessions.accept_incoming(session.session_id, message.sequence_number)
+
+        if message.command in PRE_AUTH_COMMANDS:
+            return self._accept_preauth_sequence(message.endpoint, message.sequence_number)
+
+        return True
+
+    def _accept_preauth_sequence(self, endpoint: Endpoint, sequence_number: int) -> bool:
+        """Accept pre-auth sequence numbers for endpoint-scoped bootstrap flow."""
+
+        last = self._preauth_sequences.get(endpoint, -1)
+        if sequence_number <= last:
+            return False
+
+        self._preauth_sequences[endpoint] = sequence_number
+        return True
 
     def _handle_echo(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         """Echo packets receive an empty ACK-style response."""

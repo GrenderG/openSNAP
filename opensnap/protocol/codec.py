@@ -63,13 +63,7 @@ def decode_datagram(data: bytes, endpoint: Endpoint) -> list[SnapMessage]:
             size_word_override=size_word if type_flags & FLAG_MULTI else None,
         )
         messages.append(message)
-
-        if type_flags & FLAG_MULTI:
-            # Multi-message handling currently treats the packet as one logical unit.
-            # TODO: Decode and dispatch each embedded message entry independently.
-            offset = payload_limit
-        else:
-            offset = next_offset
+        offset = next_offset
 
     return messages
 

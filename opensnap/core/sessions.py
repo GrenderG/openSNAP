@@ -18,6 +18,7 @@ class Session:
     endpoint: Endpoint
     request_number: int = 0
     sequence_number: int = 0
+    last_incoming_sequence: int = -1
     lobby_id: int = 0
     room_id: int = 0
 
@@ -80,6 +81,19 @@ class SessionRegistry:
         session.sequence_number += 1
         return session.sequence_number
 
+    def accept_incoming(self, session_id: int, sequence_number: int) -> bool:
+        """Accept or reject an incoming sequence number."""
+
+        session = self._by_id.get(session_id)
+        if session is None:
+            return False
+
+        if sequence_number <= session.last_incoming_sequence:
+            return False
+
+        session.last_incoming_sequence = sequence_number
+        return True
+
     def set_lobby(self, session_id: int, lobby_id: int) -> None:
         """Set current lobby for a session."""
 
@@ -98,6 +112,11 @@ class SessionRegistry:
         """Count connected sessions currently in a lobby."""
 
         return sum(1 for session in self._by_id.values() if session.lobby_id == lobby_id)
+
+    def list_lobby_members(self, lobby_id: int) -> list[Session]:
+        """List sessions currently in a lobby."""
+
+        return [session for session in self._by_id.values() if session.lobby_id == lobby_id]
 
     def list_room_members(self, room_id: int) -> list[Session]:
         """List sessions currently in a room."""
@@ -119,5 +138,5 @@ def create_session_id(host: str, account: Account) -> int:
     digest = hashlib.md5()
     digest.update(host.encode('utf-8'))
     digest.update(account.username.encode('utf-8'))
-    digest.update(account.password.encode('utf-8'))
+    digest.update(account.session_material.encode('utf-8'))
     return int(digest.hexdigest()[:8], 16)
