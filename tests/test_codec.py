@@ -101,7 +101,9 @@ class CodecTests(unittest.TestCase):
         self.assertEqual(len(decoded), 2)
         self.assertEqual(decoded[0].command, 0x0F)
         self.assertEqual(decoded[0].payload, b'\x80\x02')
+        self.assertFalse(decoded[0].embedded_in_multi)
         self.assertEqual(decoded[1].command, 0x07)
+        self.assertTrue(decoded[1].embedded_in_multi)
 
 
 if __name__ == '__main__':

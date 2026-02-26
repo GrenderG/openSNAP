@@ -31,6 +31,7 @@ def decode_datagram(data: bytes, endpoint: Endpoint) -> list[SnapMessage]:
     offset = 0
     payload_limit = len(data) - FOOTER_SIZE
 
+    multi_command_seen = False
     while offset < payload_limit:
         if offset + HEADER_SIZE > payload_limit:
             raise PacketDecodeError('Message header crosses datagram boundary.')
@@ -61,6 +62,7 @@ def decode_datagram(data: bytes, endpoint: Endpoint) -> list[SnapMessage]:
             acknowledge_number=ack,
             payload=payload,
             size_word_override=size_word if type_flags & FLAG_MULTI else None,
+            embedded_in_multi=multi_command_seen,
         )
         messages.append(message)
 
@@ -71,6 +73,8 @@ def decode_datagram(data: bytes, endpoint: Endpoint) -> list[SnapMessage]:
         #   that must be dispatched.
         # - other observed multi commands should keep snapsi-compatible "first entry only"
         #   behavior to avoid over-dispatching embedded query entries.
+        if type_flags & FLAG_MULTI:
+            multi_command_seen = True
         if (type_flags & FLAG_MULTI) and command != 0x0F:
             break
 

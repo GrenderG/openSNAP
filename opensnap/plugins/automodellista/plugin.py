@@ -12,7 +12,6 @@ from opensnap.protocol.fields import get_c_string, get_u16, get_u32
 from opensnap.protocol.models import SnapMessage
 
 MAX_ROOMS_PER_LOBBY = 50
-ROOM_JOIN_CALLBACK_REPEAT = 2
 _LOGGER = logging.getLogger('opensnap.plugins.automodellista')
 # Binary-verified attribute selector used by kkQueryLobbyAttribute/kkQueryGameRoomAttribute:
 # SLUS_204.98 cpnGetJoinUserLobby/cpnGetJoinUserRoom load 0x55534552 ("USER").
@@ -242,7 +241,27 @@ class AutoModellistaPlugin:
         if (message.type_flags & 0x3000) == CHANNEL_ROOM:
             room_id = get_u32(message.payload, 0)
             _prune_stale_room_members(context, room_id)
-            existing_members = context.sessions.list_room_members(room_id)
+            room = context.rooms.get(room_id)
+
+            # Reliable join retransmits are expected on packet loss.
+            # If the client is already in this room, treat as idempotent success
+            # and avoid replaying host/join callbacks that can desynchronize state.
+            if room is not None and session.room_id == room_id and session.session_id in room.members:
+                payload = struct.pack('>2L', 0x06, 0)
+                return [
+                    context.reply(
+                        message,
+                        type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                        command=commands.CMD_RESULT_WRAPPER,
+                        payload=payload,
+                        session_id=session.session_id,
+                    )
+                ]
+
+            existing_members = [
+                member for member in context.sessions.list_room_members(room_id)
+                if member.session_id != session.session_id
+            ]
             success = context.rooms.join(room_id, session.session_id)
             if success:
                 context.sessions.set_room(session.session_id, room_id)
@@ -275,9 +294,20 @@ class AutoModellistaPlugin:
         acknowledge_number = _ack_for_request(message, session)
 
         if (message.type_flags & 0x3000) == CHANNEL_LOBBY:
+            callbacks: list[SnapMessage] = []
             if session.room_id > 0:
-                context.rooms.leave(session.room_id, session.session_id)
+                room_id = session.room_id
+                recipients = [
+                    member for member in context.sessions.list_room_members(room_id)
+                    if member.session_id != session.session_id
+                ]
+                context.rooms.leave(room_id, session.session_id)
                 context.sessions.set_room(session.session_id, 0)
+                callbacks = _build_room_leave_callbacks(
+                    context=context,
+                    leaving_session_id=session.session_id,
+                    recipients=recipients,
+                )
             context.sessions.set_lobby(session.session_id, 0)
             payload = struct.pack('>2L', 0x07, 0)
             return [
@@ -289,11 +319,23 @@ class AutoModellistaPlugin:
                     session_id=session.session_id,
                     acknowledge_number=acknowledge_number,
                 )
-            ]
+            ] + callbacks
 
         if (message.type_flags & 0x3000) == CHANNEL_ROOM:
-            context.rooms.leave(session.room_id, session.session_id)
-            context.sessions.set_room(session.session_id, 0)
+            callbacks: list[SnapMessage] = []
+            room_id = session.room_id
+            if room_id > 0:
+                recipients = [
+                    member for member in context.sessions.list_room_members(room_id)
+                    if member.session_id != session.session_id
+                ]
+                context.rooms.leave(room_id, session.session_id)
+                context.sessions.set_room(session.session_id, 0)
+                callbacks = _build_room_leave_callbacks(
+                    context=context,
+                    leaving_session_id=session.session_id,
+                    recipients=recipients,
+                )
             payload = struct.pack('>2L', 0x07, 0)
             return [
                 context.reply(
@@ -304,7 +346,7 @@ class AutoModellistaPlugin:
                     session_id=session.session_id,
                     acknowledge_number=acknowledge_number,
                 )
-            ]
+            ] + callbacks
 
         return []
 
@@ -352,7 +394,12 @@ class AutoModellistaPlugin:
                 session_id=session.session_id,
             )
             chat_payload = _build_chat_echo_payload(session, message.payload)
-            chats = _broadcast_lobby_chat(context, session.lobby_id, chat_payload)
+            chats = _broadcast_lobby_chat(
+                context,
+                session.lobby_id,
+                chat_payload,
+                exclude_session_id=session.session_id,
+            )
             return [ack_to_sender] + chats
 
         if (message.type_flags & 0x3400) == 0x2400:
@@ -363,7 +410,12 @@ class AutoModellistaPlugin:
                 session_id=session.session_id,
             )
             chat_payload = _build_chat_echo_payload(session, message.payload)
-            chats = _broadcast_room_chat(context, session.room_id, chat_payload)
+            chats = _broadcast_room_chat(
+                context,
+                session.room_id,
+                chat_payload,
+                exclude_session_id=session.session_id,
+            )
             return [ack_to_sender] + chats
 
         if message.type_flags & CHANNEL_ROOM:
@@ -587,7 +639,12 @@ def _build_chat_echo_payload(session: Session, payload: bytes) -> bytes:
     )
 
 
-def _broadcast_lobby_chat(context: HandlerContext, lobby_id: int, payload: bytes) -> list[SnapMessage]:
+def _broadcast_lobby_chat(
+    context: HandlerContext,
+    lobby_id: int,
+    payload: bytes,
+    exclude_session_id: int | None = None,
+) -> list[SnapMessage]:
     """Create one lobby chat callback packet per lobby member."""
 
     if lobby_id <= 0:
@@ -595,6 +652,8 @@ def _broadcast_lobby_chat(context: HandlerContext, lobby_id: int, payload: bytes
 
     messages: list[SnapMessage] = []
     for member in context.sessions.list_lobby_members(lobby_id):
+        if exclude_session_id is not None and member.session_id == exclude_session_id:
+            continue
         messages.append(
             context.direct(
                 endpoint=member.endpoint,
@@ -608,7 +667,12 @@ def _broadcast_lobby_chat(context: HandlerContext, lobby_id: int, payload: bytes
     return messages
 
 
-def _broadcast_room_chat(context: HandlerContext, room_id: int, payload: bytes) -> list[SnapMessage]:
+def _broadcast_room_chat(
+    context: HandlerContext,
+    room_id: int,
+    payload: bytes,
+    exclude_session_id: int | None = None,
+) -> list[SnapMessage]:
     """Create one room chat callback packet per room member."""
 
     if room_id <= 0:
@@ -616,6 +680,8 @@ def _broadcast_room_chat(context: HandlerContext, room_id: int, payload: bytes) 
 
     messages: list[SnapMessage] = []
     for member in context.sessions.list_room_members(room_id):
+        if exclude_session_id is not None and member.session_id == exclude_session_id:
+            continue
         messages.append(
             context.direct(
                 endpoint=member.endpoint,
@@ -684,8 +750,7 @@ def _build_room_join_callbacks(
 ) -> list[SnapMessage]:
     """Notify existing room members that a player joined.
 
-    This callback uses a non-reliable channel in legacy traces. Sending one extra
-    copy reduces first-join stalls caused by occasional packet loss on real hardware.
+    Keep one callback per recipient and preserve legacy callback channel flags.
     """
 
     account = context.accounts.get_by_id(joining_session.user_id)
@@ -700,17 +765,44 @@ def _build_room_join_callbacks(
 
     messages: list[SnapMessage] = []
     for member in recipients:
-        for _ in range(ROOM_JOIN_CALLBACK_REPEAT):
-            messages.append(
-                context.direct(
-                    endpoint=member.endpoint,
-                    session_id=member.session_id,
-                    type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
-                    command=commands.CMD_JOIN,
-                    payload=payload,
-                    acknowledge_number=_ack_for_session(member),
-                )
+        if member.session_id == joining_session.session_id:
+            continue
+        messages.append(
+            context.direct(
+                endpoint=member.endpoint,
+                session_id=member.session_id,
+                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                command=commands.CMD_JOIN,
+                payload=payload,
+                acknowledge_number=_ack_for_session(member),
             )
+        )
+    return messages
+
+
+def _build_room_leave_callbacks(
+    *,
+    context: HandlerContext,
+    leaving_session_id: int,
+    recipients: list[Session],
+) -> list[SnapMessage]:
+    """Notify remaining room members that one peer left the room."""
+
+    payload = struct.pack('>L', leaving_session_id)
+    messages: list[SnapMessage] = []
+    for member in recipients:
+        if member.session_id == leaving_session_id:
+            continue
+        messages.append(
+            context.direct(
+                endpoint=member.endpoint,
+                session_id=member.session_id,
+                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                command=commands.CMD_LEAVE,
+                payload=payload,
+                acknowledge_number=_ack_for_session(member),
+            )
+        )
     return messages
 
 

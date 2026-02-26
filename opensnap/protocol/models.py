@@ -24,3 +24,4 @@ class SnapMessage:
     acknowledge_number: int
     payload: bytes = b''
     size_word_override: int | None = None
+    embedded_in_multi: bool = False

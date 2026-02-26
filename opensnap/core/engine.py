@@ -202,6 +202,11 @@ class SnapProtocolEngine:
 
         if (message.type_flags & FLAG_RELIABLE) == 0:
             return False
+        # Embedded follow-up messages from multi datagrams can legally carry
+        # sequence 0 while the outer reliable entry carries the real sequence.
+        # Treating those as duplicates drops valid relays in race-loading flow.
+        if message.embedded_in_multi and message.sequence_number == 0:
+            return False
         return message.command in {commands.CMD_SEND, commands.CMD_SEND_TARGET}
 
     def _build_duplicate_reliable_send_ack(self, message: SnapMessage) -> SnapMessage | None:
