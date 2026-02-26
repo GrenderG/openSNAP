@@ -48,6 +48,7 @@ class WebRouteTests(unittest.TestCase):
         response = self._client.get('/amweb/create_id.html?username=alpha_9&password=abc123')
         self.assertEqual(response.status_code, 200)
         text = response.get_data(as_text=True)
+        self.assertIn('Profile successfully retrieved.', text)
         self.assertIn('<!--INPUT-IDS-->alpha_9', text)
 
     def test_query_signup_route_supports_post(self) -> None:
@@ -125,7 +126,7 @@ class WebRouteTests(unittest.TestCase):
                 )
             )
 
-    def test_monsterhunter_web_plugin_reuses_legacy_signup_routes(self) -> None:
+    def test_monsterhunter_web_plugin_registers_mh_specific_paths(self) -> None:
         app = create_web_app(
             WebServerConfig(
                 host='127.0.0.1',
@@ -136,9 +137,17 @@ class WebRouteTests(unittest.TestCase):
         app.testing = True
         client = app.test_client()
 
-        response = client.get('/amweb/index.jsp')
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('openSNAP signup service', response.get_data(as_text=True))
+        for path in ('/mhweb/index.jsp', '/mheuweb/index.jsp', '/reweb/index.jsp'):
+            response = client.get(path)
+            self.assertEqual(response.status_code, 200)
+            self.assertIn('openSNAP signup service', response.get_data(as_text=True))
+
+        create_response = client.get('/mheuweb/create_id_hunter.html?password=abc123')
+        self.assertEqual(create_response.status_code, 200)
+        self.assertIn('<!--INPUT-IDS-->hunter', create_response.get_data(as_text=True))
+
+        am_response = client.get('/amweb/index.jsp')
+        self.assertEqual(am_response.status_code, 404)
 
     def test_existing_user_with_wrong_password_returns_error(self) -> None:
         response = self._client.post('/amweb/create_id.html', data={'username': 'test', 'password': 'wrong'})

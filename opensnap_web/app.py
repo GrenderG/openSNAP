@@ -41,7 +41,8 @@ def _html_response(content: str) -> Response:
 def _dump_request(title: str) -> None:
     """Print detailed request diagnostics for reverse-engineering."""
 
-    raw_body = request.get_data(cache=False)
+    # Keep cached body so Flask can still populate request.form for tests/logging.
+    raw_body = request.get_data(cache=True)
     body_preview = raw_body.decode('utf-8', errors='replace')
     headers = {key: value for key, value in request.headers.items()}
     args = {key: request.args.getlist(key) for key in request.args}

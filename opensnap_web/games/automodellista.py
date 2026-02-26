@@ -1,6 +1,7 @@
 """Auto Modellista web routes."""
 
 import re
+from collections.abc import Callable
 
 from flask import Flask, Response, request
 
@@ -48,6 +49,112 @@ AM_TABOO_PAGE = '<html><body>am_taboo</body></html>\n'
 MAX_USERNAME_LENGTH = 10
 MAX_PASSWORD_LENGTH = 8
 USERNAME_PATTERN = re.compile(r'^[A-Za-z0-9_.-]{1,10}$')
+SIGNUP_INDEX_PAGE = (
+    '<html>\n'
+    '<body>\n'
+    'openSNAP signup service<br>\n'
+    '<br>\n'
+    'Choose the username to save on your memory card.<br>\n'
+    '<br>\n'
+    '<form action="create_id.html" method="post">\n'
+    'Username: '
+    f'<input type="text" name="username" size="{MAX_USERNAME_LENGTH}" maxlength="{MAX_USERNAME_LENGTH}">\n'
+    '<br>\n'
+    'Password: '
+    f'<input type="password" name="password" size="{MAX_PASSWORD_LENGTH}" maxlength="{MAX_PASSWORD_LENGTH}">\n'
+    '<br>\n'
+    '<input type="submit" value="Create/Login ID">\n'
+    '</form>\n'
+    '</body>\n'
+    '</html>\n'
+)
+
+
+def register_signup_routes(
+    app: Flask,
+    *,
+    tools: WebRouteTools,
+    signup_service: SqliteSignupService,
+    route_prefixes: tuple[str, ...],
+    include_root_aliases: bool,
+) -> None:
+    """Register SNAP signup/create-id routes for one or more path prefixes."""
+
+    normalized_prefixes = tuple(prefix.strip('/') for prefix in route_prefixes if prefix.strip('/'))
+    if not normalized_prefixes:
+        return
+
+    if include_root_aliases:
+        app.add_url_rule(
+            '/',
+            endpoint='signup_root_index',
+            methods=['GET'],
+            view_func=_make_signup_index_view(tools),
+        )
+        app.add_url_rule(
+            '/login.php',
+            endpoint='signup_login_index',
+            methods=['GET'],
+            view_func=_make_signup_index_view(tools),
+        )
+
+    for prefix in normalized_prefixes:
+        app.add_url_rule(
+            f'/{prefix}/index.jsp',
+            endpoint=f'signup_{prefix}_index',
+            methods=['GET'],
+            view_func=_make_signup_index_view(tools),
+        )
+        app.add_url_rule(
+            f'/{prefix}/create_id.html',
+            endpoint=f'signup_{prefix}_create_id_query',
+            methods=['GET', 'POST'],
+            view_func=_make_signup_query_view(signup_service),
+        )
+        app.add_url_rule(
+            f'/{prefix}/create_id_<username>.html',
+            endpoint=f'signup_{prefix}_create_id_dynamic',
+            methods=['GET'],
+            view_func=_make_signup_dynamic_view(signup_service),
+        )
+
+
+def _make_signup_index_view(tools: WebRouteTools) -> Callable[[], Response]:
+    """Build one index handler for legacy signup pages."""
+
+    def _signup_index() -> Response:
+        return tools.html_response(SIGNUP_INDEX_PAGE)
+
+    return _signup_index
+
+
+def _make_signup_query_view(signup_service: SqliteSignupService) -> Callable[[], Response]:
+    """Build query/create-id handler using username from request values."""
+
+    def _signup_query() -> Response:
+        username = (request.values.get('username') or '').strip()
+        password = (request.values.get('password') or '').strip()
+        return _build_signup_response(
+            username=username,
+            password=password,
+            signup_service=signup_service,
+        )
+
+    return _signup_query
+
+
+def _make_signup_dynamic_view(signup_service: SqliteSignupService) -> Callable[[str], Response]:
+    """Build dynamic create-id handler using username from route path."""
+
+    def _signup_dynamic(username: str) -> Response:
+        password = (request.values.get('password') or '').strip()
+        return _build_signup_response(
+            username=username.strip(),
+            password=password,
+            signup_service=signup_service,
+        )
+
+    return _signup_dynamic
 
 
 class AutoModellistaWebModule:
@@ -60,52 +167,13 @@ class AutoModellistaWebModule:
 
         del config
         signup_service = SqliteSignupService()
-
-        @app.get('/')
-        @app.get('/login.php')
-        @app.get('/amweb/index.jsp')
-        def amweb_index() -> Response:
-            page = (
-                '<html>\n'
-                '<body>\n'
-                'openSNAP signup service<br>\n'
-                '<br>\n'
-                'Choose the username to save on your memory card.<br>\n'
-                '<br>\n'
-                '<form action="create_id.html" method="post">\n'
-                'Username: '
-                f'<input type="text" name="username" size="{MAX_USERNAME_LENGTH}" maxlength="{MAX_USERNAME_LENGTH}">\n'
-                '<br>\n'
-                'Password: '
-                f'<input type="password" name="password" size="{MAX_PASSWORD_LENGTH}" maxlength="{MAX_PASSWORD_LENGTH}">\n'
-                '<br>\n'
-                '<input type="submit" value="Create/Login ID">\n'
-                '</form>\n'
-                '<br>\n'
-                'After creation of ID, press Select and then End Browser.\n'
-                '</body>\n'
-                '</html>\n'
-            )
-            return tools.html_response(page)
-
-        @app.route('/amweb/create_id.html', methods=['GET', 'POST'])
-        def amweb_create_id_query() -> Response:
-            username = (request.values.get('username') or '').strip()
-            password = (request.values.get('password') or '').strip()
-            return _build_signup_response(
-                username=username,
-                password=password,
-                signup_service=signup_service,
-            )
-
-        @app.get('/amweb/create_id_<username>.html')
-        def amweb_create_id(username: str) -> Response:
-            password = (request.values.get('password') or '').strip()
-            return _build_signup_response(
-                username=username.strip(),
-                password=password,
-                signup_service=signup_service,
-            )
+        register_signup_routes(
+            app,
+            tools=tools,
+            signup_service=signup_service,
+            route_prefixes=('amweb',),
+            include_root_aliases=True,
+        )
 
         @app.get('/amusa/am_info.html')
         def amusa_info() -> Response:
@@ -172,6 +240,12 @@ def _build_signup_payload(result: SignupResult) -> str:
     """Build successful COMP-SIGNUP payload."""
 
     return (
+        '<html>\n'
+        '<body>\n'
+        'Profile successfully retrieved.<br>\n'
+        'Press the Select button and then "End Browser" to save it to the memory card.\n'
+        '</body>\n'
+        '</html>\n'
         '<!--COMP-SIGNUP-->\n'
         f'<!--INPUT-IDS-->{result.username}\n'
     )
