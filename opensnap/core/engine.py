@@ -10,7 +10,7 @@ from opensnap.core.router import CommandRouter
 from opensnap.plugins.base import GamePlugin
 from opensnap.protocol import commands
 from opensnap.protocol.codec import PacketDecodeError, decode_datagram
-from opensnap.protocol.constants import CHANNEL_ROOM, FLAG_RESPONSE
+from opensnap.protocol.constants import CHANNEL_LOBBY, CHANNEL_ROOM, FLAG_RELIABLE, FLAG_RESPONSE
 from opensnap.protocol.models import Endpoint, SnapMessage
 from opensnap.storage.factory import create_storage
 
@@ -98,7 +98,23 @@ class SnapProtocolEngine:
             self._normalize_session_for_message(message)
             # Track highest inbound sequence per session so direct fanout ACKs can
             # mirror client-side flow control state.
-            self._sessions.accept_incoming(message.session_id, message.sequence_number)
+            accepted = self._sessions.accept_incoming(message.session_id, message.sequence_number)
+            if not accepted and self._is_duplicate_reliable_send(message):
+                ack = self._build_duplicate_reliable_send_ack(message)
+                if ack is not None:
+                    outbound.append(ack)
+                self._logger.debug(
+                    (
+                        'Suppressing duplicate reliable command 0x%02x from %s:%d '
+                        '(sess=0x%08x seq=%d); returning ACK only.'
+                    ),
+                    message.command,
+                    message.endpoint.host,
+                    message.endpoint.port,
+                    message.session_id,
+                    message.sequence_number,
+                )
+                continue
 
             try:
                 produced = self._router.dispatch(self._context, message)
@@ -179,3 +195,38 @@ class SnapProtocolEngine:
 
         del context, message
         return []
+
+    @staticmethod
+    def _is_duplicate_reliable_send(message: SnapMessage) -> bool:
+        """Check whether this command should be ACK-only on duplicate sequence."""
+
+        if (message.type_flags & FLAG_RELIABLE) == 0:
+            return False
+        return message.command in {commands.CMD_SEND, commands.CMD_SEND_TARGET}
+
+    def _build_duplicate_reliable_send_ack(self, message: SnapMessage) -> SnapMessage | None:
+        """Build ACK for duplicate reliable send commands without re-dispatch."""
+
+        if message.command == commands.CMD_SEND_TARGET:
+            ack_type_flags = CHANNEL_ROOM | FLAG_RESPONSE
+        elif message.command == commands.CMD_SEND:
+            if (message.type_flags & 0x3400) == 0x1400:
+                ack_type_flags = CHANNEL_LOBBY | FLAG_RESPONSE
+            elif (message.type_flags & 0x3400) == 0x2400:
+                ack_type_flags = CHANNEL_ROOM | FLAG_RESPONSE
+            elif message.type_flags & CHANNEL_ROOM:
+                ack_type_flags = CHANNEL_ROOM | FLAG_RESPONSE
+            else:
+                channel = message.type_flags & 0x3000
+                if channel == 0:
+                    channel = CHANNEL_ROOM
+                ack_type_flags = channel | FLAG_RESPONSE
+        else:
+            return None
+
+        return self._context.reply(
+            message,
+            type_flags=ack_type_flags,
+            command=commands.CMD_ACK,
+            session_id=message.session_id,
+        )
