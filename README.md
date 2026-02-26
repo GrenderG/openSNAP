@@ -89,12 +89,6 @@ cp .env.dist .env
 Edit `.env` as needed for your machine. Local `.env` files are gitignored so local changes are not committed.
 If `.env` is missing, openSNAP automatically creates it from `.env.dist` on first run.
 
-5. Verify imports.
-
-```bash
-python3 -c "import cryptography; import opensnap"
-```
-
 ## Run openSNAP (UDP)
 
 Start the SNAP UDP service:
@@ -106,7 +100,7 @@ python3 run.py udp
 Expected startup output includes:
 
 ```text
-openSNAP listening on 0.0.0.0:9090 using plugin automodellista.
+openSNAP listening on 0.0.0.0:9090 using plugin <game-plugin>.
 ```
 
 Stop the server with `Ctrl+C`.
@@ -118,8 +112,9 @@ Stop the server with `Ctrl+C`.
 Environment variables for the UDP server:
 
 - `OPENSNAP_HOST`: bind host (default: `0.0.0.0`).
+- `OPENSNAP_ADVERTISE_HOST`: optional IPv4 host advertised to clients in bootstrap login-success packets. If empty, openSNAP derives it from `OPENSNAP_HOST` and client routing.
 - `OPENSNAP_PORT`: bind port (default: `9090`).
-- `OPENSNAP_GAME_PLUGIN`: game plugin name (default: `automodellista`).
+- `OPENSNAP_GAME_PLUGIN`: game plugin name (default: built-in plugin selection).
 - `OPENSNAP_SERVER_SECRET`: bootstrap server secret string.
 - `OPENSNAP_BOOTSTRAP_KEY`: bootstrap encryption key string (default: `SNAP-SWAN`).
 - `OPENSNAP_TICK_INTERVAL_SECONDS`: periodic tick interval (default: `10.0`).
@@ -137,22 +132,12 @@ Run web and UDP services with the same `OPENSNAP_SQLITE_PATH` so account creatio
 Expected startup output includes:
 
 ```text
-openSNAP web listening on 0.0.0.0:80 using plugin automodellista.
+openSNAP web listening on 0.0.0.0:80 using plugin <web-game-module>.
 ```
 
-The web service includes routes based on `snapsi/www`:
+The web service includes plugin-defined routes based on legacy SNAP web flows.
 
-- `/login.php`
-- `/amweb/index.jsp`
-- `/amweb/create_id.html` (`username` and `password` parameters)
-- `/amweb/create_id_<username>.html` (password can be provided as query/body parameter)
-- `/amusa/am_info.html`
-- `/amusa/am_rule.html`
-- `/amusa/am_rank.html`
-- `/amusa/am_taboo.html`
-- `/amusa/am_up.php`
-
-The signup flow is user-driven. `/amweb/index.jsp` provides a form where the player chooses the username to encode in the signup payload.
+The signup flow is user-driven. The plugin-provided signup page allows the player to choose the username encoded in the signup payload.
 Usernames are limited to 10 characters and accepted characters are `A-Z`, `a-z`, `0-9`, `_`, `.`, and `-`.
 Passwords are required and limited to 8 characters.
 The form uses simple legacy-compatible HTML input controls for old console browsers.
@@ -161,6 +146,19 @@ The page acts as create/login: missing users are created in SQLite, existing use
 For reverse-engineering support, unknown routes trigger a full terminal request dump (method, URL, query, headers, form/body, and source address).
 
 Web routes are modular by game plugin. Each game can implement its own route set in `opensnap_web/games`.
+
+## Run DNS Service
+
+Start the standalone DNS service (separate process):
+
+```bash
+python3 run.py dns
+```
+
+The DNS service provides static A-record answers from `OPENSNAP_DNS_ENTRIES`.
+By default, `OPENSNAP_DNS_ENTRIES` includes entries required by bundled game modules.
+
+The value `@default` in DNS entries resolves to `OPENSNAP_DNS_DEFAULT_IP` when set, otherwise `OPENSNAP_ADVERTISE_HOST`, then `OPENSNAP_HOST` (if it is a concrete IPv4), then `127.0.0.1`.
 
 ## Storage Configuration
 
@@ -186,12 +184,12 @@ Game behavior is loaded through a plugin selected in server config.
 
 Environment variable:
 
-- `OPENSNAP_GAME_PLUGIN`: plugin name to load (default: `automodellista`).
+- `OPENSNAP_GAME_PLUGIN`: plugin name to load.
 
 Run with explicit plugin selection:
 
 ```bash
-OPENSNAP_GAME_PLUGIN=automodellista python3 run.py udp
+OPENSNAP_GAME_PLUGIN=<plugin_name> python3 run.py udp
 ```
 
 ## Web Service Configuration
@@ -200,13 +198,42 @@ Environment variables for the Flask service:
 
 - `OPENSNAP_WEB_HOST`: bind host (default: `0.0.0.0`).
 - `OPENSNAP_WEB_PORT`: bind port (default: `80`).
-- `OPENSNAP_WEB_GAME_PLUGIN`: web game module name (default: value of `OPENSNAP_GAME_PLUGIN`, otherwise `automodellista`).
+- `OPENSNAP_WEB_GAME_PLUGIN`: web game module name (default: value of `OPENSNAP_GAME_PLUGIN`).
 
 Example:
 
 ```bash
 OPENSNAP_WEB_PORT=80 python3 run.py web
 ```
+
+## DNS Service Configuration
+
+Environment variables for the DNS service:
+
+- `OPENSNAP_DNS_HOST`: bind host (default: `0.0.0.0`).
+- `OPENSNAP_DNS_PORT`: bind port (default: `53`).
+- `OPENSNAP_DNS_TTL`: TTL for answered A records (default: `60`).
+- `OPENSNAP_DNS_DEFAULT_IP`: optional fallback IPv4 for default module records.
+- `OPENSNAP_DNS_ENTRIES`: static DNS entries as a dict (JSON object or Python dict literal), where keys are hostnames and values are IPv4 strings or `@default`.
+  Wildcards are supported in keys (for example `*.games.sega.net`).
+  The `.env` parser supports multi-line dict blocks so you can group entries per game and add comments.
+
+Example:
+
+```dotenv
+OPENSNAP_DNS_ENTRIES={
+  # Game A
+  "bootstrap.game-a.example.net": "@default",
+  "gameweb.game-a.example.net": "@default",
+  "regweb.game-a.example.net": "@default"
+}
+```
+
+Binding to port `53` needs elevated permissions on Linux (for example with `sudo`).
+This restriction does not apply on Windows.
+macOS behavior is environment-dependent.
+
+For domains not defined by static entries, openSNAP falls back to the host system DNS resolver.
 
 ## Logging Configuration
 
@@ -264,6 +291,7 @@ Note: replay regression tests use optional local packet-capture logs. If those l
 - `opensnap/storage`: backend factory and storage implementations.
 - `opensnap/plugins`: extension points for game-specific behavior.
 - `opensnap_web`: separate web bootstrap/login service package.
+- `opensnap_dns`: separate standalone DNS service package.
 - `tests`: unit and regression tests.
 
 ## Acknowledgements

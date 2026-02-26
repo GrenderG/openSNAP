@@ -40,8 +40,39 @@ class CodecTests(unittest.TestCase):
         with self.assertRaises(PacketDecodeError):
             decode_datagram(b'\x00' * 20, endpoint)
 
-    def test_decode_multi_message_datagram_keeps_first_embedded_entry_only(self) -> None:
+    def test_decode_multi_query_datagram_keeps_first_embedded_entry_only(self) -> None:
         endpoint = Endpoint(host='127.0.0.1', port=2222)
+        first = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_ROOM | FLAG_MULTI,
+            packet_number=0,
+            command=0x09,
+            session_id=0x12345678,
+            sequence_number=7,
+            acknowledge_number=0,
+            payload=b'\x80\x02',
+            size_word_override=(CHANNEL_ROOM | FLAG_MULTI) | 0x0012,
+        )
+        second = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_ROOM,
+            packet_number=0,
+            command=0x07,
+            session_id=0x12345678,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=b'',
+        )
+
+        encoded = encode_messages([first, second])
+        decoded = decode_datagram(encoded, endpoint)
+
+        self.assertEqual(len(decoded), 1)
+        self.assertEqual(decoded[0].command, 0x09)
+        self.assertEqual(decoded[0].payload, b'\x80\x02')
+
+    def test_decode_multi_send_datagram_keeps_embedded_followup(self) -> None:
+        endpoint = Endpoint(host='127.0.0.1', port=2223)
         first = SnapMessage(
             endpoint=endpoint,
             type_flags=CHANNEL_ROOM | FLAG_MULTI,
@@ -67,9 +98,10 @@ class CodecTests(unittest.TestCase):
         encoded = encode_messages([first, second])
         decoded = decode_datagram(encoded, endpoint)
 
-        self.assertEqual(len(decoded), 1)
+        self.assertEqual(len(decoded), 2)
         self.assertEqual(decoded[0].command, 0x0F)
         self.assertEqual(decoded[0].payload, b'\x80\x02')
+        self.assertEqual(decoded[1].command, 0x07)
 
 
 if __name__ == '__main__':

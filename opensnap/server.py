@@ -1,6 +1,4 @@
 """UDP transport server for openSNAP."""
-
-from collections import defaultdict
 import logging
 import socket
 import time
@@ -26,8 +24,24 @@ class SnapUdpServer:
     def run(self) -> None:
         """Run UDP loop until stopped."""
 
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
-            udp_socket.bind((self._config.host, self._config.port))
+        try:
+            udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        except OSError as exc:
+            self._logger.error('Failed to create UDP socket: %s', exc)
+            raise
+
+        with udp_socket:
+            self._enable_reuse_address(udp_socket)
+            try:
+                udp_socket.bind((self._config.host, self._config.port))
+            except OSError as exc:
+                self._logger.error(
+                    'Failed to bind UDP socket on %s:%d: %s',
+                    self._config.host,
+                    self._config.port,
+                    exc,
+                )
+                raise
             self._logger.info(
                 'UDP socket bound at %s:%d.',
                 self._config.host,
@@ -76,33 +90,42 @@ class SnapUdpServer:
                     self._send_messages(udp_socket, tick_messages)
                     next_tick = now + self._config.tick_interval_seconds
 
+    def _enable_reuse_address(self, udp_socket: socket.socket) -> None:
+        """Enable address reuse to reduce restart/bind failures across platforms."""
+
+        try:
+            udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except OSError as exc:
+            self._logger.warning('Failed to enable SO_REUSEADDR on UDP socket: %s', exc)
+
     def stop(self) -> None:
         """Request graceful loop stop."""
 
         self._stopped = True
 
     def _send_messages(self, udp_socket: socket.socket, messages: list[SnapMessage]) -> None:
-        """Encode and send grouped outbound messages."""
+        """Encode and send outbound messages.
 
-        grouped: dict[Endpoint, list[SnapMessage]] = defaultdict(list)
+        Send each SNAP message as one UDP datagram. Some clients appear to parse only
+        one top-level SNAP entry per UDP packet for certain flows (notably room-exit),
+        so bundling multiple responses into one datagram can cause retries/timeouts.
+        """
+
         for message in messages:
-            grouped[message.endpoint].append(message)
-
-        for endpoint, endpoint_messages in grouped.items():
-            datagram = encode_messages(endpoint_messages)
-            commands = ', '.join(f'0x{message.command:02x}' for message in endpoint_messages)
+            datagram = encode_messages([message])
+            endpoint = message.endpoint
             self._logger.info(
                 'Sending datagram to %s:%d (%d byte(s), %d message(s)).',
                 endpoint.host,
                 endpoint.port,
                 len(datagram),
-                len(endpoint_messages),
+                1,
             )
             self._logger.debug(
-                'Outbound commands to %s:%d: %s.',
+                'Outbound commands to %s:%d: 0x%02x.',
                 endpoint.host,
                 endpoint.port,
-                commands,
+                message.command,
             )
             self._logger.debug(
                 'Outbound hexdump to %s:%d\n%s',
@@ -125,7 +148,7 @@ def main() -> None:
     engine = SnapProtocolEngine(config=config, plugin=plugin)
     server = SnapUdpServer(config=config.server, engine=engine)
     logger.info(
-        'openSNAP listening on %s:%d using plugin %s.',
+        'Starting openSNAP UDP on %s:%d using plugin %s.',
         config.server.host,
         config.server.port,
         plugin.name,
@@ -134,6 +157,8 @@ def main() -> None:
         server.run()
     except KeyboardInterrupt:
         logger.info('Received keyboard interrupt, shutting down UDP service.')
+    except OSError:
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':

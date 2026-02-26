@@ -33,6 +33,33 @@ class EnvLoaderTests(unittest.TestCase):
                 self.assertEqual(os.getenv('BETA'), 'two words')
                 self.assertEqual(os.getenv('GAMMA'), 'three')
 
+    def test_load_env_file_supports_multiline_dict_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / '.env'
+            env_path.write_text(
+                '\n'.join(
+                    (
+                        'OPENSNAP_DNS_ENTRIES={',
+                        '  # Auto Modellista',
+                        '  "bootstrap.capcom-am.games.sega.net": "@default",',
+                        '  "gameweb.capcom-am.games.sega.net": "@default",',
+                        '  "regweb.capcom-am.games.sega.net": "@default"',
+                        '}',
+                    )
+                ),
+                encoding='utf-8',
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                load_env_file(str(env_path))
+                value = os.getenv('OPENSNAP_DNS_ENTRIES')
+
+        self.assertIsNotNone(value)
+        assert value is not None
+        self.assertIn('bootstrap.capcom-am.games.sega.net', value)
+        self.assertIn('regweb.capcom-am.games.sega.net', value)
+        self.assertNotIn('Auto Modellista', value)
+
     def test_missing_env_file_is_ignored(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             load_env_file('/tmp/opensnap-does-not-exist.env')
@@ -83,6 +110,22 @@ class EnvLoaderTests(unittest.TestCase):
                 with patch.dict(os.environ, {}, clear=True):
                     load_env_file()
                     self.assertEqual(os.getenv('SAMPLE_KEY'), 'from_env')
+            finally:
+                os.chdir(current_dir)
+
+    def test_default_loader_falls_back_to_repo_root_when_cwd_has_no_env_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_repo, tempfile.TemporaryDirectory() as temp_cwd:
+            repo_path = Path(temp_repo)
+            (repo_path / '.env').write_text('FROM_REPO=yes\n', encoding='utf-8')
+            (repo_path / '.env.dist').write_text('FROM_DIST=no\n', encoding='utf-8')
+
+            current_dir = Path.cwd()
+            try:
+                os.chdir(Path(temp_cwd))
+                with patch('opensnap.env_loader._REPO_ROOT', repo_path):
+                    with patch.dict(os.environ, {}, clear=True):
+                        load_env_file()
+                        self.assertEqual(os.getenv('FROM_REPO'), 'yes')
             finally:
                 os.chdir(current_dir)
 

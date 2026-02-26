@@ -64,12 +64,15 @@ def decode_datagram(data: bytes, endpoint: Endpoint) -> list[SnapMessage]:
         )
         messages.append(message)
 
-        # snapsi processes only the first entry of incoming multi datagrams.
-        # Keeping this behavior avoids over-dispatching embedded query entries.
-        if type_flags & FLAG_MULTI:
-            break
-
         offset = next_offset
+
+        # Incoming multi datagrams are command-dependent:
+        # - 0x0f (kkSend) may embed a follow-up command (for example room leave 0x07)
+        #   that must be dispatched.
+        # - other observed multi commands should keep snapsi-compatible "first entry only"
+        #   behavior to avoid over-dispatching embedded query entries.
+        if (type_flags & FLAG_MULTI) and command != 0x0F:
+            break
 
     return messages
 

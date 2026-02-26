@@ -1,6 +1,7 @@
 """SNAP bootstrap authentication handlers."""
 
 from dataclasses import dataclass
+import logging
 import socket
 import struct
 
@@ -13,6 +14,8 @@ from opensnap.protocol import commands
 from opensnap.protocol.constants import CHANNEL_LOBBY, FLAG_RESPONSE
 from opensnap.protocol.fields import get_c_string
 from opensnap.protocol.models import SnapMessage
+
+LOGGER = logging.getLogger('opensnap.auth')
 
 
 class BootstrapAuthenticator:
@@ -81,9 +84,14 @@ class BootstrapAuthenticator:
                 )
             ]
 
+        advertised_host = _resolve_advertise_host(
+            configured_host=context.config.server.advertise_host,
+            bind_host=context.config.server.host,
+            client_host=message.endpoint.host,
+        )
         success_payload = _build_login_success_payload(
             login=session.username,
-            server_host=context.config.server.host,
+            server_host=advertised_host,
             server_port=context.config.server.port,
             bootstrap_key=context.config.server.bootstrap_key,
         )
@@ -197,15 +205,53 @@ def _build_login_success_payload(
 ) -> bytes:
     """Build encrypted login success payload."""
 
-    host = server_host
-    if host == '0.0.0.0':
-        host = '127.0.0.1'
-
     # Clients expect a newline after the username in this payload.
     login_bytes = f'{login}\n'.encode('utf-8')
-    ip_int = int.from_bytes(socket.inet_aton(host), byteorder='big', signed=False)
+    ip_int = int.from_bytes(socket.inet_aton(server_host), byteorder='big', signed=False)
     plaintext = struct.pack('>40s6L', login_bytes, ip_int, server_port, server_port, 0xBB, 0xCC, 0xDD)
     return _encrypt_blowfish_ecb(bootstrap_key, plaintext)
+
+
+def _resolve_advertise_host(*, configured_host: str, bind_host: str, client_host: str) -> str:
+    """Resolve host advertised in bootstrap login-success payloads."""
+
+    configured = configured_host.strip()
+    if configured and configured not in {'0.0.0.0', '::'}:
+        return configured
+
+    bound = bind_host.strip()
+    if bound and bound not in {'0.0.0.0', '::'}:
+        return bound
+
+    routed = _resolve_local_host_for_client(client_host)
+    if routed:
+        return routed
+
+    LOGGER.warning(
+        (
+            'Unable to resolve advertised host from bind=%s for client %s; '
+            'falling back to 127.0.0.1. Set OPENSNAP_ADVERTISE_HOST to your LAN IP.'
+        ),
+        bind_host,
+        client_host,
+    )
+    return '127.0.0.1'
+
+
+def _resolve_local_host_for_client(client_host: str) -> str:
+    """Resolve local IPv4 selected by kernel routing toward one client."""
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            # No packets are sent for UDP connect(), but kernel picks a source address.
+            probe.connect((client_host, 9))
+            local_host = str(probe.getsockname()[0]).strip()
+    except OSError:
+        return ''
+
+    if not local_host or local_host in {'0.0.0.0', '::'}:
+        return ''
+    return local_host
 
 
 def _build_login_fail_payload() -> bytes:

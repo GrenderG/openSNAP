@@ -6,6 +6,7 @@ import os
 from opensnap.env_loader import load_env_file
 
 DEFAULT_SERVER_HOST = '0.0.0.0'
+DEFAULT_SERVER_ADVERTISE_HOST = ''
 DEFAULT_SERVER_PORT = 9090
 DEFAULT_GAME_PLUGIN = 'automodellista'
 DEFAULT_SERVER_SECRET = 'Totally secret server secret!'
@@ -42,6 +43,9 @@ class ServerConfig:
     """Server runtime settings."""
 
     host: str = DEFAULT_SERVER_HOST
+    # Advertised host encoded into bootstrap login-success payloads.
+    # Empty means "derive from bind host and routing".
+    advertise_host: str = DEFAULT_SERVER_ADVERTISE_HOST
     port: int = DEFAULT_SERVER_PORT
     game_plugin: str = DEFAULT_GAME_PLUGIN
     server_secret: str = DEFAULT_SERVER_SECRET
@@ -73,6 +77,9 @@ def default_app_config() -> AppConfig:
 
     load_env_file()
     host = os.getenv('OPENSNAP_HOST', DEFAULT_SERVER_HOST).strip() or DEFAULT_SERVER_HOST
+    advertise_host = (
+        os.getenv('OPENSNAP_ADVERTISE_HOST', DEFAULT_SERVER_ADVERTISE_HOST).strip()
+    )
     port = _read_int_env('OPENSNAP_PORT', DEFAULT_SERVER_PORT)
     game_plugin = os.getenv('OPENSNAP_GAME_PLUGIN', DEFAULT_GAME_PLUGIN).strip().lower() or DEFAULT_GAME_PLUGIN
     server_secret = os.getenv('OPENSNAP_SERVER_SECRET', DEFAULT_SERVER_SECRET) or DEFAULT_SERVER_SECRET
@@ -90,6 +97,7 @@ def default_app_config() -> AppConfig:
     return AppConfig(
         server=ServerConfig(
             host=host,
+            advertise_host=advertise_host,
             port=port,
             game_plugin=game_plugin,
             server_secret=server_secret,

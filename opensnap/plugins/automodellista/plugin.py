@@ -130,11 +130,11 @@ class AutoModellistaPlugin:
         entries = []
         for session in members:
             account = context.accounts.get_by_id(session.user_id)
-            team = '' if account is None else account.team
+            team = _network_team('' if account is None else account.team)
             entries.append(
                 struct.pack(
                     '>16s2L32s',
-                    _pack_fixed(session.username, 16),
+                    _pack_fixed(_network_username(session.username), 16),
                     session.session_id,
                     32,
                     _pack_fixed(team, 32),
@@ -236,11 +236,18 @@ class AutoModellistaPlugin:
         if (message.type_flags & 0x3000) == CHANNEL_ROOM:
             room_id = get_u32(message.payload, 0)
             _prune_stale_room_members(context, room_id)
+            existing_members = context.sessions.list_room_members(room_id)
             success = context.rooms.join(room_id, session.session_id)
             if success:
                 context.sessions.set_room(session.session_id, room_id)
+                callbacks = _build_room_join_callbacks(
+                    context=context,
+                    joining_session=session,
+                    recipients=existing_members,
+                )
                 payload = struct.pack('>2L', 0x06, 0)
             else:
+                callbacks = []
                 payload = struct.pack('>2L', 0x06, 1)
 
             return [
@@ -251,7 +258,7 @@ class AutoModellistaPlugin:
                     payload=payload,
                     session_id=session.session_id,
                 )
-            ]
+            ] + callbacks
 
         return []
 
@@ -259,6 +266,7 @@ class AutoModellistaPlugin:
         session = _resolve_session(context, message)
         if session is None:
             return []
+        acknowledge_number = _ack_for_request(message, session)
 
         if (message.type_flags & 0x3000) == CHANNEL_LOBBY:
             if session.room_id > 0:
@@ -273,6 +281,7 @@ class AutoModellistaPlugin:
                     command=commands.CMD_RESULT_WRAPPER,
                     payload=payload,
                     session_id=session.session_id,
+                    acknowledge_number=acknowledge_number,
                 )
             ]
 
@@ -287,6 +296,7 @@ class AutoModellistaPlugin:
                     command=commands.CMD_RESULT_WRAPPER,
                     payload=payload,
                     session_id=session.session_id,
+                    acknowledge_number=acknowledge_number,
                 )
             ]
 
@@ -298,19 +308,22 @@ class AutoModellistaPlugin:
             return []
 
         if message.type_flags & FLAG_MULTI:
-            # Captures use this special case while leaving a room.
-            context.rooms.leave(session.room_id, session.session_id)
-            context.sessions.set_room(session.session_id, 0)
-            payload = struct.pack('>2L', 0x07, 0)
-            return [
-                context.reply(
-                    message,
-                    type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
-                    command=commands.CMD_RESULT_WRAPPER,
-                    payload=payload,
-                    session_id=session.session_id,
-                )
-            ]
+            # TODO(openSNAP): Multi-send behavior in old snapsi was inconsistent and likely
+            #  mixed room-exit and race-transition traffic in this path.
+            #  - 0x8001 appears during race start and should not force room leave.
+            #  - 0x8002 appears when exiting room and is followed by embedded leave cmd 0x07.
+            #  - Race start still falls back to room list because openSNAP only acks
+            #  0x8001/embedded 0x08 today and does not implement the subsequent
+            #  room-to-race transition/state fanout that clients expect.
+            channel = message.type_flags & 0x3000
+            if channel == 0:
+                channel = CHANNEL_ROOM
+            return [context.reply(
+                message,
+                type_flags=channel | FLAG_RESPONSE,
+                command=commands.CMD_ACK,
+                session_id=session.session_id,
+            )]
 
         if (message.type_flags & 0x3400) == 0x1400:
             ack_to_sender = context.reply(
@@ -394,7 +407,7 @@ class AutoModellistaPlugin:
                 type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
                 command=commands.CMD_SEND_TARGET,
                 payload=relay_payload,
-                acknowledge_number=target.sequence_number,
+                acknowledge_number=_ack_for_session(target),
             )
         )
         return response
@@ -417,6 +430,7 @@ class AutoModellistaPlugin:
         session = _resolve_session(context, message)
         if session is None:
             return []
+        acknowledge_number = _ack_for_request(message, session)
 
         payload = struct.pack('>2L', subcommand, 0)
         return [
@@ -426,6 +440,7 @@ class AutoModellistaPlugin:
                 command=commands.CMD_RESULT_WRAPPER,
                 payload=payload,
                 session_id=session.session_id,
+                acknowledge_number=acknowledge_number,
             )
         ]
 
@@ -487,6 +502,22 @@ def _pack_fixed(value: str, size: int) -> bytes:
     return struct.pack(f'{size}s', encoded)
 
 
+def _network_username(value: str) -> str:
+    """Match observed username wire format used in snapsi captures."""
+
+    if value.endswith('\n'):
+        return value
+    return f'{value}\n'
+
+
+def _network_team(value: str) -> str:
+    """Avoid empty team strings in room/user callback payloads."""
+
+    if value:
+        return value
+    return 'team'
+
+
 def _build_chat_echo_payload(session: Session, payload: bytes) -> bytes:
     """Mirror chat payload with user identity."""
 
@@ -533,7 +564,7 @@ def _broadcast_lobby_chat(context: HandlerContext, lobby_id: int, payload: bytes
                 type_flags=0x1400 | FLAG_RESPONSE,
                 command=commands.CMD_SEND,
                 payload=payload,
-                acknowledge_number=member.sequence_number,
+                acknowledge_number=_ack_for_session(member),
             )
         )
     return messages
@@ -554,7 +585,7 @@ def _broadcast_room_chat(context: HandlerContext, room_id: int, payload: bytes) 
                 type_flags=0x2400 | FLAG_RESPONSE,
                 command=commands.CMD_SEND,
                 payload=payload,
-                acknowledge_number=member.sequence_number,
+                acknowledge_number=_ack_for_session(member),
             )
         )
     return messages
@@ -586,7 +617,7 @@ def _broadcast_room_game_packet(
                 command=commands.CMD_SEND,
                 payload=payload,
                 packet_number=request.packet_number,
-                acknowledge_number=member.sequence_number,
+                acknowledge_number=_ack_for_session(member),
             )
         )
     return messages
@@ -614,3 +645,59 @@ def _build_send_target_payload(subcommand: int, payload: bytes) -> bytes | None:
         return struct.pack('>2LH3B', 1, 0, 0x8008, value_1, value_2, value_3)
 
     return None
+
+
+def _build_room_join_callbacks(
+    *,
+    context: HandlerContext,
+    joining_session: Session,
+    recipients: list[Session],
+) -> list[SnapMessage]:
+    """Notify existing room members that a player joined."""
+
+    account = context.accounts.get_by_id(joining_session.user_id)
+    team = _network_team('' if account is None else account.team)
+    payload = struct.pack(
+        '>16s2L16s',
+        _pack_fixed(_network_username(joining_session.username), 16),
+        joining_session.session_id,
+        0,
+        _pack_fixed(team, 16),
+    )
+
+    messages: list[SnapMessage] = []
+    for member in recipients:
+        messages.append(
+            context.direct(
+                endpoint=member.endpoint,
+                session_id=member.session_id,
+                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                command=commands.CMD_JOIN,
+                payload=payload,
+                acknowledge_number=_ack_for_session(member),
+            )
+        )
+    return messages
+
+
+def _ack_for_session(session: Session) -> int:
+    """ACK value for unsolicited packets sent to one client session."""
+
+    if session.last_incoming_sequence < 0:
+        return 0
+    return session.last_incoming_sequence
+
+
+def _ack_for_request(request: SnapMessage, session: Session) -> int:
+    """ACK value for request/response packets.
+
+    Embedded commands in observed multi-send packets can carry sequence 0 while the
+    enclosing reliable packet has a non-zero sequence. In that case, respond using
+    the latest accepted inbound sequence for the session.
+    """
+
+    if request.sequence_number != 0:
+        return request.sequence_number
+    if session.last_incoming_sequence >= 0:
+        return session.last_incoming_sequence
+    return 0

@@ -282,6 +282,51 @@ class EngineFlowTests(unittest.TestCase):
         chat_endpoints = {message.endpoint for message in chat_messages}
         self.assertEqual(chat_endpoints, {endpoint_one, endpoint_two})
 
+    def test_room_join_notifies_existing_members(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint_one = Endpoint(host='127.0.0.1', port=50022)
+        endpoint_two = Endpoint(host='127.0.0.2', port=50023)
+
+        host_session = _create_session_via_login(engine, endpoint_one, 'test')
+        joiner_session = _create_session_via_login(engine, endpoint_two, 'test')
+        _join_lobby(engine, endpoint_one, host_session, lobby_id=1, sequence=3)
+        _join_lobby(engine, endpoint_two, joiner_session, lobby_id=1, sequence=3)
+
+        room_id = _create_room(engine, endpoint_one, host_session, sequence=4, room_name='join-callback')
+        join_request = SnapMessage(
+            endpoint=endpoint_two,
+            type_flags=CHANNEL_ROOM,
+            packet_number=0,
+            command=commands.CMD_JOIN,
+            session_id=joiner_session,
+            sequence_number=4,
+            acknowledge_number=0,
+            payload=struct.pack('>L', room_id),
+        )
+        join_result = engine.handle_datagram(_encode(join_request), endpoint_two)
+        self.assertFalse(join_result.errors)
+        self.assertEqual(len(join_result.messages), 2)
+
+        join_ack = join_result.messages[0]
+        self.assertEqual(join_ack.command, commands.CMD_RESULT_WRAPPER)
+        self.assertEqual(join_ack.endpoint, endpoint_two)
+        self.assertEqual(struct.unpack_from('>2L', join_ack.payload), (0x06, 0))
+
+        callback = join_result.messages[1]
+        self.assertEqual(callback.command, commands.CMD_JOIN)
+        self.assertEqual(callback.endpoint, endpoint_one)
+        self.assertEqual(callback.session_id, host_session)
+        self.assertEqual(callback.acknowledge_number, 4)
+        callback_username, callback_session_id, callback_unknown, callback_team = struct.unpack(
+            '>16s2L16s',
+            callback.payload,
+        )
+        self.assertEqual(callback_session_id, joiner_session)
+        self.assertEqual(callback_unknown, 0)
+        self.assertEqual(callback_username.rstrip(b'\x00').decode('utf-8'), 'test\n')
+        self.assertEqual(callback_team.rstrip(b'\x00').decode('utf-8'), 'team')
+
     def test_send_subcommand_8006_broadcasts_to_other_room_members(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
@@ -318,6 +363,127 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(relay.endpoint, endpoint_two)
         self.assertEqual(relay.session_id, receiver_session)
         self.assertEqual(relay.payload, game_request.payload)
+
+    def test_multi_send_does_not_force_leave_room(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50032)
+
+        session_id = _create_session_via_login(engine, endpoint, 'test')
+        _join_lobby(engine, endpoint, session_id, lobby_id=1, sequence=3)
+        room_id = _create_room(engine, endpoint, session_id, sequence=4, room_name='room-multi')
+
+        request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=session_id,
+            sequence_number=5,
+            acknowledge_number=0,
+            payload=b'\x80\x01',
+        )
+        result = engine.handle_datagram(_encode(request), endpoint)
+        self.assertFalse(result.errors)
+        self.assertEqual(len(result.messages), 1)
+        self.assertEqual(result.messages[0].command, commands.CMD_ACK)
+        self.assertEqual(result.messages[0].endpoint, endpoint)
+        self.assertEqual(result.messages[0].session_id, session_id)
+
+        session = engine._sessions.get(session_id)  # noqa: SLF001
+        self.assertIsNotNone(session)
+        self.assertEqual(session.room_id, room_id)
+
+    def test_multi_send_subcommand_8002_leaves_room(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50033)
+
+        session_id = _create_session_via_login(engine, endpoint, 'test')
+        _join_lobby(engine, endpoint, session_id, lobby_id=1, sequence=3)
+        room_id = _create_room(engine, endpoint, session_id, sequence=4, room_name='room-exit')
+
+        outer = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=session_id,
+            sequence_number=5,
+            acknowledge_number=0,
+            payload=b'\x80\x02',
+            size_word_override=(CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE) | 0x0012,
+        )
+        embedded_leave = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_LEAVE,
+            session_id=session_id,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=b'',
+        )
+        result = engine.handle_datagram(_encode_many([outer, embedded_leave]), endpoint)
+        self.assertFalse(result.errors)
+        self.assertEqual(len(result.messages), 2)
+
+        ack = result.messages[0]
+        leave_result = result.messages[1]
+        self.assertEqual(ack.command, commands.CMD_ACK)
+        self.assertEqual(ack.endpoint, endpoint)
+        self.assertEqual(ack.session_id, session_id)
+        self.assertEqual(leave_result.command, commands.CMD_RESULT_WRAPPER)
+        self.assertEqual(leave_result.endpoint, endpoint)
+        self.assertEqual(leave_result.session_id, session_id)
+        self.assertEqual(leave_result.acknowledge_number, 5)
+        self.assertEqual(struct.unpack_from('>2L', leave_result.payload), (0x07, 0))
+
+        session = engine._sessions.get(session_id)  # noqa: SLF001
+        self.assertIsNotNone(session)
+        self.assertEqual(session.room_id, 0)
+
+    def test_multi_send_subcommand_8001_embedded_change_attribute_acks_outer_sequence(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50034)
+
+        session_id = _create_session_via_login(engine, endpoint, 'test')
+        _join_lobby(engine, endpoint, session_id, lobby_id=1, sequence=3)
+        _create_room(engine, endpoint, session_id, sequence=4, room_name='room-start')
+
+        outer = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=session_id,
+            sequence_number=5,
+            acknowledge_number=0,
+            payload=b'\x80\x01',
+            size_word_override=(CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE) | 0x0012,
+        )
+        embedded = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_CHANGE_ATTRIBUTE,
+            session_id=session_id,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=b'STAT\xc0\x00\x00\x00',
+        )
+        result = engine.handle_datagram(_encode_many([outer, embedded]), endpoint)
+        self.assertFalse(result.errors)
+        self.assertEqual(len(result.messages), 2)
+
+        ack = result.messages[0]
+        change = result.messages[1]
+        self.assertEqual(ack.command, commands.CMD_ACK)
+        self.assertEqual(ack.acknowledge_number, 5)
+        self.assertEqual(change.command, commands.CMD_RESULT_WRAPPER)
+        self.assertEqual(change.acknowledge_number, 5)
+        self.assertEqual(struct.unpack_from('>2L', change.payload), (0x08, 0))
 
     def test_create_room_rejects_when_lobby_has_50_rooms(self) -> None:
         config = self._config

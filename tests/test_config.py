@@ -60,6 +60,20 @@ class AppConfigTests(unittest.TestCase):
 
         self.assertFalse(config.storage.reset_runtime_on_startup)
 
+    def test_advertise_host_can_be_overridden_from_env(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                'OPENSNAP_HOST': '0.0.0.0',
+                'OPENSNAP_ADVERTISE_HOST': '192.168.1.151',
+            },
+            clear=True,
+        ):
+            config = default_app_config()
+
+        self.assertEqual(config.server.host, '0.0.0.0')
+        self.assertEqual(config.server.advertise_host, '192.168.1.151')
+
 
 if __name__ == '__main__':
     unittest.main()

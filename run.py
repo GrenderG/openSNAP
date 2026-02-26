@@ -6,7 +6,7 @@ from opensnap.env_loader import load_env_file
 
 
 def main() -> None:
-    """Dispatch to UDP or web service launcher."""
+    """Dispatch to UDP, web, or DNS service launcher."""
 
     load_env_file()
 
@@ -14,9 +14,9 @@ def main() -> None:
     parser.add_argument(
         'service',
         nargs='?',
-        choices=('udp', 'web'),
+        choices=('udp', 'web', 'dns'),
         default='udp',
-        help='Service to launch: udp (default) or web.',
+        help='Service to launch: udp (default), web, or dns.',
     )
     args = parser.parse_args()
 
@@ -31,6 +31,19 @@ def main() -> None:
             raise
 
         run_web_server()
+        return
+
+    if args.service == 'dns':
+        try:
+            from opensnap_dns.server import main as run_dns_server
+        except ModuleNotFoundError as exc:
+            if exc.name == 'dnslib':
+                raise SystemExit(
+                    'dnslib is not installed. Run `pip install -r requirements.txt` first.'
+                ) from exc
+            raise
+
+        run_dns_server()
         return
 
     from opensnap.server import main as run_udp_server

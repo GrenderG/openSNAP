@@ -96,6 +96,9 @@ class SnapProtocolEngine:
                 continue
 
             self._normalize_session_for_message(message)
+            # Track highest inbound sequence per session so direct fanout ACKs can
+            # mirror client-side flow control state.
+            self._sessions.accept_incoming(message.session_id, message.sequence_number)
 
             try:
                 produced = self._router.dispatch(self._context, message)
