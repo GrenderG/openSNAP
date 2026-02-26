@@ -198,7 +198,7 @@ Environment variables for the Flask service:
 
 - `OPENSNAP_WEB_HOST`: bind host (default: `0.0.0.0`).
 - `OPENSNAP_WEB_PORT`: bind port (default: `80`).
-- `OPENSNAP_WEB_GAME_PLUGIN`: web game module name (default: value of `OPENSNAP_GAME_PLUGIN`).
+- `OPENSNAP_WEB_GAME_PLUGIN`: web game module name (default: value of `OPENSNAP_GAME_PLUGIN`; bundled modules include `automodellista` and `monsterhunter`).
 
 Example:
 

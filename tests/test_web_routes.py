@@ -125,6 +125,21 @@ class WebRouteTests(unittest.TestCase):
                 )
             )
 
+    def test_monsterhunter_web_plugin_reuses_legacy_signup_routes(self) -> None:
+        app = create_web_app(
+            WebServerConfig(
+                host='127.0.0.1',
+                port=18080,
+                game_plugin='monsterhunter',
+            )
+        )
+        app.testing = True
+        client = app.test_client()
+
+        response = client.get('/amweb/index.jsp')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('openSNAP signup service', response.get_data(as_text=True))
+
     def test_existing_user_with_wrong_password_returns_error(self) -> None:
         response = self._client.post('/amweb/create_id.html', data={'username': 'test', 'password': 'wrong'})
         self.assertEqual(response.status_code, 200)

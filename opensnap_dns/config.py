@@ -14,10 +14,37 @@ DEFAULT_DNS_HOST = '0.0.0.0'
 DEFAULT_DNS_PORT = 53
 DEFAULT_DNS_TTL = 60
 DEFAULT_DNS_TARGET_IP = '127.0.0.1'
-DEFAULT_DNS_ENTRIES: dict[str, str] = {
+
+# Auto Modellista
+AUTO_MODELLISTA_DNS_ENTRIES: dict[str, str] = {
     'bootstrap.capcom-am.games.sega.net': '@default',
     'gameweb.capcom-am.games.sega.net': '@default',
     'regweb.capcom-am.games.sega.net': '@default',
+}
+
+# Monster Hunter USA
+MONSTER_HUNTER_USA_DNS_ENTRIES: dict[str, str] = {
+    'regweb.mh.capcom.sf.yav4.com': '@default',
+    'bootstrap01.sf.yav4.com': '@default',
+    'app01.reo.capcom.sf.yav4.com': '@default',
+}
+
+# Monster Hunter PAL (and Demo)
+MONSTER_HUNTER_PAL_AND_DEMO_DNS_ENTRIES: dict[str, str] = {
+    'bootstrap01.mheu-beta.capcom.sf.yav.com': '@default',
+}
+
+# Monster Hunter USA Public Beta
+MONSTER_HUNTER_USA_PUBLIC_BETA_DNS_ENTRIES: dict[str, str] = {
+    'regweb.reo.capcom.sf.yav4.com': '@default',
+    'snap01.reo.capcom.sf.yav4.com': '@default',
+}
+
+DEFAULT_DNS_ENTRIES: dict[str, str] = {
+    **AUTO_MODELLISTA_DNS_ENTRIES,
+    **MONSTER_HUNTER_USA_DNS_ENTRIES,
+    **MONSTER_HUNTER_PAL_AND_DEMO_DNS_ENTRIES,
+    **MONSTER_HUNTER_USA_PUBLIC_BETA_DNS_ENTRIES,
 }
 
 

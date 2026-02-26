@@ -3,12 +3,14 @@
 from collections.abc import Callable
 
 from opensnap_web.games.automodellista import AutoModellistaWebModule
+from opensnap_web.games.monsterhunter import MonsterHunterWebModule
 from opensnap_web.games.base import GameWebModule
 
 GameWebModuleFactory = Callable[[], GameWebModule]
 
 GAME_WEB_MODULE_FACTORIES: dict[str, GameWebModuleFactory] = {
     'automodellista': AutoModellistaWebModule,
+    'monsterhunter': MonsterHunterWebModule,
 }
 
 

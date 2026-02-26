@@ -72,6 +72,23 @@ class DnsConfigTests(unittest.TestCase):
 
         self.assertEqual(config.entries['custom.example.net'], '10.0.0.8')
 
+    def test_monster_hunter_default_dns_entries_are_present(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                'OPENSNAP_DNS_ENTRIES': '{}',
+                'OPENSNAP_DNS_DEFAULT_IP': '192.168.1.151',
+            },
+            clear=True,
+        ):
+            config = default_dns_server_config()
+
+        self.assertEqual(config.entries['regweb.mh.capcom.sf.yav4.com'], '192.168.1.151')
+        self.assertEqual(config.entries['bootstrap01.sf.yav4.com'], '192.168.1.151')
+        self.assertEqual(config.entries['bootstrap01.mheu-beta.capcom.sf.yav.com'], '192.168.1.151')
+        self.assertEqual(config.entries['regweb.reo.capcom.sf.yav4.com'], '192.168.1.151')
+        self.assertEqual(config.entries['snap01.reo.capcom.sf.yav4.com'], '192.168.1.151')
+
 
 if __name__ == '__main__':
     unittest.main()
