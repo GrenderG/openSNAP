@@ -1,5 +1,6 @@
 """Auto Modellista game plugin."""
 
+import logging
 import struct
 
 from opensnap.core.context import HandlerContext
@@ -7,10 +8,15 @@ from opensnap.core.router import CommandRouter
 from opensnap.core.sessions import Session
 from opensnap.protocol import commands
 from opensnap.protocol.constants import CHANNEL_LOBBY, CHANNEL_ROOM, FLAG_MULTI, FLAG_RELIABLE, FLAG_RESPONSE
-from opensnap.protocol.fields import get_c_string, get_u16, get_u32, get_u8
+from opensnap.protocol.fields import get_c_string, get_u16, get_u32
 from opensnap.protocol.models import SnapMessage
 
 MAX_ROOMS_PER_LOBBY = 50
+ROOM_JOIN_CALLBACK_REPEAT = 2
+_LOGGER = logging.getLogger('opensnap.plugins.automodellista')
+# Binary-verified attribute selector used by kkQueryLobbyAttribute/kkQueryGameRoomAttribute:
+# SLUS_204.98 cpnGetJoinUserLobby/cpnGetJoinUserRoom load 0x55534552 ("USER").
+USER_ATTRIBUTE_TOKEN = b'USER'
 
 
 class AutoModellistaPlugin:
@@ -81,7 +87,7 @@ class AutoModellistaPlugin:
         payload = struct.pack(
             '>L4sL',
             lobby_id,
-            b'USER',
+            USER_ATTRIBUTE_TOKEN,
             context.sessions.count_users_in_lobby(lobby_id),
         )
         return [
@@ -308,22 +314,35 @@ class AutoModellistaPlugin:
             return []
 
         if message.type_flags & FLAG_MULTI:
-            # TODO(openSNAP): Multi-send behavior in old snapsi was inconsistent and likely
-            #  mixed room-exit and race-transition traffic in this path.
-            #  - 0x8001 appears during race start and should not force room leave.
-            #  - 0x8002 appears when exiting room and is followed by embedded leave cmd 0x07.
-            #  - Race start still falls back to room list because openSNAP only acks
-            #  0x8001/embedded 0x08 today and does not implement the subsequent
-            #  room-to-race transition/state fanout that clients expect.
+            # TODO(openSNAP): Keep validating multi-send relay against captures.
+            #  Current implementation relays tunneled room payloads in multi packets
+            #  using the same sender/all-members policy as single SEND packets.
+            #  Re-check once additional ready-battle and in-race traces are decoded.
             channel = message.type_flags & 0x3000
             if channel == 0:
                 channel = CHANNEL_ROOM
-            return [context.reply(
+            responses = [context.reply(
                 message,
                 type_flags=channel | FLAG_RESPONSE,
                 command=commands.CMD_ACK,
                 session_id=session.session_id,
             )]
+
+            if channel == CHANNEL_ROOM and len(message.payload) >= 2:
+                subcommand = get_u16(message.payload, 0)
+                exclude_session_id = None if subcommand == 0x8001 else session.session_id
+                responses.extend(
+                    _broadcast_room_game_packet(
+                        context=context,
+                        request=message,
+                        room_id=session.room_id,
+                        payload=message.payload,
+                        exclude_session_id=exclude_session_id,
+                        type_flags=(message.type_flags & ~FLAG_MULTI),
+                    )
+                )
+
+            return responses
 
         if (message.type_flags & 0x3400) == 0x1400:
             ack_to_sender = context.reply(
@@ -359,17 +378,15 @@ class AutoModellistaPlugin:
                 return [ack_to_sender]
 
             subcommand = get_u16(message.payload, 0)
-            if subcommand == 0x8006:
-                broadcasts = _broadcast_room_game_packet(
-                    context=context,
-                    request=message,
-                    room_id=session.room_id,
-                    payload=message.payload,
-                    exclude_session_id=session.session_id,
-                )
-                return [ack_to_sender] + broadcasts
-
-            return [ack_to_sender]
+            exclude_session_id = None if subcommand == 0x8001 else session.session_id
+            broadcasts = _broadcast_room_game_packet(
+                context=context,
+                request=message,
+                room_id=session.room_id,
+                payload=message.payload,
+                exclude_session_id=exclude_session_id,
+            )
+            return [ack_to_sender] + broadcasts
 
         return []
 
@@ -388,16 +405,37 @@ class AutoModellistaPlugin:
         ]
 
         if len(message.payload) < 10:
+            _LOGGER.debug(
+                'Ignoring short send-target payload from %s:%d (len=%d).',
+                message.endpoint.host,
+                message.endpoint.port,
+                len(message.payload),
+            )
             return response
 
         target_session_id = get_u32(message.payload, 4)
         target = context.sessions.get(target_session_id)
         if target is None:
+            _LOGGER.debug(
+                (
+                    'Skipping send-target relay from %s:%d: '
+                    'target session 0x%08x not found (sender session 0x%08x).'
+                ),
+                message.endpoint.host,
+                message.endpoint.port,
+                target_session_id,
+                session.session_id,
+            )
             return response
 
-        subcommand = get_u16(message.payload, 8)
-        relay_payload = _build_send_target_payload(subcommand, message.payload)
+        relay_payload = _build_send_target_payload(message.payload)
         if relay_payload is None:
+            _LOGGER.debug(
+                'Skipping send-target relay from %s:%d: payload len=%d is too short.',
+                message.endpoint.host,
+                message.endpoint.port,
+                len(message.payload),
+            )
             return response
 
         response.append(
@@ -446,7 +484,7 @@ class AutoModellistaPlugin:
 
     def _build_multi_lobby_user_query_payload(self, context: HandlerContext, message: SnapMessage) -> bytes:
         # snapsi keeps this first entry special: lobby id 1 uses the count from lobby 0.
-        payload = struct.pack('>L4sL', 1, b'USER', context.sessions.count_users_in_lobby(0))
+        payload = struct.pack('>L4sL', 1, USER_ATTRIBUTE_TOKEN, context.sessions.count_users_in_lobby(0))
 
         # Keep snapsi's embedded-entry header word (0x501C), packet numbering, and id range.
         follow_up_size_word = 0x501C
@@ -460,7 +498,7 @@ class AutoModellistaPlugin:
                 0,
                 message.sequence_number,
                 lobby_id,
-                b'USER',
+                USER_ATTRIBUTE_TOKEN,
                 context.sessions.count_users_in_lobby(lobby_id),
             )
         return payload
@@ -597,23 +635,26 @@ def _broadcast_room_game_packet(
     request: SnapMessage,
     room_id: int,
     payload: bytes,
-    exclude_session_id: int,
+    exclude_session_id: int | None,
+    type_flags: int | None = None,
 ) -> list[SnapMessage]:
     """Relay game packet to other room members."""
 
     if room_id <= 0:
         return []
 
+    outbound_type_flags = request.type_flags if type_flags is None else type_flags
+
     messages: list[SnapMessage] = []
     for member in context.sessions.list_room_members(room_id):
-        if member.session_id == exclude_session_id:
+        if exclude_session_id is not None and member.session_id == exclude_session_id:
             continue
 
         messages.append(
             context.direct(
                 endpoint=member.endpoint,
                 session_id=member.session_id,
-                type_flags=request.type_flags,
+                type_flags=outbound_type_flags,
                 command=commands.CMD_SEND,
                 payload=payload,
                 packet_number=request.packet_number,
@@ -623,28 +664,16 @@ def _broadcast_room_game_packet(
     return messages
 
 
-def _build_send_target_payload(subcommand: int, payload: bytes) -> bytes | None:
-    """Build relay payload for known send-target subcommands."""
+def _build_send_target_payload(payload: bytes) -> bytes | None:
+    """Build relay payload for send-target callbacks.
 
-    if subcommand == 0x8005 and len(payload) >= 14:
-        # Traces use 0x8005 for player-id sync messages.
-        player_id = get_u32(payload, 10)
-        return struct.pack('>2LHL', 1, 0, 0x8005, player_id)
+    Binary/capture parity: server relays sender payload and only zeroes the
+    target-session field at `+0x04` before forwarding to the destination client.
+    """
 
-    if subcommand == 0x8102 and len(payload) >= 15:
-        # Traces use 0x8102 for target state updates.
-        user_value = get_u32(payload, 10)
-        user_flag = get_u8(payload, 14)
-        return struct.pack('>2LHLB', 1, 0, 0x8102, user_value, user_flag)
-
-    if subcommand == 0x8008 and len(payload) >= 12:
-        # Traces use 0x8008 for small 3-byte target payloads.
-        value_1 = get_u8(payload, 9)
-        value_2 = get_u8(payload, 10)
-        value_3 = get_u8(payload, 11)
-        return struct.pack('>2LH3B', 1, 0, 0x8008, value_1, value_2, value_3)
-
-    return None
+    if len(payload) < 10:
+        return None
+    return payload[:4] + b'\x00\x00\x00\x00' + payload[8:]
 
 
 def _build_room_join_callbacks(
@@ -653,7 +682,11 @@ def _build_room_join_callbacks(
     joining_session: Session,
     recipients: list[Session],
 ) -> list[SnapMessage]:
-    """Notify existing room members that a player joined."""
+    """Notify existing room members that a player joined.
+
+    This callback uses a non-reliable channel in legacy traces. Sending one extra
+    copy reduces first-join stalls caused by occasional packet loss on real hardware.
+    """
 
     account = context.accounts.get_by_id(joining_session.user_id)
     team = _network_team('' if account is None else account.team)
@@ -667,16 +700,17 @@ def _build_room_join_callbacks(
 
     messages: list[SnapMessage] = []
     for member in recipients:
-        messages.append(
-            context.direct(
-                endpoint=member.endpoint,
-                session_id=member.session_id,
-                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
-                command=commands.CMD_JOIN,
-                payload=payload,
-                acknowledge_number=_ack_for_session(member),
+        for _ in range(ROOM_JOIN_CALLBACK_REPEAT):
+            messages.append(
+                context.direct(
+                    endpoint=member.endpoint,
+                    session_id=member.session_id,
+                    type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                    command=commands.CMD_JOIN,
+                    payload=payload,
+                    acknowledge_number=_ack_for_session(member),
+                )
             )
-        )
     return messages
 
 

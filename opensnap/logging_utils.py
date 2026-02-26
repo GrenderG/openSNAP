@@ -3,9 +3,11 @@
 from collections.abc import Iterable
 import logging
 import os
+from pathlib import Path
 
 DEFAULT_LOG_LEVEL = 'debug'
 DEFAULT_HEXDUMP_LIMIT = 16384
+DEFAULT_LOG_FILE = ''
 LOG_LEVELS: dict[str, int] = {
     'critical': logging.CRITICAL,
     'error': logging.ERROR,
@@ -16,19 +18,34 @@ LOG_LEVELS: dict[str, int] = {
 }
 
 
-def configure_logging(level_name: str | None = None) -> None:
+def configure_logging(level_name: str | None = None, *, log_file: str | None = None) -> None:
     """Configure process logging for openSNAP services."""
 
     configured_level = parse_log_level(level_name or os.getenv('OPENSNAP_LOG_LEVEL', DEFAULT_LOG_LEVEL))
+    configured_log_file = (log_file if log_file is not None else os.getenv('OPENSNAP_LOG_FILE', DEFAULT_LOG_FILE)).strip()
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    log_file_path: str | None = None
+    file_handler = _build_file_handler(configured_log_file)
+    if file_handler is not None:
+        handlers.append(file_handler[0])
+        log_file_path = file_handler[1]
+
     logging.basicConfig(
         level=configured_level,
         format='%(asctime)s %(levelname)s [%(name)s] %(message)s',
+        handlers=handlers,
         force=True,
     )
-    logging.getLogger('opensnap').info(
+    logger = logging.getLogger('opensnap')
+    logger.info(
         'Logging initialized at level %s.',
         logging.getLevelName(configured_level).lower(),
     )
+    if configured_log_file:
+        if log_file_path is None:
+            logger.warning('Failed to enable OPENSNAP_LOG_FILE=%s; continuing with console logging only.', configured_log_file)
+        else:
+            logger.info('File logging enabled at %s.', log_file_path)
 
 
 def parse_log_level(level_name: str) -> int:
@@ -54,6 +71,24 @@ def parse_hexdump_limit(limit_value: str | None) -> int:
     if limit < 0:
         return DEFAULT_HEXDUMP_LIMIT
     return limit
+
+
+def _build_file_handler(log_file: str) -> tuple[logging.FileHandler, str] | None:
+    """Build optional file handler for runtime logging."""
+
+    if not log_file:
+        return None
+
+    try:
+        path = Path(log_file).expanduser()
+        if not path.is_absolute():
+            path = (Path.cwd() / path).resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(path, encoding='utf-8')
+    except OSError:
+        return None
+
+    return handler, str(path)
 
 
 def format_hexdump(data: bytes, *, width: int = 16, max_bytes: int | None = None) -> str:
