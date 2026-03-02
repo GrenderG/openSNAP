@@ -208,7 +208,8 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(get_u32(clear, 44), config.server.port)
         self.assertEqual(get_u32(clear, 48), config.server.port)
         self.assertEqual(get_u32(clear, 52), 0xBB)
-        self.assertEqual(get_u32(clear, 56), 0xDD)
+        self.assertEqual(get_u32(clear, 56), 0xCC)
+        self.assertEqual(get_u32(clear, 60), 0xDD)
 
     def test_login_client_with_primary_footer_and_single_string_uses_primary_bootstrap_variant(self) -> None:
         config = self._config

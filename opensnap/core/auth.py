@@ -282,14 +282,14 @@ def _build_alternate_bootstrap_payload(
     ip_int = int.from_bytes(socket.inet_aton(server_host), byteorder='big', signed=False)
     login_bytes = login_field.encode('utf-8')
     plaintext = struct.pack(
-        '>40s5L60s',
+        '>40s6L',
         login_bytes,
         ip_int,
         server_port,
         server_port,
         0xBB,
+        0xCC,
         0xDD,
-        b'',
     )
     # This client variant decrypts 0x118 bytes and copies the full buffer.
     padded_plaintext = plaintext + (b'\x00' * (0x118 - len(plaintext)))
