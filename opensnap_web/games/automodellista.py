@@ -146,8 +146,8 @@ def _make_signup_query_view(signup_service: SqliteSignupService) -> Callable[[],
     """Build query/create-id handler using username from request values."""
 
     def _signup_query() -> Response:
-        username = request.values.get('username') or ''
-        password = request.values.get('password') or ''
+        username = (request.values.get('username') or '').strip()
+        password = (request.values.get('password') or '').strip()
         return _build_signup_response(
             username=username,
             password=password,
@@ -161,9 +161,9 @@ def _make_signup_dynamic_view(signup_service: SqliteSignupService) -> Callable[[
     """Build dynamic create-id handler using username from route path."""
 
     def _signup_dynamic(username: str) -> Response:
-        password = request.values.get('password') or ''
+        password = (request.values.get('password') or '').strip()
         return _build_signup_response(
-            username=username,
+            username=username.strip(),
             password=password,
             signup_service=signup_service,
         )
@@ -269,7 +269,7 @@ def _is_valid_username(username: str) -> bool:
         return False
     if username.startswith('_') or username.endswith('_'):
         return False
-    return '__' not in username
+    return re.search(r'_{2,}', username) is None
 
 
 def _is_valid_password(password: str) -> bool:

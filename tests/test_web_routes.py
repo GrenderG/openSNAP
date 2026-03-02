@@ -104,6 +104,12 @@ class WebRouteTests(unittest.TestCase):
         text = response.get_data(as_text=True)
         self.assertIn('Invalid username.', text)
 
+    def test_multiple_consecutive_underscore_username_returns_error_page(self) -> None:
+        response = self._client.get('/amweb/create_id.html?username=alpha___beta&password=abcd')
+        self.assertEqual(response.status_code, 200)
+        text = response.get_data(as_text=True)
+        self.assertIn('Invalid username.', text)
+
     def test_overlong_signup_password_returns_error_page(self) -> None:
         response = self._client.get('/amweb/create_id.html?username=tester&password=1234567890123456')
         self.assertEqual(response.status_code, 200)
@@ -118,8 +124,8 @@ class WebRouteTests(unittest.TestCase):
         self.assertIn('Login error', text)
         self.assertIn('Invalid password.', text)
 
-    def test_password_whitespace_is_preserved(self) -> None:
-        response = self._client.post('/amweb/create_id.html', data={'username': 'user_123', 'password': '  abcd  '})
+    def test_request_values_are_trimmed_before_validation(self) -> None:
+        response = self._client.post('/amweb/create_id.html', data={'username': ' user_123 ', 'password': '  abcd  '})
         self.assertEqual(response.status_code, 200)
         text = response.get_data(as_text=True)
         self.assertIn('<!--INPUT-IDS-->user_123', text)
