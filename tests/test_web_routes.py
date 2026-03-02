@@ -95,6 +95,20 @@ class WebRouteTests(unittest.TestCase):
         self.assertIn('action="create_id.html"', text)
         self.assertIn('type="submit"', text)
 
+    def test_beta_root_index_route_is_available(self) -> None:
+        response = self._client.get('/ftpublicbeta/reg/')
+        self.assertEqual(response.status_code, 200)
+        text = response.get_data(as_text=True)
+        self.assertIn('openSNAP signup service', text)
+        self.assertIn('action="create_id.html"', text)
+
+    def test_beta_create_id_route_supports_registration(self) -> None:
+        response = self._client.get('/ftpublicbeta/reg/create_id.html?username=betauser&password=abc123')
+        self.assertEqual(response.status_code, 200)
+        text = response.get_data(as_text=True)
+        self.assertIn('Profile successfully retrieved.', text)
+        self.assertIn('<!--INPUT-IDS-->betauser', text)
+
     def test_login_php_route_is_available(self) -> None:
         response = self._client.get('/login.php')
         self.assertEqual(response.status_code, 200)
@@ -115,6 +129,47 @@ class WebRouteTests(unittest.TestCase):
     def test_am_up_php_route_returns_200(self) -> None:
         response = self._client.post('/amusa/am_up.php', data={'crs': 'D'})
         self.assertEqual(response.status_code, 200)
+
+    def test_beta_amusa_alias_routes_are_available(self) -> None:
+        page_expectations = {
+            '/amusa/info.html': 'AM-USA-INFORMATION',
+            '/amusa/rule.html': 'AM-USA-GAME-RULE',
+            '/amusa/rank.html': 'am_rank',
+            '/amusa/taboo.html': 'am_taboo',
+        }
+
+        for path, marker in page_expectations.items():
+            response = self._client.get(path)
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(marker, response.get_data(as_text=True))
+
+        upload_response = self._client.post('/amusa/up.php', data={'crs': 'D'})
+        self.assertEqual(upload_response.status_code, 200)
+
+    def test_beta1_patch1_route_is_available(self) -> None:
+        response = self._client.get('/amusa/patch1.html')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('This is test patch1.html file', response.get_data(as_text=True))
+
+    def test_beta1_patch2_route_is_available(self) -> None:
+        response = self._client.get('/amusa/patch2.html')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('This is test patch2.html file', response.get_data(as_text=True))
+
+    def test_beta1_patch3_route_is_available(self) -> None:
+        response = self._client.get('/amusa/patch3.html')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('This is test patch3.html file', response.get_data(as_text=True))
+
+    def test_beta1_patch4_route_is_available(self) -> None:
+        response = self._client.get('/amusa/patch4.html')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('This is test patch4.html file', response.get_data(as_text=True))
+
+    def test_beta1_patch5_route_is_available(self) -> None:
+        response = self._client.get('/amusa/patch5.html')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('This is test patch5.html file', response.get_data(as_text=True))
 
     def test_unknown_game_plugin_raises_value_error(self) -> None:
         with self.assertRaises(ValueError):

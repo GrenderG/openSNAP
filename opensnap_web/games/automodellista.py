@@ -46,6 +46,11 @@ AM_RULE_PAGE = """<html><head>
 
 AM_RANK_PAGE = '<html><body>am_rank</body></html>\n'
 AM_TABOO_PAGE = '<html><body>am_taboo</body></html>\n'
+AM_PATCH1_PAGE = '<html><body>This is test patch1.html file</body></html>\n'
+AM_PATCH2_PAGE = '<html><body>This is test patch2.html file</body></html>\n'
+AM_PATCH3_PAGE = '<html><body>This is test patch3.html file</body></html>\n'
+AM_PATCH4_PAGE = '<html><body>This is test patch4.html file</body></html>\n'
+AM_PATCH5_PAGE = '<html><body>This is test patch5.html file</body></html>\n'
 MAX_USERNAME_LENGTH = 10
 MAX_PASSWORD_LENGTH = 8
 USERNAME_PATTERN = re.compile(r'^[A-Za-z0-9_.-]{1,10}$')
@@ -99,21 +104,28 @@ def register_signup_routes(
         )
 
     for prefix in normalized_prefixes:
+        endpoint_prefix = prefix.replace('/', '_')
+        app.add_url_rule(
+            f'/{prefix}/',
+            endpoint=f'signup_{endpoint_prefix}_index_root',
+            methods=['GET'],
+            view_func=_make_signup_index_view(tools),
+        )
         app.add_url_rule(
             f'/{prefix}/index.jsp',
-            endpoint=f'signup_{prefix}_index',
+            endpoint=f'signup_{endpoint_prefix}_index',
             methods=['GET'],
             view_func=_make_signup_index_view(tools),
         )
         app.add_url_rule(
             f'/{prefix}/create_id.html',
-            endpoint=f'signup_{prefix}_create_id_query',
+            endpoint=f'signup_{endpoint_prefix}_create_id_query',
             methods=['GET', 'POST'],
             view_func=_make_signup_query_view(signup_service),
         )
         app.add_url_rule(
             f'/{prefix}/create_id_<username>.html',
-            endpoint=f'signup_{prefix}_create_id_dynamic',
+            endpoint=f'signup_{endpoint_prefix}_create_id_dynamic',
             methods=['GET'],
             view_func=_make_signup_dynamic_view(signup_service),
         )
@@ -171,29 +183,59 @@ class AutoModellistaWebModule:
             app,
             tools=tools,
             signup_service=signup_service,
-            route_prefixes=('amweb',),
+            route_prefixes=('amweb', 'ftpublicbeta/reg'),
             include_root_aliases=True,
         )
 
         @app.get('/amusa/am_info.html')
+        @app.get('/amusa/info.html')
         def amusa_info() -> Response:
             return tools.html_response(AM_INFO_PAGE)
 
         @app.get('/amusa/am_rule.html')
+        @app.get('/amusa/rule.html')
         def amusa_rule() -> Response:
             return tools.html_response(AM_RULE_PAGE)
 
         @app.get('/amusa/am_rank.html')
+        @app.get('/amusa/rank.html')
         def amusa_rank() -> Response:
             return tools.html_response(AM_RANK_PAGE)
 
         @app.get('/amusa/am_taboo.html')
+        @app.get('/amusa/taboo.html')
         def amusa_taboo() -> Response:
             return tools.html_response(AM_TABOO_PAGE)
 
+        @app.get('/amusa/patch1.html')
+        def amusa_patch1() -> Response:
+            # This compatibility page is only used by the Auto Modellista beta1 web flow.
+            return tools.html_response(AM_PATCH1_PAGE)
+
+        @app.get('/amusa/patch2.html')
+        def amusa_patch2() -> Response:
+            # This compatibility page is only used by the Auto Modellista beta1 web flow.
+            return tools.html_response(AM_PATCH2_PAGE)
+
+        @app.get('/amusa/patch3.html')
+        def amusa_patch3() -> Response:
+            # This compatibility page is only used by the Auto Modellista beta1 web flow.
+            return tools.html_response(AM_PATCH3_PAGE)
+
+        @app.get('/amusa/patch4.html')
+        def amusa_patch4() -> Response:
+            # This compatibility page is only used by the Auto Modellista beta1 web flow.
+            return tools.html_response(AM_PATCH4_PAGE)
+
+        @app.get('/amusa/patch5.html')
+        def amusa_patch5() -> Response:
+            # This compatibility page is only used by the Auto Modellista beta1 web flow.
+            return tools.html_response(AM_PATCH5_PAGE)
+
         @app.route('/amusa/am_up.php', methods=['GET', 'POST'])
+        @app.route('/amusa/up.php', methods=['GET', 'POST'])
         def amusa_upload() -> Response:
-            tools.dump_request('Handled /amusa/am_up.php request.')
+            tools.dump_request('Handled Auto Modellista upload request.')
             return Response('', mimetype='text/plain')
 
 
