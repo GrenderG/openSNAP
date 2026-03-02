@@ -1,9 +1,17 @@
 """Protocol codec tests."""
 
+import struct
 import unittest
 
-from opensnap.protocol.codec import PacketDecodeError, decode_datagram, encode_messages
-from opensnap.protocol.constants import CHANNEL_LOBBY, CHANNEL_ROOM, FLAG_MULTI, FLAG_RESPONSE
+from opensnap.protocol.codec import PacketDecodeError, decode_datagram, detect_footer_bytes, encode_messages
+from opensnap.protocol.constants import (
+    CHANNEL_LOBBY,
+    CHANNEL_ROOM,
+    FLAG_MULTI,
+    FLAG_RESPONSE,
+    FOOTER_BYTES_ALT,
+    FOOTER_BYTES,
+)
 from opensnap.protocol.models import Endpoint, SnapMessage
 
 
@@ -34,11 +42,47 @@ class CodecTests(unittest.TestCase):
         self.assertEqual(decoded[0].sequence_number, message.sequence_number)
         self.assertEqual(decoded[0].acknowledge_number, message.acknowledge_number)
         self.assertEqual(decoded[0].payload, message.payload)
+        self.assertEqual(decoded[0].footer_bytes, FOOTER_BYTES)
 
     def test_decode_rejects_missing_footer(self) -> None:
         endpoint = Endpoint(host='127.0.0.1', port=1111)
         with self.assertRaises(PacketDecodeError):
             decode_datagram(b'\x00' * 20, endpoint)
+
+    def test_decode_accepts_alternate_footer_marker(self) -> None:
+        endpoint = Endpoint(host='127.0.0.1', port=1112)
+        payload = b'payload-data'
+        size_word = (CHANNEL_LOBBY | FLAG_RESPONSE) | (len(payload) + 16)
+        datagram = (
+            struct.pack('>2H3L', size_word, (1 << 8) | 0x0E, 0x11223344, 9, 3)
+            + payload
+            + FOOTER_BYTES_ALT
+        )
+
+        decoded = decode_datagram(datagram, endpoint)
+
+        self.assertEqual(len(decoded), 1)
+        self.assertEqual(decoded[0].payload, payload)
+        self.assertEqual(decoded[0].footer_bytes, FOOTER_BYTES_ALT)
+        self.assertEqual(detect_footer_bytes(datagram), FOOTER_BYTES_ALT)
+
+    def test_encode_can_use_alternate_footer_marker(self) -> None:
+        endpoint = Endpoint(host='127.0.0.1', port=1113)
+        message = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+            packet_number=1,
+            command=0x0E,
+            session_id=0x11223344,
+            sequence_number=9,
+            acknowledge_number=3,
+            payload=b'payload-data',
+        )
+
+        encoded = encode_messages([message], footer_bytes=FOOTER_BYTES_ALT)
+
+        self.assertTrue(encoded.endswith(FOOTER_BYTES_ALT))
+        self.assertFalse(encoded.endswith(FOOTER_BYTES))
 
     def test_decode_multi_query_datagram_keeps_first_embedded_entry_only(self) -> None:
         endpoint = Endpoint(host='127.0.0.1', port=2222)

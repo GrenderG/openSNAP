@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, modes
 
 from opensnap.core.context import HandlerContext
 from opensnap.protocol import commands
-from opensnap.protocol.constants import CHANNEL_LOBBY, FLAG_RESPONSE
+from opensnap.protocol.constants import CHANNEL_LOBBY, FLAG_RESPONSE, FOOTER_BYTES_ALT
 from opensnap.protocol.fields import get_c_string
 from opensnap.protocol.models import SnapMessage
 
@@ -24,10 +24,23 @@ class BootstrapAuthenticator:
     def handle_login_client(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         """Handle `kkLoginClient`."""
 
-        # Clients often include a trailing newline in login strings.
-        login = get_c_string(message.payload, 0).rstrip('\n')
+        raw_login = _get_login_client_raw_name(message.payload)
+        login = _parse_login_client_name(raw_login)
+        if not login:
+            LOGGER.warning(
+                'Rejecting login-client from %s:%d: could not parse username from payload len=%d.',
+                message.endpoint.host,
+                message.endpoint.port,
+                len(message.payload),
+            )
         account = context.accounts.get_by_name(login)
         if account is None:
+            LOGGER.warning(
+                'Rejecting login-client from %s:%d: account %r was not found.',
+                message.endpoint.host,
+                message.endpoint.port,
+                login,
+            )
             return [
                 context.reply(
                     message,
@@ -37,13 +50,26 @@ class BootstrapAuthenticator:
             ]
 
         session = context.sessions.create_or_replace(message.endpoint, account)
-        challenge_payload = _build_bootstrap_login_payload(
-            magic_key=account.bootstrap_magic_key,
-            seed=account.seed,
-            server_secret=context.config.server.server_secret,
-            server_port=context.config.server.port,
-            bootstrap_key=context.config.server.bootstrap_key,
-        )
+        if _uses_alternate_bootstrap_variant(message):
+            advertised_host = _resolve_advertise_host(
+                configured_host=context.config.server.advertise_host,
+                bind_host=context.config.server.host,
+                client_host=message.endpoint.host,
+            )
+            challenge_payload = _build_alternate_bootstrap_payload(
+                login_field=raw_login,
+                key_material=account.bootstrap_magic_key.hex().encode('ascii'),
+                server_host=advertised_host,
+                server_port=context.config.server.port,
+            )
+        else:
+            challenge_payload = _build_bootstrap_login_payload(
+                magic_key=account.bootstrap_magic_key,
+                seed=account.seed,
+                server_secret=context.config.server.server_secret,
+                server_port=context.config.server.port,
+                bootstrap_key=context.config.server.bootstrap_key,
+            )
 
         return [
             context.reply(
@@ -64,6 +90,12 @@ class BootstrapAuthenticator:
             server_secret=context.config.server.server_secret,
         )
         if not valid:
+            LOGGER.warning(
+                'Rejecting bootstrap check from %s:%d: verifier did not match server secret (payload len=%d).',
+                message.endpoint.host,
+                message.endpoint.port,
+                len(message.payload),
+            )
             return [
                 context.reply(
                     message,
@@ -75,6 +107,11 @@ class BootstrapAuthenticator:
 
         session = context.sessions.get_by_endpoint(message.endpoint)
         if session is None:
+            LOGGER.warning(
+                'Rejecting bootstrap check from %s:%d: no session is bound to this endpoint.',
+                message.endpoint.host,
+                message.endpoint.port,
+            )
             return [
                 context.reply(
                     message,
@@ -111,7 +148,23 @@ class BootstrapAuthenticator:
 
         session = context.sessions.get_by_endpoint(message.endpoint)
         if session is None:
+            LOGGER.warning(
+                'Ignoring login-to-kics from %s:%d: no authenticated session is bound to this endpoint.',
+                message.endpoint.host,
+                message.endpoint.port,
+            )
             return []
+
+        if len(message.payload) < 0x130:
+            LOGGER.warning(
+                (
+                    'Received short login-to-kics payload from %s:%d '
+                    '(len=%d, expected>=304); parsing available fields only.'
+                ),
+                message.endpoint.host,
+                message.endpoint.port,
+                len(message.payload),
+            )
 
         parsed = _parse_kics_login_payload(message.payload)
         context.accounts.set_team(session.user_id, parsed.team)
@@ -126,6 +179,35 @@ class BootstrapAuthenticator:
                 session_id=session.session_id,
             )
         ]
+
+
+def _get_login_client_raw_name(payload: bytes) -> str:
+    """Extract the raw login field from `kkLoginClient` payload offset 0."""
+
+    return get_c_string(payload, 0)
+
+
+def _parse_login_client_name(raw_login: str) -> str:
+    """Parse the account name from the raw `kkLoginClient` login field.
+
+    Some clients send one newline-terminated login string at payload offset 0.
+    Another observed variant packs two newline-terminated copies back-to-back
+    before the first NUL. The account lookup key is still the first line.
+    """
+
+    if not raw_login:
+        return ''
+
+    for candidate in raw_login.splitlines():
+        if candidate:
+            return candidate
+    return raw_login.rstrip('\r\n')
+
+
+def _uses_alternate_bootstrap_variant(message: SnapMessage) -> bool:
+    """Return whether one message uses the alternate bootstrap variant."""
+
+    return message.footer_bytes == FOOTER_BYTES_ALT
 
 
 def _encrypt_blowfish_ecb(key: bytes, payload: bytes) -> bytes:
@@ -188,6 +270,32 @@ def _build_bootstrap_login_payload(
     return _encrypt_blowfish_ecb(bootstrap_key, challenge)
 
 
+def _build_alternate_bootstrap_payload(
+    *,
+    login_field: str,
+    key_material: bytes,
+    server_host: str,
+    server_port: int,
+) -> bytes:
+    """Build the alternate bootstrap payload for the alternate `0x2c` variant."""
+
+    ip_int = int.from_bytes(socket.inet_aton(server_host), byteorder='big', signed=False)
+    login_bytes = login_field.encode('utf-8')
+    plaintext = struct.pack(
+        '>40s5L60s',
+        login_bytes,
+        ip_int,
+        server_port,
+        server_port,
+        0xBB,
+        0xDD,
+        b'',
+    )
+    # This client variant decrypts 0x118 bytes and copies the full buffer.
+    padded_plaintext = plaintext + (b'\x00' * (0x118 - len(plaintext)))
+    return _encrypt_blowfish_ecb(key_material, padded_plaintext)
+
+
 def _verify_bootstrap_answer(*, payload: bytes, bootstrap_key: bytes, server_secret: str) -> bool:
     """Check decrypted challenge answer secret."""
 
@@ -205,8 +313,7 @@ def _build_login_success_payload(
 ) -> bytes:
     """Build encrypted login success payload."""
 
-    # Clients expect a newline after the username in this payload.
-    login_bytes = f'{login}\n'.encode('utf-8')
+    login_bytes = login.encode('utf-8')
     ip_int = int.from_bytes(socket.inet_aton(server_host), byteorder='big', signed=False)
     plaintext = struct.pack('>40s6L', login_bytes, ip_int, server_port, server_port, 0xBB, 0xCC, 0xDD)
     return _encrypt_blowfish_ecb(bootstrap_key, plaintext)

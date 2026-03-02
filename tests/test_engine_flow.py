@@ -14,8 +14,8 @@ from opensnap.config import StorageConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.protocol import commands
-from opensnap.protocol.constants import CHANNEL_LOBBY, CHANNEL_ROOM, FLAG_MULTI, FLAG_RELIABLE, FLAG_RESPONSE
-from opensnap.protocol.fields import get_u32
+from opensnap.protocol.constants import CHANNEL_LOBBY, CHANNEL_ROOM, FLAG_MULTI, FLAG_RELIABLE, FLAG_RESPONSE, FOOTER_BYTES_ALT
+from opensnap.protocol.fields import get_c_string, get_u32
 from opensnap.protocol.models import Endpoint, SnapMessage
 
 
@@ -68,6 +68,8 @@ class EngineFlowTests(unittest.TestCase):
         self.assertFalse(check_result.errors)
         self.assertEqual(len(check_result.messages), 1)
         self.assertEqual(check_result.messages[0].command, commands.CMD_BOOTSTRAP_LOGIN_SUCCESS)
+        success_clear = _decrypt_blowfish(config.server.bootstrap_key, check_result.messages[0].payload)
+        self.assertEqual(get_c_string(success_clear, 0), 'test')
 
         team_payload = bytearray(0x130)
         team_payload[0x128:0x12F] = b'team-a\x00'
@@ -124,6 +126,8 @@ class EngineFlowTests(unittest.TestCase):
         self.assertFalse(check_result.errors)
         self.assertEqual(len(check_result.messages), 1)
         self.assertEqual(check_result.messages[0].command, commands.CMD_BOOTSTRAP_LOGIN_SUCCESS)
+        success_clear = _decrypt_blowfish(config.server.bootstrap_key, check_result.messages[0].payload)
+        self.assertEqual(get_c_string(success_clear, 0), 'test')
 
         team_payload = bytearray(0x130)
         team_payload[0x128:0x12F] = b'team-a\x00'
@@ -142,6 +146,191 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(kics_result.messages), 1)
         self.assertEqual(kics_result.messages[0].command, commands.CMD_RESULT_LOGIN_TO_KICS)
         self.assertEqual(get_u32(kics_result.messages[0].payload, 8), session_id)
+
+    def test_login_client_accepts_repeated_login_payload(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50004)
+
+        duplicated_login = b'test\ntest\n'
+        login_request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY,
+            packet_number=0,
+            command=commands.CMD_LOGIN_CLIENT,
+            session_id=0,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=duplicated_login + (b'\x00' * (120 - len(duplicated_login))),
+        )
+        login_result = engine.handle_datagram(_encode(login_request), endpoint)
+
+        self.assertFalse(login_result.errors)
+        self.assertEqual(len(login_result.messages), 1)
+        self.assertEqual(login_result.messages[0].command, commands.CMD_BOOTSTRAP_LOGIN_SWAN)
+
+    def test_login_client_with_alternate_footer_uses_alternate_bootstrap_variant(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50014)
+
+        raw_login = b'test'
+        login_request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY,
+            packet_number=0,
+            command=commands.CMD_LOGIN_CLIENT,
+            session_id=0,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=raw_login + b'\x00',
+        )
+
+        with patch('opensnap.core.auth._resolve_local_host_for_client', return_value='127.0.0.1'):
+            from opensnap.protocol.codec import encode_messages
+
+            login_result = engine.handle_datagram(
+                encode_messages([login_request], footer_bytes=FOOTER_BYTES_ALT),
+                endpoint,
+            )
+
+        self.assertFalse(login_result.errors)
+        self.assertEqual(len(login_result.messages), 1)
+        challenge = login_result.messages[0]
+        self.assertEqual(challenge.command, commands.CMD_BOOTSTRAP_LOGIN_SWAN)
+        self.assertEqual(len(challenge.payload), 0x118)
+
+        account = engine._accounts.get_by_name('test')
+        assert account is not None
+        clear = _decrypt_blowfish(account.bootstrap_magic_key.hex().encode('ascii'), challenge.payload)
+        self.assertEqual(get_c_string(clear, 0), raw_login.decode('utf-8'))
+        self.assertNotEqual(get_u32(clear, 40), 0)
+        self.assertEqual(get_u32(clear, 44), config.server.port)
+        self.assertEqual(get_u32(clear, 48), config.server.port)
+        self.assertEqual(get_u32(clear, 52), 0xBB)
+        self.assertEqual(get_u32(clear, 56), 0xDD)
+
+    def test_login_client_with_primary_footer_and_single_string_uses_primary_bootstrap_variant(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50015)
+
+        login_request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY,
+            packet_number=0,
+            command=commands.CMD_LOGIN_CLIENT,
+            session_id=0,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=b'test\x00',
+        )
+
+        login_result = engine.handle_datagram(_encode(login_request), endpoint)
+
+        self.assertFalse(login_result.errors)
+        self.assertEqual(len(login_result.messages), 1)
+        challenge = login_result.messages[0]
+        self.assertEqual(challenge.command, commands.CMD_BOOTSTRAP_LOGIN_SWAN)
+
+        clear = _decrypt_blowfish(config.server.bootstrap_key, challenge.payload)
+        account = engine._accounts.get_by_name('test')
+        assert account is not None
+        zero, port, seed_length = struct.unpack_from('>HHL', clear, 0)
+        self.assertEqual(zero, 0)
+        self.assertEqual(port, config.server.port)
+        self.assertEqual(seed_length, len(account.seed.encode('utf-8')))
+
+    def test_login_client_unknown_account_logs_warning(self) -> None:
+        engine = SnapProtocolEngine(config=self._config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50006)
+        login_request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY,
+            packet_number=0,
+            command=commands.CMD_LOGIN_CLIENT,
+            session_id=0,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=b'no-such-user\n\x00',
+        )
+
+        with self.assertLogs('opensnap.auth', level='WARNING') as captured:
+            login_result = engine.handle_datagram(_encode(login_request), endpoint)
+
+        self.assertFalse(login_result.errors)
+        self.assertEqual(len(login_result.messages), 1)
+        self.assertEqual(login_result.messages[0].command, commands.CMD_BOOTSTRAP_LOGIN_FAIL)
+        self.assertIn('account', '\n'.join(captured.output))
+
+    def test_unhandled_command_reports_diagnostic_error(self) -> None:
+        engine = SnapProtocolEngine(config=self._config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50005)
+        request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY,
+            packet_number=0,
+            command=0x99,
+            session_id=0x12345678,
+            sequence_number=7,
+            acknowledge_number=3,
+            payload=b'\x12\x34',
+        )
+
+        with self.assertLogs('opensnap.engine', level='WARNING') as captured:
+            result = engine.handle_datagram(_encode(request), endpoint)
+
+        self.assertEqual(result.messages, [])
+        self.assertEqual(len(result.errors), 1)
+        self.assertIn('Unhandled command 0x99', result.errors[0])
+        self.assertIn('payload_len=2', result.errors[0])
+        self.assertIn('payload_hex=12 34', result.errors[0])
+        self.assertIn('Unhandled command 0x99', '\n'.join(captured.output))
+
+    def test_join_without_session_logs_warning(self) -> None:
+        engine = SnapProtocolEngine(config=self._config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50007)
+        request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY,
+            packet_number=0,
+            command=commands.CMD_JOIN,
+            session_id=0xDEADBEEF,
+            sequence_number=1,
+            acknowledge_number=0,
+            payload=struct.pack('>L', 1),
+        )
+
+        with self.assertLogs('opensnap.plugins.automodellista', level='WARNING') as captured:
+            result = engine.handle_datagram(_encode(request), endpoint)
+
+        self.assertEqual(result.messages, [])
+        self.assertFalse(result.errors)
+        self.assertIn('no session matched', '\n'.join(captured.output))
+
+    def test_send_target_short_payload_logs_warning_and_acks(self) -> None:
+        engine = SnapProtocolEngine(config=self._config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50008)
+        session_id = _create_session_via_login(engine, endpoint, 'test')
+
+        request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND_TARGET,
+            session_id=session_id,
+            sequence_number=4,
+            acknowledge_number=0,
+            payload=b'\x81\x03',
+        )
+
+        with self.assertLogs('opensnap.plugins.automodellista', level='WARNING') as captured:
+            result = engine.handle_datagram(_encode(request), endpoint)
+
+        self.assertFalse(result.errors)
+        self.assertEqual(len(result.messages), 1)
+        self.assertEqual(result.messages[0].command, commands.CMD_ACK)
+        self.assertIn('short send-target payload', '\n'.join(captured.output))
 
     def test_lobby_query_returns_all_configured_lobbies(self) -> None:
         config = self._config
@@ -1562,6 +1751,14 @@ def _build_valid_bootstrap_check_payload(bootstrap_key: bytes, server_secret: st
     encryptor = cipher.encryptor()
     padded = _pad_block(bytes(plaintext), 8)
     return encryptor.update(padded) + encryptor.finalize()
+
+
+def _decrypt_blowfish(key: bytes, payload: bytes) -> bytes:
+    """Decrypt test payload using Blowfish ECB."""
+
+    cipher = Cipher(decrepit_algorithms.Blowfish(key), modes.ECB(), backend=default_backend())
+    decryptor = cipher.decryptor()
+    return decryptor.update(payload) + decryptor.finalize()
 
 
 def _pad_block(payload: bytes, block_size: int) -> bytes:

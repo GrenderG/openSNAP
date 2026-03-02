@@ -51,9 +51,11 @@ AM_PATCH2_PAGE = '<html><body>This is test patch2.html file</body></html>\n'
 AM_PATCH3_PAGE = '<html><body>This is test patch3.html file</body></html>\n'
 AM_PATCH4_PAGE = '<html><body>This is test patch4.html file</body></html>\n'
 AM_PATCH5_PAGE = '<html><body>This is test patch5.html file</body></html>\n'
-MAX_USERNAME_LENGTH = 10
-MAX_PASSWORD_LENGTH = 8
-USERNAME_PATTERN = re.compile(r'^[A-Za-z0-9_.-]{1,10}$')
+MIN_USERNAME_LENGTH = 4
+MAX_USERNAME_LENGTH = 15
+MIN_PASSWORD_LENGTH = 4
+MAX_PASSWORD_LENGTH = 15
+USERNAME_PATTERN = re.compile(r'^[A-Za-z0-9_]{4,15}$')
 SIGNUP_INDEX_PAGE = (
     '<html>\n'
     '<body>\n'
@@ -144,8 +146,8 @@ def _make_signup_query_view(signup_service: SqliteSignupService) -> Callable[[],
     """Build query/create-id handler using username from request values."""
 
     def _signup_query() -> Response:
-        username = (request.values.get('username') or '').strip()
-        password = (request.values.get('password') or '').strip()
+        username = request.values.get('username') or ''
+        password = request.values.get('password') or ''
         return _build_signup_response(
             username=username,
             password=password,
@@ -159,9 +161,9 @@ def _make_signup_dynamic_view(signup_service: SqliteSignupService) -> Callable[[
     """Build dynamic create-id handler using username from route path."""
 
     def _signup_dynamic(username: str) -> Response:
-        password = (request.values.get('password') or '').strip()
+        password = request.values.get('password') or ''
         return _build_signup_response(
-            username=username.strip(),
+            username=username,
             password=password,
             signup_service=signup_service,
         )
@@ -263,17 +265,20 @@ def _build_signup_response(
 def _is_valid_username(username: str) -> bool:
     """Validate signup username format and length."""
 
-    if len(username.encode('utf-8')) > MAX_USERNAME_LENGTH:
+    if not USERNAME_PATTERN.fullmatch(username):
         return False
-    return USERNAME_PATTERN.fullmatch(username) is not None
+    if username.startswith('_') or username.endswith('_'):
+        return False
+    return '__' not in username
 
 
 def _is_valid_password(password: str) -> bool:
     """Validate password format and length."""
 
-    if not password:
+    encoded_length = len(password.encode('utf-8'))
+    if encoded_length < MIN_PASSWORD_LENGTH:
         return False
-    if len(password.encode('utf-8')) > MAX_PASSWORD_LENGTH:
+    if encoded_length > MAX_PASSWORD_LENGTH:
         return False
     return True
 
@@ -289,7 +294,7 @@ def _build_signup_payload(result: SignupResult) -> str:
         '</body>\n'
         '</html>\n'
         '<!--COMP-SIGNUP-->\n'
-        f'<!--INPUT-IDS-->{result.username}\n'
+        f'<!--INPUT-IDS-->{result.username}'
     )
 
 

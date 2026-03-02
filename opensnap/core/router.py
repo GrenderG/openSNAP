@@ -18,6 +18,11 @@ class CommandRouter:
 
         self._handlers[command] = handler
 
+    def has_handler(self, command: int) -> bool:
+        """Report whether a command has a registered handler."""
+
+        return command in self._handlers
+
     def dispatch(self, context: 'HandlerContext', message: SnapMessage) -> list[SnapMessage]:
         """Dispatch a message to matching command handler."""
 

@@ -116,6 +116,29 @@ class SnapProtocolEngine:
                 )
                 continue
 
+            if not self._router.has_handler(message.command):
+                payload_preview = message.payload[:32].hex(' ')
+                if len(message.payload) > 32:
+                    payload_preview = f'{payload_preview} ...'
+                detail = (
+                    'Unhandled command '
+                    f'0x{message.command:02x} '
+                    f'(type=0x{message.type_flags:04x} '
+                    f'sess=0x{message.session_id:08x} '
+                    f'seq={message.sequence_number} '
+                    f'ack={message.acknowledge_number} '
+                    f'payload_len={len(message.payload)} '
+                    f'payload_hex={payload_preview or "<empty>"})'
+                )
+                self._logger.warning(
+                    '%s from %s:%d.',
+                    detail,
+                    message.endpoint.host,
+                    message.endpoint.port,
+                )
+                errors.append(detail)
+                continue
+
             try:
                 produced = self._router.dispatch(self._context, message)
                 outbound.extend(produced)

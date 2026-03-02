@@ -6,7 +6,7 @@ import unittest
 from opensnap.config import ServerConfig
 from opensnap.protocol import commands
 from opensnap.protocol.codec import encode_messages
-from opensnap.protocol.constants import CHANNEL_ROOM, FLAG_RELIABLE
+from opensnap.protocol.constants import CHANNEL_ROOM, FLAG_RELIABLE, FOOTER_BYTES_ALT
 from opensnap.protocol.models import Endpoint, SnapMessage
 from opensnap.server import SnapUdpServer
 
@@ -170,6 +170,41 @@ class UdpReliabilityTests(unittest.TestCase):
         self.assertEqual(len(fake_socket.sent), 2)
         retransmit_attempts = sum(pending.retransmit_attempts for pending in server._reliable_pending.values())
         self.assertEqual(retransmit_attempts, 2)
+
+    def test_send_messages_uses_observed_alternate_footer_for_endpoint(self) -> None:
+        server = SnapUdpServer(config=ServerConfig(), engine=Mock())
+        endpoint = Endpoint(host='127.0.0.1', port=50005)
+        fake_socket = _FakeSocket()
+
+        inbound = self._reliable_message(
+            endpoint=endpoint,
+            session_id=0x22223333,
+            sequence_number=1,
+        )
+        server._remember_footer_variant(encode_messages([inbound], footer_bytes=FOOTER_BYTES_ALT), endpoint)
+
+        outbound = self._reliable_message(
+            endpoint=endpoint,
+            session_id=0x22223333,
+            sequence_number=2,
+        )
+        server._send_messages(fake_socket, [outbound])  # type: ignore[arg-type]
+
+        self.assertEqual(len(fake_socket.sent), 1)
+        self.assertTrue(fake_socket.sent[0][0].endswith(FOOTER_BYTES_ALT))
+
+    def test_engine_errors_log_inbound_hexdump(self) -> None:
+        server = SnapUdpServer(config=ServerConfig(), engine=Mock())
+        endpoint = Endpoint(host='127.0.0.1', port=50006)
+        payload = b'\x01\x02'
+
+        with self.assertLogs('opensnap.udp', level='ERROR') as captured:
+            server._log_engine_errors(endpoint, payload, ['Unhandled command 0x99'])
+
+        lines = '\n'.join(captured.output)
+        self.assertIn('Inbound hexdump for engine error from 127.0.0.1:50006', lines)
+        self.assertIn('01 02', lines)
+        self.assertIn('Engine error from 127.0.0.1:50006: Unhandled command 0x99', lines)
 
 
 if __name__ == '__main__':

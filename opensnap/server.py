@@ -10,8 +10,8 @@ from opensnap.env_loader import load_env_file
 from opensnap.logging_utils import configure_logging, format_hexdump
 from opensnap.plugins import create_game_plugin
 from opensnap.protocol import commands
-from opensnap.protocol.codec import PacketDecodeError, decode_datagram, encode_messages
-from opensnap.protocol.constants import FLAG_RELIABLE
+from opensnap.protocol.codec import PacketDecodeError, decode_datagram, detect_footer_bytes, encode_messages
+from opensnap.protocol.constants import FLAG_RELIABLE, FOOTER_BYTES
 from opensnap.protocol.models import Endpoint, SnapMessage
 
 
@@ -44,6 +44,7 @@ class SnapUdpServer:
         self._logger = logging.getLogger('opensnap.udp')
         self._reliable_pending: dict[tuple[str, int, int, int], _ReliablePending] = {}
         self._last_sent_sequence: dict[tuple[str, int, int], int] = {}
+        self._footer_bytes_by_endpoint: dict[tuple[str, int], bytes] = {}
 
     def run(self) -> None:
         """Run UDP loop until stopped."""
@@ -98,11 +99,11 @@ class SnapUdpServer:
                         format_hexdump(payload),
                     )
                     endpoint = Endpoint(host=host, port=port)
+                    self._remember_footer_variant(payload, endpoint)
                     self._process_transport_acks(payload, endpoint)
                     result = self._engine.handle_datagram(payload, endpoint)
                     self._send_messages(udp_socket, result.messages)
-                    for error in result.errors:
-                        self._logger.error('Engine error from %s:%d: %s', host, port, error)
+                    self._log_engine_errors(endpoint, payload, result.errors)
 
                 now = time.monotonic()
                 if now >= next_tick:
@@ -140,8 +141,11 @@ class SnapUdpServer:
 
         send_time = time.monotonic()
         for message in messages:
-            datagram = encode_messages([message])
             endpoint = message.endpoint
+            datagram = encode_messages(
+                [message],
+                footer_bytes=self._footer_bytes_by_endpoint.get((endpoint.host, endpoint.port), FOOTER_BYTES),
+            )
             self._logger.info(
                 'Sending datagram to %s:%d (%d byte(s), %d message(s)).',
                 endpoint.host,
@@ -164,6 +168,31 @@ class SnapUdpServer:
             udp_socket.sendto(datagram, (endpoint.host, endpoint.port))
             self._note_sent_sequence(message)
             self._track_reliable(message, datagram, send_time)
+
+    def _remember_footer_variant(self, payload: bytes, endpoint: Endpoint) -> None:
+        """Track which supported SNAP footer marker one endpoint is using."""
+
+        try:
+            footer_bytes = detect_footer_bytes(payload)
+        except PacketDecodeError:
+            return
+
+        self._footer_bytes_by_endpoint[(endpoint.host, endpoint.port)] = footer_bytes
+
+    def _log_engine_errors(self, endpoint: Endpoint, payload: bytes, errors: list[str]) -> None:
+        """Log engine errors with a visible inbound hexdump for debugging."""
+
+        if not errors:
+            return
+
+        self._logger.error(
+            'Inbound hexdump for engine error from %s:%d\n%s',
+            endpoint.host,
+            endpoint.port,
+            format_hexdump(payload),
+        )
+        for error in errors:
+            self._logger.error('Engine error from %s:%d: %s', endpoint.host, endpoint.port, error)
 
     def _process_transport_acks(self, payload: bytes, endpoint: Endpoint) -> None:
         """Track bare ACK frames and clear pending reliable packets."""

@@ -2,8 +2,14 @@
 
 import struct
 
+# Primary SNAP footer variant.
 FOOTER_MARKER = 0xBA476611
 FOOTER_BYTES = struct.pack('>L', FOOTER_MARKER)
+# Alternate SNAP footer variant.
+FOOTER_MARKER_ALT = 0xBA476610
+FOOTER_BYTES_ALT = struct.pack('>L', FOOTER_MARKER_ALT)
+
+ACCEPTED_FOOTER_BYTES = (FOOTER_BYTES, FOOTER_BYTES_ALT)
 
 HEADER_SIZE = 16
 FOOTER_SIZE = 4

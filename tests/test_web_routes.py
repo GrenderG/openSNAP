@@ -50,12 +50,20 @@ class WebRouteTests(unittest.TestCase):
         text = response.get_data(as_text=True)
         self.assertIn('Profile successfully retrieved.', text)
         self.assertIn('<!--INPUT-IDS-->alpha_9', text)
+        self.assertTrue(text.endswith('<!--INPUT-IDS-->alpha_9'))
+
+    def test_signup_route_accepts_maximum_length_credentials(self) -> None:
+        response = self._client.get('/amweb/create_id.html?username=alpha_beta_1234&password=123456789012345')
+        self.assertEqual(response.status_code, 200)
+        text = response.get_data(as_text=True)
+        self.assertIn('<!--INPUT-IDS-->alpha_beta_1234', text)
 
     def test_query_signup_route_supports_post(self) -> None:
         response = self._client.post('/amweb/create_id.html', data={'username': 'alpha_9', 'password': 'abc123'})
         self.assertEqual(response.status_code, 200)
         text = response.get_data(as_text=True)
         self.assertIn('<!--INPUT-IDS-->alpha_9', text)
+        self.assertTrue(text.endswith('<!--INPUT-IDS-->alpha_9'))
 
     def test_invalid_signup_username_returns_error_page(self) -> None:
         response = self._client.get('/amweb/create_id_invalid!name.html?password=abc123')
@@ -65,18 +73,56 @@ class WebRouteTests(unittest.TestCase):
         self.assertIn('Invalid username.', text)
 
     def test_overlong_signup_username_returns_error_page(self) -> None:
-        response = self._client.get('/amweb/create_id.html?username=abcdefghijk&password=abc123')
+        response = self._client.get('/amweb/create_id.html?username=abcdefghijklmnop&password=abc123')
         self.assertEqual(response.status_code, 200)
         text = response.get_data(as_text=True)
         self.assertIn('Login error', text)
         self.assertIn('Invalid username.', text)
 
+    def test_short_signup_username_returns_error_page(self) -> None:
+        response = self._client.get('/amweb/create_id.html?username=abc&password=abcd')
+        self.assertEqual(response.status_code, 200)
+        text = response.get_data(as_text=True)
+        self.assertIn('Login error', text)
+        self.assertIn('Invalid username.', text)
+
+    def test_leading_underscore_username_returns_error_page(self) -> None:
+        response = self._client.get('/amweb/create_id.html?username=_alpha&password=abcd')
+        self.assertEqual(response.status_code, 200)
+        text = response.get_data(as_text=True)
+        self.assertIn('Invalid username.', text)
+
+    def test_trailing_underscore_username_returns_error_page(self) -> None:
+        response = self._client.get('/amweb/create_id.html?username=alpha_&password=abcd')
+        self.assertEqual(response.status_code, 200)
+        text = response.get_data(as_text=True)
+        self.assertIn('Invalid username.', text)
+
+    def test_consecutive_underscore_username_returns_error_page(self) -> None:
+        response = self._client.get('/amweb/create_id.html?username=alpha__beta&password=abcd')
+        self.assertEqual(response.status_code, 200)
+        text = response.get_data(as_text=True)
+        self.assertIn('Invalid username.', text)
+
     def test_overlong_signup_password_returns_error_page(self) -> None:
-        response = self._client.get('/amweb/create_id.html?username=tester&password=123456789')
+        response = self._client.get('/amweb/create_id.html?username=tester&password=1234567890123456')
         self.assertEqual(response.status_code, 200)
         text = response.get_data(as_text=True)
         self.assertIn('Login error', text)
         self.assertIn('Invalid password.', text)
+
+    def test_short_signup_password_returns_error_page(self) -> None:
+        response = self._client.get('/amweb/create_id.html?username=tester&password=abc')
+        self.assertEqual(response.status_code, 200)
+        text = response.get_data(as_text=True)
+        self.assertIn('Login error', text)
+        self.assertIn('Invalid password.', text)
+
+    def test_password_whitespace_is_preserved(self) -> None:
+        response = self._client.post('/amweb/create_id.html', data={'username': 'user_123', 'password': '  abcd  '})
+        self.assertEqual(response.status_code, 200)
+        text = response.get_data(as_text=True)
+        self.assertIn('<!--INPUT-IDS-->user_123', text)
 
     def test_missing_signup_password_returns_error_page(self) -> None:
         response = self._client.get('/amweb/create_id.html?username=tester')
@@ -91,7 +137,7 @@ class WebRouteTests(unittest.TestCase):
         text = response.get_data(as_text=True)
         self.assertIn('name="username"', text)
         self.assertIn('name="password"', text)
-        self.assertIn('maxlength="8"', text)
+        self.assertIn('maxlength="15"', text)
         self.assertIn('action="create_id.html"', text)
         self.assertIn('type="submit"', text)
 
@@ -108,6 +154,7 @@ class WebRouteTests(unittest.TestCase):
         text = response.get_data(as_text=True)
         self.assertIn('Profile successfully retrieved.', text)
         self.assertIn('<!--INPUT-IDS-->betauser', text)
+        self.assertTrue(text.endswith('<!--INPUT-IDS-->betauser'))
 
     def test_login_php_route_is_available(self) -> None:
         response = self._client.get('/login.php')
@@ -146,27 +193,27 @@ class WebRouteTests(unittest.TestCase):
         upload_response = self._client.post('/amusa/up.php', data={'crs': 'D'})
         self.assertEqual(upload_response.status_code, 200)
 
-    def test_beta1_patch1_route_is_available(self) -> None:
+    def test_patch1_route_is_available(self) -> None:
         response = self._client.get('/amusa/patch1.html')
         self.assertEqual(response.status_code, 200)
         self.assertIn('This is test patch1.html file', response.get_data(as_text=True))
 
-    def test_beta1_patch2_route_is_available(self) -> None:
+    def test_patch2_route_is_available(self) -> None:
         response = self._client.get('/amusa/patch2.html')
         self.assertEqual(response.status_code, 200)
         self.assertIn('This is test patch2.html file', response.get_data(as_text=True))
 
-    def test_beta1_patch3_route_is_available(self) -> None:
+    def test_patch3_route_is_available(self) -> None:
         response = self._client.get('/amusa/patch3.html')
         self.assertEqual(response.status_code, 200)
         self.assertIn('This is test patch3.html file', response.get_data(as_text=True))
 
-    def test_beta1_patch4_route_is_available(self) -> None:
+    def test_patch4_route_is_available(self) -> None:
         response = self._client.get('/amusa/patch4.html')
         self.assertEqual(response.status_code, 200)
         self.assertIn('This is test patch4.html file', response.get_data(as_text=True))
 
-    def test_beta1_patch5_route_is_available(self) -> None:
+    def test_patch5_route_is_available(self) -> None:
         response = self._client.get('/amusa/patch5.html')
         self.assertEqual(response.status_code, 200)
         self.assertIn('This is test patch5.html file', response.get_data(as_text=True))

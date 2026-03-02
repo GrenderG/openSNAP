@@ -4,6 +4,7 @@ from collections.abc import Sequence
 import struct
 
 from opensnap.protocol.constants import (
+    ACCEPTED_FOOTER_BYTES,
     FLAG_MULTI,
     FOOTER_BYTES,
     FOOTER_SIZE,
@@ -18,14 +19,25 @@ class PacketDecodeError(ValueError):
     """Raised when a datagram cannot be decoded."""
 
 
+def detect_footer_bytes(data: bytes) -> bytes:
+    """Return the supported footer marker present in one datagram."""
+
+    if len(data) < FOOTER_SIZE:
+        raise PacketDecodeError('Datagram is too small.')
+
+    footer = data[-FOOTER_SIZE:]
+    if footer not in ACCEPTED_FOOTER_BYTES:
+        raise PacketDecodeError('Datagram footer marker is missing.')
+    return footer
+
+
 def decode_datagram(data: bytes, endpoint: Endpoint) -> list[SnapMessage]:
     """Decode a UDP datagram into one or more SNAP messages."""
 
     if len(data) < HEADER_SIZE + FOOTER_SIZE:
         raise PacketDecodeError('Datagram is too small.')
 
-    if data[-FOOTER_SIZE:] != FOOTER_BYTES:
-        raise PacketDecodeError('Datagram footer marker is missing.')
+    footer_bytes = detect_footer_bytes(data)
 
     messages: list[SnapMessage] = []
     offset = 0
@@ -63,6 +75,7 @@ def decode_datagram(data: bytes, endpoint: Endpoint) -> list[SnapMessage]:
             payload=payload,
             size_word_override=size_word if type_flags & FLAG_MULTI else None,
             embedded_in_multi=multi_command_seen,
+            footer_bytes=footer_bytes,
         )
         messages.append(message)
 
@@ -81,7 +94,7 @@ def decode_datagram(data: bytes, endpoint: Endpoint) -> list[SnapMessage]:
     return messages
 
 
-def encode_messages(messages: Sequence[SnapMessage]) -> bytes:
+def encode_messages(messages: Sequence[SnapMessage], *, footer_bytes: bytes | None = None) -> bytes:
     """Encode one or more SNAP messages into a datagram."""
 
     if not messages:
@@ -109,5 +122,5 @@ def encode_messages(messages: Sequence[SnapMessage]) -> bytes:
         )
         encoded.extend(message.payload)
 
-    encoded.extend(FOOTER_BYTES)
+    encoded.extend(FOOTER_BYTES if footer_bytes is None else footer_bytes)
     return bytes(encoded)

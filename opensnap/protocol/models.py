@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from opensnap.protocol.constants import FOOTER_BYTES
+
 
 @dataclass(frozen=True, slots=True)
 class Endpoint:
@@ -25,3 +27,4 @@ class SnapMessage:
     payload: bytes = b''
     size_word_override: int | None = None
     embedded_in_multi: bool = False
+    footer_bytes: bytes = FOOTER_BYTES

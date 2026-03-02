@@ -138,6 +138,12 @@ class AutoModellistaPlugin:
 
     def _handle_query_user(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         if (message.type_flags & 0x3000) != CHANNEL_ROOM:
+            _LOGGER.warning(
+                'Rejecting query-user command from %s:%d: unsupported channel type=0x%04x.',
+                message.endpoint.host,
+                message.endpoint.port,
+                message.type_flags,
+            )
             return []
 
         room_id = get_u32(message.payload, 0)
@@ -295,6 +301,12 @@ class AutoModellistaPlugin:
                 )
             ] + callbacks
 
+        _LOGGER.warning(
+            'Rejecting join command from %s:%d: unsupported channel type=0x%04x.',
+            message.endpoint.host,
+            message.endpoint.port,
+            message.type_flags,
+        )
         return []
 
     def _handle_leave(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -358,6 +370,12 @@ class AutoModellistaPlugin:
                 )
             ] + callbacks
 
+        _LOGGER.warning(
+            'Rejecting leave command from %s:%d: unsupported channel type=0x%04x.',
+            message.endpoint.host,
+            message.endpoint.port,
+            message.type_flags,
+        )
         return []
 
     def _handle_send(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -437,6 +455,16 @@ class AutoModellistaPlugin:
             )
 
             if len(message.payload) < 2:
+                _LOGGER.warning(
+                    (
+                        'Ignoring short room send payload from %s:%d '
+                        '(type=0x%04x len=%d).'
+                    ),
+                    message.endpoint.host,
+                    message.endpoint.port,
+                    message.type_flags,
+                    len(message.payload),
+                )
                 return [ack_to_sender]
 
             include_sender = _should_include_sender_for_room_game_payload(message.payload)
@@ -450,6 +478,12 @@ class AutoModellistaPlugin:
             )
             return [ack_to_sender] + broadcasts
 
+        _LOGGER.warning(
+            'Rejecting send command from %s:%d: unsupported type=0x%04x.',
+            message.endpoint.host,
+            message.endpoint.port,
+            message.type_flags,
+        )
         return []
 
     def _handle_send_target(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -467,7 +501,7 @@ class AutoModellistaPlugin:
         ]
 
         if len(message.payload) < 10:
-            _LOGGER.debug(
+            _LOGGER.warning(
                 'Ignoring short send-target payload from %s:%d (len=%d).',
                 message.endpoint.host,
                 message.endpoint.port,
@@ -478,7 +512,7 @@ class AutoModellistaPlugin:
         target_session_id = get_u32(message.payload, 4)
         target = context.sessions.get(target_session_id)
         if target is None:
-            _LOGGER.debug(
+            _LOGGER.warning(
                 (
                     'Skipping send-target relay from %s:%d: '
                     'target session 0x%08x not found (sender session 0x%08x).'
@@ -492,7 +526,7 @@ class AutoModellistaPlugin:
 
         relay_payload = _build_send_target_payload(message.payload)
         if relay_payload is None:
-            _LOGGER.debug(
+            _LOGGER.warning(
                 'Skipping send-target relay from %s:%d: payload len=%d is too short.',
                 message.endpoint.host,
                 message.endpoint.port,
@@ -572,7 +606,23 @@ def _resolve_session(context: HandlerContext, message: SnapMessage) -> Session |
     session = context.sessions.get(message.session_id)
     if session is not None:
         return session
-    return context.sessions.get_by_endpoint(message.endpoint)
+    session = context.sessions.get_by_endpoint(message.endpoint)
+    if session is not None:
+        return session
+    _LOGGER.warning(
+        (
+            'Rejecting command 0x%02x from %s:%d: no session matched '
+            '(type=0x%04x sess=0x%08x seq=%d ack=%d).'
+        ),
+        message.command,
+        message.endpoint.host,
+        message.endpoint.port,
+        message.type_flags,
+        message.session_id,
+        message.sequence_number,
+        message.acknowledge_number,
+    )
+    return None
 
 
 def _prune_stale_rooms_in_lobby(context: HandlerContext, lobby_id: int) -> None:
