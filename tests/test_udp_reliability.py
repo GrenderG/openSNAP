@@ -92,6 +92,35 @@ class UdpReliabilityTests(unittest.TestCase):
 
         self.assertEqual(len(server._reliable_pending), 2)
 
+    def test_byte_swapped_ack_is_accepted_when_plausible(self) -> None:
+        server = SnapUdpServer(config=ServerConfig(), engine=Mock())
+        endpoint = Endpoint(host='127.0.0.1', port=50004)
+        session_id = 0x51525354
+
+        for sequence in (485, 486):
+            outgoing = self._reliable_message(
+                endpoint=endpoint,
+                session_id=session_id,
+                sequence_number=sequence,
+            )
+            server._note_sent_sequence(outgoing)
+            server._track_reliable(outgoing, b'packet', 0.0)
+
+        # 0xE6010000 byte-swaps to 0x000001E6 (486), which is plausible.
+        incoming = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=session_id,
+            sequence_number=1001,
+            acknowledge_number=0xE6010000,
+            payload=b'\x80\x07' + b'\x00' * 62,
+        )
+        server._process_transport_acks(encode_messages([incoming]), endpoint)
+
+        self.assertEqual(len(server._reliable_pending), 0)
+
     def test_reliable_pending_limit_drops_oldest_sequences(self) -> None:
         server = SnapUdpServer(config=ServerConfig(), engine=Mock())
         endpoint = Endpoint(host='127.0.0.1', port=50002)

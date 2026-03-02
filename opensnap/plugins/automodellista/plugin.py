@@ -16,6 +16,16 @@ _LOGGER = logging.getLogger('opensnap.plugins.automodellista')
 # Binary-verified attribute selector used by kkQueryLobbyAttribute/kkQueryGameRoomAttribute:
 # SLUS_204.98 cpnGetJoinUserLobby/cpnGetJoinUserRoom load 0x55534552 ("USER").
 USER_ATTRIBUTE_TOKEN = b'USER'
+# Legacy operation identifiers expected in CMD_RESULT_WRAPPER (0x28) payload
+# word0 for Auto Modellista client progression.
+CB_CREATE_GAME_ROOM = 0x04
+CB_JOIN_LOBBY = 0x06
+CB_JOIN_GAME_ROOM = 0x06
+CB_LEAVE_LOBBY = 0x07
+CB_LEAVE_GAME_ROOM = 0x07
+CB_CHANGE_ATTRIBUTE = 0x08
+CB_CHANGE_USER_PROPERTY = 0x0C
+CB_CHANGE_USER_STATUS = 0x0D
 
 
 class AutoModellistaPlugin:
@@ -169,7 +179,7 @@ class AutoModellistaPlugin:
                     message,
                     type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
                     command=commands.CMD_RESULT_WRAPPER,
-                    payload=struct.pack('>2L', 0x04, cached_result),
+                    payload=struct.pack('>2L', CB_CREATE_GAME_ROOM, cached_result),
                     session_id=session.session_id,
                 )
             ]
@@ -188,7 +198,7 @@ class AutoModellistaPlugin:
                     message,
                     type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
                     command=commands.CMD_RESULT_WRAPPER,
-                    payload=struct.pack('>2L', 0x04, 1),
+                    payload=struct.pack('>2L', CB_CREATE_GAME_ROOM, 1),
                     session_id=session.session_id,
                 )
             ]
@@ -204,7 +214,7 @@ class AutoModellistaPlugin:
         context.sessions.set_room(session.session_id, room.room_id)
         self._create_room_results[cache_key] = room.room_id
 
-        payload = struct.pack('>2L', 0x04, room.room_id)
+        payload = struct.pack('>2L', CB_CREATE_GAME_ROOM, room.room_id)
         return [
             context.reply(
                 message,
@@ -227,7 +237,7 @@ class AutoModellistaPlugin:
             lobby_id = get_u32(message.payload, 0)
             context.sessions.set_lobby(session.session_id, lobby_id)
             context.sessions.set_room(session.session_id, 0)
-            payload = struct.pack('>2L', 0x06, 0)
+            payload = struct.pack('>2L', CB_JOIN_LOBBY, 0)
             return [
                 context.reply(
                     message,
@@ -247,7 +257,7 @@ class AutoModellistaPlugin:
             # If the client is already in this room, treat as idempotent success
             # and avoid replaying host/join callbacks that can desynchronize state.
             if room is not None and session.room_id == room_id and session.session_id in room.members:
-                payload = struct.pack('>2L', 0x06, 0)
+                payload = struct.pack('>2L', CB_JOIN_GAME_ROOM, 0)
                 return [
                     context.reply(
                         message,
@@ -270,10 +280,10 @@ class AutoModellistaPlugin:
                     joining_session=session,
                     recipients=existing_members,
                 )
-                payload = struct.pack('>2L', 0x06, 0)
+                payload = struct.pack('>2L', CB_JOIN_GAME_ROOM, 0)
             else:
                 callbacks = []
-                payload = struct.pack('>2L', 0x06, 1)
+                payload = struct.pack('>2L', CB_JOIN_GAME_ROOM, 1)
 
             return [
                 context.reply(
@@ -309,7 +319,7 @@ class AutoModellistaPlugin:
                     recipients=recipients,
                 )
             context.sessions.set_lobby(session.session_id, 0)
-            payload = struct.pack('>2L', 0x07, 0)
+            payload = struct.pack('>2L', CB_LEAVE_LOBBY, 0)
             return [
                 context.reply(
                     message,
@@ -336,7 +346,7 @@ class AutoModellistaPlugin:
                     leaving_session_id=session.session_id,
                     recipients=recipients,
                 )
-            payload = struct.pack('>2L', 0x07, 0)
+            payload = struct.pack('>2L', CB_LEAVE_GAME_ROOM, 0)
             return [
                 context.reply(
                     message,
@@ -359,7 +369,7 @@ class AutoModellistaPlugin:
             # TODO(openSNAP): Keep validating multi-send relay against captures.
             #  Current implementation relays tunneled room payloads in multi packets
             #  using the same sender/all-members policy as single SEND packets.
-            #  Re-check once additional ready-battle and in-race traces are decoded.
+            #  Re-check once additional ready-battle and in-game traces are decoded.
             channel = message.type_flags & 0x3000
             if channel == 0:
                 channel = CHANNEL_ROOM
@@ -371,8 +381,8 @@ class AutoModellistaPlugin:
             )]
 
             if channel == CHANNEL_ROOM and len(message.payload) >= 2:
-                subcommand = get_u16(message.payload, 0)
-                exclude_session_id = None if subcommand == 0x8001 else session.session_id
+                include_sender = _should_include_sender_for_room_game_payload(message.payload)
+                exclude_session_id = None if include_sender else session.session_id
                 responses.extend(
                     _broadcast_room_game_packet(
                         context=context,
@@ -429,8 +439,8 @@ class AutoModellistaPlugin:
             if len(message.payload) < 2:
                 return [ack_to_sender]
 
-            subcommand = get_u16(message.payload, 0)
-            exclude_session_id = None if subcommand == 0x8001 else session.session_id
+            include_sender = _should_include_sender_for_room_game_payload(message.payload)
+            exclude_session_id = None if include_sender else session.session_id
             broadcasts = _broadcast_room_game_packet(
                 context=context,
                 request=message,
@@ -503,26 +513,26 @@ class AutoModellistaPlugin:
         return response
 
     def _handle_change_user_status(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        return self._simple_change_ack(context, message, 0x0D)
+        return self._simple_change_ack(context, message, CB_CHANGE_USER_STATUS)
 
     def _handle_change_user_property(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        return self._simple_change_ack(context, message, 0x0C)
+        return self._simple_change_ack(context, message, CB_CHANGE_USER_PROPERTY)
 
     def _handle_change_attribute(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        return self._simple_change_ack(context, message, 0x08)
+        return self._simple_change_ack(context, message, CB_CHANGE_ATTRIBUTE)
 
     def _simple_change_ack(
         self,
         context: HandlerContext,
         message: SnapMessage,
-        subcommand: int,
+        callback_id: int,
     ) -> list[SnapMessage]:
         session = _resolve_session(context, message)
         if session is None:
             return []
         acknowledge_number = _ack_for_request(message, session)
 
-        payload = struct.pack('>2L', subcommand, 0)
+        payload = struct.pack('>2L', callback_id, 0)
         return [
             context.reply(
                 message,
@@ -742,6 +752,26 @@ def _build_send_target_payload(payload: bytes) -> bytes | None:
     return payload[:4] + b'\x00\x00\x00\x00' + payload[8:]
 
 
+def _should_include_sender_for_room_game_payload(payload: bytes) -> bool:
+    """Return True when room-game payloads must be echoed back to sender.
+
+    Binary parity:
+    - Start-game trigger uses subcommand 0x8001 and must relay to all members.
+    - End-of-game flow uses two CMD_SEND families that are consumed per-slot:
+      - 0x0658..0x065f (end marker)
+      - 0x1468..0x146f (finish marker)
+    """
+
+    if len(payload) < 2:
+        return False
+
+    subcommand = get_u16(payload, 0)
+    if subcommand == 0x8001:
+        return True
+
+    return (0x0658 <= subcommand <= 0x065F) or (0x1468 <= subcommand <= 0x146F)
+
+
 def _build_room_join_callbacks(
     *,
     context: HandlerContext,
@@ -771,7 +801,10 @@ def _build_room_join_callbacks(
             context.direct(
                 endpoint=member.endpoint,
                 session_id=member.session_id,
-                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                # Keep callback-channel semantics while making join callbacks
+                # reliable so lost host notifications do not stall "Getting
+                # information" progression.
+                type_flags=CHANNEL_ROOM | FLAG_RESPONSE | FLAG_RELIABLE,
                 command=commands.CMD_JOIN,
                 payload=payload,
                 acknowledge_number=_ack_for_session(member),
@@ -786,7 +819,11 @@ def _build_room_leave_callbacks(
     leaving_session_id: int,
     recipients: list[Session],
 ) -> list[SnapMessage]:
-    """Notify remaining room members that one peer left the room."""
+    """Notify remaining room members that one peer left the room.
+
+    Use reliable callback-channel packets so end-of-game room teardown does not
+    depend on a single lossy datagram.
+    """
 
     payload = struct.pack('>L', leaving_session_id)
     messages: list[SnapMessage] = []
@@ -797,7 +834,7 @@ def _build_room_leave_callbacks(
             context.direct(
                 endpoint=member.endpoint,
                 session_id=member.session_id,
-                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                type_flags=CHANNEL_ROOM | FLAG_RESPONSE | FLAG_RELIABLE,
                 command=commands.CMD_LEAVE,
                 payload=payload,
                 acknowledge_number=_ack_for_session(member),

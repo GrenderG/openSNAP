@@ -183,7 +183,12 @@ class SnapUdpServer:
             if not is_bare_ack and not is_reliable_with_piggyback_ack:
                 continue
 
-            if not self._is_plausible_ack(endpoint, message.session_id, message.acknowledge_number):
+            acknowledge_number = self._normalize_transport_ack(
+                endpoint,
+                message.session_id,
+                message.acknowledge_number,
+            )
+            if acknowledge_number is None:
                 self._logger.debug(
                     (
                         'Ignoring implausible transport ACK from %s:%d '
@@ -196,7 +201,7 @@ class SnapUdpServer:
                 )
                 continue
 
-            self._clear_reliable_pending(endpoint, message.session_id, message.acknowledge_number)
+            self._clear_reliable_pending(endpoint, message.session_id, acknowledge_number)
 
     def _track_reliable(self, message: SnapMessage, datagram: bytes, send_time: float) -> None:
         """Store outgoing reliable packets until acknowledged."""
@@ -239,6 +244,50 @@ class SnapUdpServer:
                 return False
 
         return acknowledge_number <= (max_known_sequence + self._ACK_FUTURE_SLACK)
+
+    def _normalize_transport_ack(
+        self,
+        endpoint: Endpoint,
+        session_id: int,
+        acknowledge_number: int,
+    ) -> int | None:
+        """Return a plausible transport ACK value for one endpoint/session.
+
+        Some game-end client packets carry a byte-swapped ACK field. Accept that
+        variant only when the swapped value is plausible for current reliability
+        state, otherwise keep strict rejection.
+        """
+
+        if self._is_plausible_ack(endpoint, session_id, acknowledge_number):
+            return acknowledge_number
+
+        swapped_ack = self._swap_u32(acknowledge_number)
+        if swapped_ack != acknowledge_number and self._is_plausible_ack(endpoint, session_id, swapped_ack):
+            self._logger.debug(
+                (
+                    'Using byte-swapped transport ACK from %s:%d '
+                    '(sess=0x%08x raw=%d swapped=%d).'
+                ),
+                endpoint.host,
+                endpoint.port,
+                session_id,
+                acknowledge_number,
+                swapped_ack,
+            )
+            return swapped_ack
+
+        return None
+
+    @staticmethod
+    def _swap_u32(value: int) -> int:
+        """Swap endianness for one 32-bit unsigned integer."""
+
+        return (
+            ((value & 0x000000FF) << 24)
+            | ((value & 0x0000FF00) << 8)
+            | ((value & 0x00FF0000) >> 8)
+            | ((value & 0xFF000000) >> 24)
+        )
 
     def _max_pending_sequence(self, endpoint: Endpoint, session_id: int) -> int | None:
         """Return highest tracked reliable sequence for one endpoint/session."""
