@@ -14,9 +14,9 @@ from opensnap.protocol.models import SnapMessage
 MAX_ROOMS_PER_LOBBY = 50
 _LOGGER = logging.getLogger('opensnap.plugins.automodellista')
 # Binary-verified attribute selector used by kkQueryLobbyAttribute/kkQueryGameRoomAttribute:
-# SLUS_204.98 cpnGetJoinUserLobby/cpnGetJoinUserRoom load 0x55534552 ("USER").
+# SLUS_206.42 cpnGetJoinUserLobby/cpnGetJoinUserRoom load 0x55534552 ("USER").
 USER_ATTRIBUTE_TOKEN = b'USER'
-# Legacy operation identifiers expected in CMD_RESULT_WRAPPER (0x28) payload
+# Operation identifiers expected in CMD_RESULT_WRAPPER (0x28) payload
 # word0 for Auto Modellista client progression.
 CB_CREATE_GAME_ROOM = 0x04
 CB_JOIN_LOBBY = 0x06
@@ -780,7 +780,7 @@ def _build_room_join_callbacks(
 ) -> list[SnapMessage]:
     """Notify existing room members that a player joined.
 
-    Keep one callback per recipient and preserve legacy callback channel flags.
+    Keep one callback per recipient and preserve the expected callback channel flags.
     """
 
     account = context.accounts.get_by_id(joining_session.user_id)

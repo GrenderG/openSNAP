@@ -71,7 +71,7 @@ def decode_datagram(data: bytes, endpoint: Endpoint) -> list[SnapMessage]:
         # Incoming multi datagrams are command-dependent:
         # - 0x0f (kkSend) may embed a follow-up command (for example room leave 0x07)
         #   that must be dispatched.
-        # - other observed multi commands should keep snapsi-compatible "first entry only"
+        # - other observed multi commands should keep the current "first entry only"
         #   behavior to avoid over-dispatching embedded query entries.
         if type_flags & FLAG_MULTI:
             multi_command_seen = True

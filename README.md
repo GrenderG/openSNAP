@@ -135,12 +135,12 @@ Expected startup output includes:
 openSNAP web listening on 0.0.0.0:80 using plugin <web-game-module>.
 ```
 
-The web service includes plugin-defined routes based on legacy SNAP web flows.
+The web service includes plugin-defined routes based on the original SNAP web flows.
 
 The signup flow is user-driven. The plugin-provided signup page allows the player to choose the username encoded in the signup payload.
 Usernames are limited to 10 characters and accepted characters are `A-Z`, `a-z`, `0-9`, `_`, `.`, and `-`.
 Passwords are required and limited to 8 characters.
-The form uses simple legacy-compatible HTML input controls for old console browsers.
+The form uses simple PS2-era-compatible HTML input controls for old console browsers.
 The page acts as create/login: missing users are created in SQLite, existing users must provide the matching password.
 
 For reverse-engineering support, unknown routes trigger a full terminal request dump (method, URL, query, headers, form/body, and source address).

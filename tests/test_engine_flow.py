@@ -88,7 +88,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(get_u32(kics_result.messages[0].payload, 8), session_id)
 
     def test_login_and_kics_flow_tolerates_zero_sequence_reuse(self) -> None:
-        """Keep snapsi-compatible behavior when bootstrap/login reuses sequence 0."""
+        """Keep the observed bootstrap/login sequence-0 reuse behavior."""
 
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
@@ -331,7 +331,7 @@ class EngineFlowTests(unittest.TestCase):
             self.assertEqual(callback_username.rstrip(b'\x00').decode('utf-8'), 'test\n')
             self.assertEqual(callback_team.rstrip(b'\x00').decode('utf-8'), 'team')
 
-    def test_lobby_join_result_wrapper_uses_legacy_operation_id(self) -> None:
+    def test_lobby_join_result_wrapper_uses_operation_id(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint = Endpoint(host='127.0.0.1', port=50060)

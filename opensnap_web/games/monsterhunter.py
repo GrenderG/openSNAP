@@ -14,7 +14,7 @@ class MonsterHunterWebModule:
     name = 'monsterhunter'
 
     def register_routes(self, app: Flask, config: WebServerConfig, tools: WebRouteTools) -> None:
-        """Register Monster Hunter-specific web paths with shared legacy signup logic."""
+        """Register Monster Hunter-specific web paths with shared signup logic."""
 
         del config
         signup_service = SqliteSignupService()

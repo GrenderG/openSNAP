@@ -120,7 +120,7 @@ def register_signup_routes(
 
 
 def _make_signup_index_view(tools: WebRouteTools) -> Callable[[], Response]:
-    """Build one index handler for legacy signup pages."""
+    """Build one index handler for the original signup pages."""
 
     def _signup_index() -> Response:
         return tools.html_response(SIGNUP_INDEX_PAGE)

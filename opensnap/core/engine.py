@@ -191,7 +191,7 @@ class SnapProtocolEngine:
         ]
 
     def _handle_logout(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        """Handle `kkLogout` as a no-op, matching snapsi behavior."""
+        """Handle `kkLogout` as a no-op, matching observed game behavior."""
 
         del context, message
         return []
