@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import Mock
 
 from opensnap.config import ServerConfig
-from opensnap.server import SnapUdpServer
+from opensnap.udp_server import SnapUdpServer
 
 try:
     from opensnap_web.server import _enable_web_reuse_address
@@ -49,7 +49,7 @@ class SocketReuseTests(unittest.TestCase):
         server = SnapUdpServer(config=ServerConfig(), engine=Mock())
         fake_socket = _FakeSocket(fail=True)
 
-        with self.assertLogs('opensnap.udp', level='WARNING') as captured:
+        with self.assertLogs('opensnap.game', level='WARNING') as captured:
             server._enable_reuse_address(fake_socket)  # type: ignore[arg-type]
 
         self.assertIn('Failed to enable SO_REUSEADDR', '\n'.join(captured.output))

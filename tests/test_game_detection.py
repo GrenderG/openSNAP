@@ -1,0 +1,51 @@
+"""Bootstrap game-detection tests."""
+
+import unittest
+
+from opensnap.core.bootstrap import detect_game_identifier
+from opensnap.protocol.constants import CHANNEL_LOBBY, FOOTER_BYTES, FOOTER_BYTES_KAGE
+from opensnap.protocol.models import Endpoint, SnapMessage
+
+
+class BootstrapGameDetectionTests(unittest.TestCase):
+    """Verify bootstrap game detection stays conservative."""
+
+    def test_detector_uses_configured_default_for_standard_footer(self) -> None:
+        message = _message(footer_bytes=FOOTER_BYTES)
+
+        detected = detect_game_identifier(
+            message=message,
+            default_game_identifier='automodellista',
+        )
+
+        self.assertEqual(detected, 'automodellista')
+
+    def test_detector_does_not_switch_games_for_kage_footer_variant(self) -> None:
+        message = _message(footer_bytes=FOOTER_BYTES_KAGE)
+
+        detected = detect_game_identifier(
+            message=message,
+            default_game_identifier='monsterhunter',
+        )
+
+        self.assertEqual(detected, 'monsterhunter')
+
+
+def _message(*, footer_bytes: bytes) -> SnapMessage:
+    """Build a minimal bootstrap login packet."""
+
+    return SnapMessage(
+        endpoint=Endpoint(host='127.0.0.1', port=50000),
+        type_flags=CHANNEL_LOBBY,
+        packet_number=0,
+        command=0x2C,
+        session_id=0,
+        sequence_number=0,
+        acknowledge_number=0,
+        payload=b'test\n\x00',
+        footer_bytes=footer_bytes,
+    )
+
+
+if __name__ == '__main__':
+    unittest.main()

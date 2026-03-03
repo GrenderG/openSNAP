@@ -89,6 +89,20 @@ class DnsConfigTests(unittest.TestCase):
         self.assertEqual(config.entries['regweb.reo.capcom.sf.yav4.com'], '192.168.1.151')
         self.assertEqual(config.entries['snap01.reo.capcom.sf.yav4.com'], '192.168.1.151')
 
+    def test_default_target_ip_prefers_game_server_advertise_host(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                'OPENSNAP_DNS_ENTRIES': '{"custom.example.net":"@default"}',
+                'OPENSNAP_GAME_ADVERTISE_HOST': '203.0.113.20',
+                'OPENSNAP_ADVERTISE_HOST': '203.0.113.10',
+            },
+            clear=True,
+        ):
+            config = default_dns_server_config()
+
+        self.assertEqual(config.entries['custom.example.net'], '203.0.113.20')
+
 
 if __name__ == '__main__':
     unittest.main()

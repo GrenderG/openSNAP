@@ -9,7 +9,8 @@ DEFAULT_LOG_LEVEL = 'debug'
 DEFAULT_HEXDUMP_LIMIT = 16384
 DEFAULT_LOG_PATH = ''
 SERVICE_LOG_FILENAMES = {
-    'udp': 'opensnap-udp.log',
+    'bootstrap': 'opensnap-bootstrap.log',
+    'game': 'opensnap-game.log',
     'dns': 'opensnap-dns-log',
     'web': 'opensnap-web.log',
 }

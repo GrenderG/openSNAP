@@ -71,8 +71,8 @@ class EngineFlowTests(unittest.TestCase):
         success_clear = _decrypt_blowfish(config.server.bootstrap_key, check_result.messages[0].payload)
         self.assertEqual(get_c_string(success_clear, 0), 'test\n')
         self.assertNotEqual(get_u32(success_clear, 40), 0)
-        self.assertEqual(get_u32(success_clear, 44), config.server.port)
-        self.assertEqual(get_u32(success_clear, 48), config.server.port)
+        self.assertEqual(get_u32(success_clear, 44), config.server.game.port)
+        self.assertEqual(get_u32(success_clear, 48), config.server.game.port)
         self.assertEqual(get_u32(success_clear, 52), 0)
         self.assertEqual(get_u32(success_clear, 56), 0)
         self.assertEqual(get_u32(success_clear, 60), 0)
@@ -192,7 +192,10 @@ class EngineFlowTests(unittest.TestCase):
             payload=raw_login + b'\x00',
         )
 
-        with patch('opensnap.core.auth._resolve_local_host_for_client', return_value='127.0.0.1'):
+        with patch(
+            'opensnap.core.bootstrap.handlers._resolve_local_host_for_client',
+            return_value='127.0.0.1',
+        ):
             from opensnap.protocol.codec import encode_messages
 
             login_result = engine.handle_datagram(
@@ -211,8 +214,8 @@ class EngineFlowTests(unittest.TestCase):
         clear = _decrypt_blowfish(account.bootstrap_magic_key.hex().encode('ascii'), challenge.payload)
         self.assertEqual(get_c_string(clear, 0), raw_login.decode('utf-8'))
         self.assertNotEqual(get_u32(clear, 40), 0)
-        self.assertEqual(get_u32(clear, 44), config.server.port)
-        self.assertEqual(get_u32(clear, 48), config.server.port)
+        self.assertEqual(get_u32(clear, 44), config.server.bootstrap.port)
+        self.assertEqual(get_u32(clear, 48), config.server.bootstrap.port)
         self.assertEqual(get_u32(clear, 52), 0)
         self.assertEqual(get_u32(clear, 56), 0)
         self.assertEqual(get_u32(clear, 60), len(clear) - struct.calcsize('>40s6L'))
@@ -245,7 +248,7 @@ class EngineFlowTests(unittest.TestCase):
         assert account is not None
         zero, port, seed_length = struct.unpack_from('>HHL', clear, 0)
         self.assertEqual(zero, 0)
-        self.assertEqual(port, config.server.port)
+        self.assertEqual(port, config.server.bootstrap.port)
         self.assertEqual(seed_length, len(account.seed.encode('utf-8')))
 
     def test_send_echo_returns_same_command_and_echoed_u32(self) -> None:
@@ -286,7 +289,7 @@ class EngineFlowTests(unittest.TestCase):
             payload=b'no-such-user\n\x00',
         )
 
-        with self.assertLogs('opensnap.auth', level='WARNING') as captured:
+        with self.assertLogs('opensnap.core.bootstrap', level='WARNING') as captured:
             login_result = engine.handle_datagram(_encode(login_request), endpoint)
 
         self.assertFalse(login_result.errors)
@@ -540,7 +543,7 @@ class EngineFlowTests(unittest.TestCase):
             self.assertEqual(callback.endpoint, endpoint_one)
             self.assertEqual(callback.session_id, host_session)
             self.assertEqual(callback.type_flags & FLAG_RESPONSE, FLAG_RESPONSE)
-            self.assertEqual(callback.type_flags & FLAG_RELIABLE, FLAG_RELIABLE)
+            self.assertEqual(callback.type_flags & FLAG_RELIABLE, 0)
             self.assertEqual(callback.acknowledge_number, 4)
             callback_username, callback_session_id, callback_unknown, callback_team = struct.unpack(
                 '>16s2L16s',
@@ -646,7 +649,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(callback.endpoint, endpoint_one)
         self.assertEqual(callback.session_id, host_session)
         self.assertEqual(callback.type_flags & FLAG_RESPONSE, FLAG_RESPONSE)
-        self.assertEqual(callback.type_flags & FLAG_RELIABLE, FLAG_RELIABLE)
+        self.assertEqual(callback.type_flags & FLAG_RELIABLE, 0)
         self.assertEqual(struct.unpack('>L', callback.payload)[0], leaver_session)
 
     def test_lobby_leave_notifies_remaining_room_members(self) -> None:
@@ -687,7 +690,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(callback.endpoint, endpoint_one)
         self.assertEqual(callback.session_id, host_session)
         self.assertEqual(callback.type_flags & FLAG_RESPONSE, FLAG_RESPONSE)
-        self.assertEqual(callback.type_flags & FLAG_RELIABLE, FLAG_RELIABLE)
+        self.assertEqual(callback.type_flags & FLAG_RELIABLE, 0)
         self.assertEqual(struct.unpack('>L', callback.payload)[0], leaver_session)
 
     def test_send_subcommand_8006_broadcasts_to_other_room_members(self) -> None:
@@ -1192,7 +1195,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(struct.unpack('>2LH', relay.payload), (1, 0, 0x8001))
         self.assertEqual(relay.sequence_number, 0)
 
-    def test_first_reliable_send_target_relay_uses_sequence_one_after_reliable_join_callback(self) -> None:
+    def test_first_reliable_send_target_relay_uses_sequence_zero_after_room_join(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint_one = Endpoint(host='127.0.0.1', port=50108)
@@ -1222,9 +1225,7 @@ class EngineFlowTests(unittest.TestCase):
         relay = result.messages[1]
         self.assertEqual(relay.command, commands.CMD_SEND_TARGET)
         self.assertEqual(relay.endpoint, endpoint_one)
-        # Host receives a reliable room-join callback when player 2 enters.
-        # That callback consumes the first reliable sequence slot.
-        self.assertEqual(relay.sequence_number, 1)
+        self.assertEqual(relay.sequence_number, 0)
 
     def test_send_target_subcommand_8103_relays_to_target(self) -> None:
         config = self._config

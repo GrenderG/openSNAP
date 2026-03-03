@@ -2,10 +2,12 @@
 
 from dataclasses import dataclass
 import logging
+from typing import Literal
 
 from opensnap.config import AppConfig
-from opensnap.core.auth import BootstrapAuthenticator
+from opensnap.core.bootstrap import handlers as bootstrap_handlers
 from opensnap.core.context import HandlerContext
+from opensnap.core.game import handlers as game_handlers
 from opensnap.core.router import CommandRouter
 from opensnap.plugins.base import GamePlugin
 from opensnap.protocol import commands
@@ -13,6 +15,7 @@ from opensnap.protocol.codec import PacketDecodeError, decode_datagram
 from opensnap.protocol.constants import CHANNEL_LOBBY, CHANNEL_ROOM, FLAG_RELIABLE, FLAG_RESPONSE
 from opensnap.protocol.models import Endpoint, SnapMessage
 from opensnap.storage.factory import create_storage
+
 
 @dataclass(slots=True)
 class EngineResult:
@@ -25,16 +28,35 @@ class EngineResult:
 class SnapProtocolEngine:
     """Core protocol engine."""
 
-    def __init__(self, *, config: AppConfig, plugin: GamePlugin) -> None:
+    def __init__(
+        self,
+        *,
+        config: AppConfig,
+        plugin: GamePlugin | None = None,
+        role: Literal['combined', 'bootstrap', 'game'] = 'combined',
+    ) -> None:
+        if role not in {'combined', 'bootstrap', 'game'}:
+            raise ValueError(f'Unsupported engine role: {role}.')
+
         self._config = config
         self._plugin = plugin
+        self._role = role
         self._logger = logging.getLogger('opensnap.engine')
+        self._closed = False
 
-        storage = create_storage(config)
-        self._accounts = storage.accounts
-        self._sessions = storage.sessions
-        self._lobbies = storage.lobbies
-        self._rooms = storage.rooms
+        reset_mode: Literal['full', 'game', 'none']
+        if role == 'combined':
+            reset_mode = 'full'
+        elif role == 'game':
+            reset_mode = 'game'
+        else:
+            reset_mode = 'none'
+
+        self._storage = create_storage(config, reset_mode=reset_mode)
+        self._accounts = self._storage.accounts
+        self._sessions = self._storage.sessions
+        self._lobbies = self._storage.lobbies
+        self._rooms = self._storage.rooms
         self._router = CommandRouter()
 
         self._context = HandlerContext(
@@ -45,9 +67,9 @@ class SnapProtocolEngine:
             rooms=self._rooms,
         )
 
-        self._auth = BootstrapAuthenticator()
         self._register_core_handlers()
-        self._plugin.register_handlers(self._router, self._context)
+        if self._role in {'combined', 'game'} and self._plugin is not None:
+            self._plugin.register_handlers(self._router, self._context)
 
     def handle_datagram(self, payload: bytes, endpoint: Endpoint) -> EngineResult:
         """Process one datagram and return outbound messages."""
@@ -168,16 +190,39 @@ class SnapProtocolEngine:
     def tick(self) -> list[SnapMessage]:
         """Run periodic plugin tasks."""
 
+        if self._plugin is None:
+            return []
         return self._plugin.on_tick(self._context)
+
+    def close(self) -> None:
+        """Close engine-owned resources."""
+
+        if self._closed:
+            return
+        self._storage.close()
+        self._closed = True
+
+    def __del__(self) -> None:
+        """Best-effort cleanup for engine-owned resources."""
+
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _register_core_handlers(self) -> None:
         """Register game-independent handlers."""
 
-        self._router.register(commands.CMD_LOGIN_CLIENT, self._auth.handle_login_client)
-        self._router.register(commands.CMD_BOOTSTRAP_LOGIN_SWAN_CHECK, self._auth.handle_bootstrap_check)
-        self._router.register(commands.CMD_LOGIN_TO_KICS, self._auth.handle_login_to_kics)
         self._router.register(commands.CMD_SEND_ECHO, self._handle_echo)
-        self._router.register(commands.CMD_LOGOUT_CLIENT, self._handle_logout)
+        if self._role in {'combined', 'bootstrap'}:
+            self._router.register(commands.CMD_LOGIN_CLIENT, bootstrap_handlers.handle_login_client)
+            self._router.register(
+                commands.CMD_BOOTSTRAP_LOGIN_SWAN_CHECK,
+                bootstrap_handlers.handle_bootstrap_check,
+            )
+        if self._role in {'combined', 'game'}:
+            self._router.register(commands.CMD_LOGIN_TO_KICS, game_handlers.handle_login_to_kics)
+            self._router.register(commands.CMD_LOGOUT_CLIENT, self._handle_logout)
 
     def _normalize_session_for_message(self, message: SnapMessage) -> None:
         """Resolve a session by endpoint when incoming headers use stale session ids."""

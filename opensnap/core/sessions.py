@@ -16,6 +16,7 @@ class Session:
     user_id: int
     username: str
     endpoint: Endpoint
+    game_plugin: str = ''
     request_number: int = 0
     sequence_number: int = 0
     last_incoming_sequence: int = -1
@@ -30,7 +31,13 @@ class SessionRegistry:
         self._by_id: dict[int, Session] = {}
         self._id_by_endpoint: dict[Endpoint, int] = {}
 
-    def create_or_replace(self, endpoint: Endpoint, account: Account) -> Session:
+    def create_or_replace(
+        self,
+        endpoint: Endpoint,
+        account: Account,
+        *,
+        game_identifier: str = '',
+    ) -> Session:
         """Create or replace session for a user endpoint."""
 
         session_id = create_session_id(endpoint.host, account)
@@ -43,8 +50,22 @@ class SessionRegistry:
             user_id=account.user_id,
             username=account.username,
             endpoint=endpoint,
+            game_plugin=game_identifier,
         )
         self._by_id[session_id] = session
+        self._id_by_endpoint[endpoint] = session_id
+        return session
+
+    def rebind_endpoint(self, session_id: int, endpoint: Endpoint) -> Session | None:
+        """Bind an existing session to a new client endpoint."""
+
+        session = self._by_id.get(session_id)
+        if session is None:
+            return None
+
+        self._id_by_endpoint.pop(session.endpoint, None)
+        self._id_by_endpoint.pop(endpoint, None)
+        session.endpoint = endpoint
         self._id_by_endpoint[endpoint] = session_id
         return session
 

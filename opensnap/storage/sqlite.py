@@ -38,6 +38,13 @@ class SqliteDatabase:
         self.execute('DELETE FROM rooms')
         self.execute('DELETE FROM sessions')
 
+    def reset_game_runtime_state(self) -> None:
+        """Clear transient game-only state while preserving bootstrap sessions."""
+
+        self.execute('DELETE FROM room_members')
+        self.execute('DELETE FROM rooms')
+        self.execute('UPDATE sessions SET lobby_id = 0, room_id = 0')
+
     def __del__(self) -> None:
         """Best-effort connection cleanup."""
 
@@ -115,6 +122,7 @@ class SqliteDatabase:
                 'username TEXT NOT NULL, '
                 'host TEXT NOT NULL, '
                 'port INTEGER NOT NULL, '
+                'game_plugin TEXT NOT NULL DEFAULT "", '
                 'request_number INTEGER NOT NULL DEFAULT 0, '
                 'sequence_number INTEGER NOT NULL DEFAULT 0, '
                 'last_incoming_sequence INTEGER NOT NULL DEFAULT -1, '
@@ -153,6 +161,13 @@ class SqliteDatabase:
 
         rows = self.query_all('PRAGMA table_info(sessions)')
         columns = {str(row['name']) for row in rows}
+        if 'game_plugin' not in columns:
+            self.execute(
+                (
+                    'ALTER TABLE sessions '
+                    'ADD COLUMN game_plugin TEXT NOT NULL DEFAULT ""'
+                )
+            )
         if 'last_incoming_sequence' not in columns:
             self.execute(
                 (
@@ -239,7 +254,13 @@ class SqliteSessionRegistry:
     def __init__(self, database: SqliteDatabase) -> None:
         self._database = database
 
-    def create_or_replace(self, endpoint: Endpoint, account: Account) -> Session:
+    def create_or_replace(
+        self,
+        endpoint: Endpoint,
+        account: Account,
+        *,
+        game_identifier: str = '',
+    ) -> Session:
         """Create or replace session for a user endpoint."""
 
         session_id = create_session_id(endpoint.host, account)
@@ -252,19 +273,47 @@ class SqliteSessionRegistry:
             (
                 'INSERT INTO sessions '
                 '('
-                'session_id, user_id, username, host, port, '
+                'session_id, user_id, username, host, port, game_plugin, '
                 'request_number, sequence_number, last_incoming_sequence, lobby_id, room_id'
                 ') '
-                'VALUES (?, ?, ?, ?, ?, 0, 0, -1, 0, 0)'
+                'VALUES (?, ?, ?, ?, ?, ?, 0, 0, -1, 0, 0)'
             ),
-            (session_id, account.user_id, account.username, endpoint.host, endpoint.port),
+            (
+                session_id,
+                account.user_id,
+                account.username,
+                endpoint.host,
+                endpoint.port,
+                game_identifier,
+            ),
         )
         return Session(
             session_id=session_id,
             user_id=account.user_id,
             username=account.username,
             endpoint=endpoint,
+            game_plugin=game_identifier,
         )
+
+    def rebind_endpoint(self, session_id: int, endpoint: Endpoint) -> Session | None:
+        """Bind an existing session id to a new client endpoint."""
+
+        row = self._database.query_one(
+            'SELECT session_id FROM sessions WHERE session_id = ?',
+            (session_id,),
+        )
+        if row is None:
+            return None
+
+        self._database.execute(
+            'DELETE FROM sessions WHERE host = ? AND port = ? AND session_id != ?',
+            (endpoint.host, endpoint.port, session_id),
+        )
+        self._database.execute(
+            'UPDATE sessions SET host = ?, port = ? WHERE session_id = ?',
+            (endpoint.host, endpoint.port, session_id),
+        )
+        return self.get(session_id)
 
     def get(self, session_id: int) -> Session | None:
         """Get session by id."""
@@ -555,6 +604,7 @@ def _session_from_row(row: sqlite3.Row | None) -> Session | None:
         user_id=int(row['user_id']),
         username=str(row['username']),
         endpoint=Endpoint(host=str(row['host']), port=int(row['port'])),
+        game_plugin=str(row['game_plugin']),
         request_number=int(row['request_number']),
         sequence_number=int(row['sequence_number']),
         last_incoming_sequence=int(row['last_incoming_sequence']),

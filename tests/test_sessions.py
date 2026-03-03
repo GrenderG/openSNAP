@@ -38,6 +38,19 @@ class SessionRegistryTests(unittest.TestCase):
         self.assertFalse(registry.accept_incoming(session.session_id, 0))
         self.assertTrue(registry.accept_incoming(session.session_id, 2))
 
+    def test_rebind_endpoint_moves_session_lookup_to_new_endpoint(self) -> None:
+        registry = SessionRegistry()
+        user = build_account(user_id=8, username='u8', password_record='p', seed='s', team='')
+        old_endpoint = Endpoint(host='10.0.0.8', port=8008)
+        new_endpoint = Endpoint(host='10.0.0.8', port=8010)
+        session = registry.create_or_replace(old_endpoint, user)
+
+        rebound = registry.rebind_endpoint(session.session_id, new_endpoint)
+
+        self.assertIsNotNone(rebound)
+        self.assertIsNone(registry.get_by_endpoint(old_endpoint))
+        self.assertEqual(registry.get_by_endpoint(new_endpoint), rebound)
+
 
 if __name__ == '__main__':
     unittest.main()

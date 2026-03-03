@@ -27,6 +27,7 @@ class StorageFactoryTests(unittest.TestCase):
                 storage=StorageConfig(backend='sqlite', sqlite_path=f'{temp_directory}/factory.sqlite'),
             )
             bundle = create_storage(config)
+            self.addCleanup(bundle.close)
 
         self.assertIsNotNone(bundle.accounts)
         self.assertIsNotNone(bundle.sessions)

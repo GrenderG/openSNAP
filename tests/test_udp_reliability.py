@@ -8,7 +8,7 @@ from opensnap.protocol import commands
 from opensnap.protocol.codec import encode_messages
 from opensnap.protocol.constants import CHANNEL_ROOM, FLAG_RELIABLE, FOOTER_BYTES_KAGE
 from opensnap.protocol.models import Endpoint, SnapMessage
-from opensnap.server import SnapUdpServer
+from opensnap.udp_server import SnapUdpServer
 
 
 class _FakeSocket:
@@ -198,7 +198,7 @@ class UdpReliabilityTests(unittest.TestCase):
         endpoint = Endpoint(host='127.0.0.1', port=50006)
         payload = b'\x01\x02'
 
-        with self.assertLogs('opensnap.udp', level='ERROR') as captured:
+        with self.assertLogs('opensnap.game', level='ERROR') as captured:
             server._log_engine_errors(endpoint, payload, ['Unhandled command 0x99'])
 
         lines = '\n'.join(captured.output)

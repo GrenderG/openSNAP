@@ -47,10 +47,10 @@ class LoggingUtilsTests(unittest.TestCase):
     def test_configure_logging_writes_service_log_in_configured_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             log_dir = Path(temp_dir) / 'logs'
-            log_path = log_dir / 'opensnap-udp.log'
+            log_path = log_dir / 'opensnap-game.log'
             os.environ['OPENSNAP_LOG_PATH'] = str(log_dir)
             try:
-                configure_logging('info', service_name='udp')
+                configure_logging('info', service_name='game')
                 logger = logging.getLogger('opensnap.test')
                 logger.info('file-output-check')
                 for handler in logging.getLogger().handlers:
@@ -59,7 +59,7 @@ class LoggingUtilsTests(unittest.TestCase):
                 self.assertIn('file-output-check', log_path.read_text(encoding='utf-8'))
             finally:
                 os.environ.pop('OPENSNAP_LOG_PATH', None)
-                configure_logging('info', service_name='udp')
+                configure_logging('info', service_name='game')
 
 
 if __name__ == '__main__':

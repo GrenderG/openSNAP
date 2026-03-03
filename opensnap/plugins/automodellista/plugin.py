@@ -828,10 +828,7 @@ def _build_room_join_callbacks(
     joining_session: Session,
     recipients: list[Session],
 ) -> list[SnapMessage]:
-    """Notify existing room members that a player joined.
-
-    Keep one callback per recipient and preserve the expected callback channel flags.
-    """
+    """Notify existing room members that a player joined."""
 
     account = context.accounts.get_by_id(joining_session.user_id)
     team = _network_team('' if account is None else account.team)
@@ -851,10 +848,9 @@ def _build_room_join_callbacks(
             context.direct(
                 endpoint=member.endpoint,
                 session_id=member.session_id,
-                # Keep callback-channel semantics while making join callbacks
-                # reliable so lost host notifications do not stall "Getting
-                # information" progression.
-                type_flags=CHANNEL_ROOM | FLAG_RESPONSE | FLAG_RELIABLE,
+                # The host does not ACK this callback family, so keep it on
+                # the response channel without transport reliability.
+                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
                 command=commands.CMD_JOIN,
                 payload=payload,
                 acknowledge_number=_ack_for_session(member),
@@ -869,11 +865,7 @@ def _build_room_leave_callbacks(
     leaving_session_id: int,
     recipients: list[Session],
 ) -> list[SnapMessage]:
-    """Notify remaining room members that one peer left the room.
-
-    Use reliable callback-channel packets so end-of-game room teardown does not
-    depend on a single lossy datagram.
-    """
+    """Notify remaining room members that one peer left the room."""
 
     payload = struct.pack('>L', leaving_session_id)
     messages: list[SnapMessage] = []
@@ -884,7 +876,7 @@ def _build_room_leave_callbacks(
             context.direct(
                 endpoint=member.endpoint,
                 session_id=member.session_id,
-                type_flags=CHANNEL_ROOM | FLAG_RESPONSE | FLAG_RELIABLE,
+                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
                 command=commands.CMD_LEAVE,
                 payload=payload,
                 acknowledge_number=_ack_for_session(member),

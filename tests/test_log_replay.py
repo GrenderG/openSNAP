@@ -28,6 +28,7 @@ class LogReplayTests(unittest.TestCase):
                 ),
             )
             engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+            self.addCleanup(engine.close)
             datagrams = _load_captured_datagrams()
             if not datagrams:
                 self.skipTest('Replay logs are unavailable.')
@@ -46,6 +47,7 @@ class LogReplayTests(unittest.TestCase):
                 ),
             )
             engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+            self.addCleanup(engine.close)
             datagrams = _load_captured_datagrams(limit_per_file=100)
             if not datagrams:
                 self.skipTest('Replay logs are unavailable.')

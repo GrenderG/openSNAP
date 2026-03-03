@@ -88,6 +88,8 @@ def _resolve_default_target_ip() -> str:
 
     candidates = (
         os.getenv('OPENSNAP_DNS_DEFAULT_IP', ''),
+        os.getenv('OPENSNAP_GAME_ADVERTISE_HOST', ''),
+        os.getenv('OPENSNAP_GAME_HOST', ''),
         os.getenv('OPENSNAP_ADVERTISE_HOST', ''),
         os.getenv('OPENSNAP_HOST', ''),
     )

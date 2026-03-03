@@ -1,6 +1,7 @@
 """Storage backend protocols."""
 
 from dataclasses import dataclass
+from typing import Callable
 from typing import Protocol
 
 from opensnap.core.accounts import Account
@@ -26,8 +27,17 @@ class AccountStore(Protocol):
 class SessionStore(Protocol):
     """Session store interface."""
 
-    def create_or_replace(self, endpoint: Endpoint, account: Account) -> Session:
+    def create_or_replace(
+        self,
+        endpoint: Endpoint,
+        account: Account,
+        *,
+        game_identifier: str = '',
+    ) -> Session:
         """Create or replace session."""
+
+    def rebind_endpoint(self, session_id: int, endpoint: Endpoint) -> Session | None:
+        """Bind an existing session id to a new endpoint."""
 
     def get(self, session_id: int) -> Session | None:
         """Get session by id."""
@@ -109,3 +119,9 @@ class StorageBundle:
     sessions: SessionStore
     lobbies: LobbyStore
     rooms: RoomStore
+    _close: Callable[[], None]
+
+    def close(self) -> None:
+        """Close backend resources owned by this bundle."""
+
+        self._close()

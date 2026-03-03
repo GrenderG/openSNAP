@@ -63,7 +63,7 @@ class EnvLoaderTests(unittest.TestCase):
     def test_missing_env_file_is_ignored(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             load_env_file('/tmp/opensnap-does-not-exist.env')
-            self.assertNotIn('OPENSNAP_PORT', os.environ)
+            self.assertNotIn('OPENSNAP_GAME_PORT', os.environ)
 
     def test_default_loader_backfills_from_env_dist_when_env_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -1,10 +1,14 @@
-"""Bootstrap-auth helper tests."""
+"""Bootstrap helper tests."""
 
 import struct
 import unittest
 from unittest.mock import patch
 
-from opensnap.core.auth import _encrypt_blowfish_ecb, _resolve_advertise_host, _verify_bootstrap_answer
+from opensnap.core.bootstrap import (
+    _encrypt_blowfish_ecb,
+    _resolve_advertise_host,
+    _verify_bootstrap_answer,
+)
 from opensnap.config import default_app_config
 
 
@@ -28,7 +32,10 @@ class BootstrapAuthHelpersTests(unittest.TestCase):
         self.assertEqual(value, '192.168.1.151')
 
     def test_resolve_advertise_host_uses_routed_local_host_for_wildcard_bind(self) -> None:
-        with patch('opensnap.core.auth._resolve_local_host_for_client', return_value='192.168.1.151'):
+        with patch(
+            'opensnap.core.bootstrap.handlers._resolve_local_host_for_client',
+            return_value='192.168.1.151',
+        ):
             value = _resolve_advertise_host(
                 configured_host='',
                 bind_host='0.0.0.0',
@@ -37,7 +44,10 @@ class BootstrapAuthHelpersTests(unittest.TestCase):
         self.assertEqual(value, '192.168.1.151')
 
     def test_resolve_advertise_host_falls_back_to_loopback_when_unresolved(self) -> None:
-        with patch('opensnap.core.auth._resolve_local_host_for_client', return_value=''):
+        with patch(
+            'opensnap.core.bootstrap.handlers._resolve_local_host_for_client',
+            return_value='',
+        ):
             value = _resolve_advertise_host(
                 configured_host='',
                 bind_host='0.0.0.0',

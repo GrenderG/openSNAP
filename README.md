@@ -89,37 +89,70 @@ cp .env.dist .env
 Edit `.env` as needed for your machine. Local `.env` files are gitignored so local changes are not committed.
 If `.env` is missing, openSNAP automatically creates it from `.env.dist` on first run.
 
-## Run openSNAP (UDP)
+## Run openSNAP (Game)
 
-Start the SNAP UDP service:
+Start the SNAP game service:
 
 ```bash
-python3 run.py udp
+python3 run.py game
 ```
 
 Expected startup output includes:
 
 ```text
-openSNAP listening on 0.0.0.0:9090 using plugin <game-plugin>.
+Starting openSNAP game server on 0.0.0.0:9091 using plugin <game-plugin>.
 ```
 
 Stop the server with `Ctrl+C`.
 
-`python3 run.py` without arguments is equivalent to `python3 run.py udp`.
+`python3 run.py` without arguments is equivalent to `python3 run.py game`.
 
-## Core Server Configuration
+## Bootstrap And Game Server Configuration
 
-Environment variables for the UDP server:
+Environment variables for the split UDP services:
 
-- `OPENSNAP_HOST`: bind host (default: `0.0.0.0`).
-- `OPENSNAP_ADVERTISE_HOST`: optional IPv4 host advertised to clients in bootstrap login-success packets. If empty, openSNAP derives it from `OPENSNAP_HOST` and client routing.
-- `OPENSNAP_PORT`: bind port (default: `9090`).
+- `OPENSNAP_BOOTSTRAP_HOST`: bootstrap bind host (default: `0.0.0.0`).
+- `OPENSNAP_BOOTSTRAP_ADVERTISE_HOST`: optional IPv4 host advertised by the bootstrap service when it needs to emit its own endpoint. If empty, openSNAP derives it from `OPENSNAP_BOOTSTRAP_HOST` and client routing.
+- `OPENSNAP_BOOTSTRAP_PORT`: bootstrap bind port (default: `9090`).
+- `OPENSNAP_GAME_HOST`: game bind host (default: `0.0.0.0`).
+- `OPENSNAP_GAME_ADVERTISE_HOST`: optional IPv4 host advertised to clients in bootstrap login-success packets. If empty, openSNAP derives it from `OPENSNAP_GAME_HOST` and client routing.
+- `OPENSNAP_GAME_PORT`: game bind port (default: `9091`).
+- `OPENSNAP_GAME_IDENTIFIER`: identifier for the game served by this game process (default: `automodellista`).
 - `OPENSNAP_GAME_PLUGIN`: game plugin name (default: built-in plugin selection).
+- `OPENSNAP_BOOTSTRAP_DEFAULT_GAME_IDENTIFIER`: bootstrap fallback game id used when no reliable per-game identifier is available from the UDP login flow.
+- `OPENSNAP_GAME_SERVER_MAP`: optional explicit `game_identifier -> host:port` bootstrap redirect map. Example: `{"automodellista":"192.168.1.151:9091","monsterhunter":"192.168.1.152:10070"}`. Object values with `host` and `port` are also accepted, but `host:port` is the intended primary form.
 - `OPENSNAP_SERVER_SECRET`: bootstrap server secret string.
 - `OPENSNAP_BOOTSTRAP_KEY`: bootstrap encryption key string (default: `SNAP-SWAN`).
 - `OPENSNAP_TICK_INTERVAL_SECONDS`: periodic tick interval (default: `10.0`).
 
-## Run Web Bootstrap Service
+The bootstrap and game servers are separate processes. Keep both pointed at the same `OPENSNAP_SQLITE_PATH` so the bootstrap-issued session id is available when the client reconnects to the game port.
+The bootstrap handshake stays on the bootstrap endpoint through login start and verifier exchange (`0x2c` / `0x41`). The client should not switch to the game endpoint until bootstrap login success returns the final game server IP/port.
+
+The bootstrap UDP layer does not receive the original web-style bootstrap URL through the current transport API, so the server cannot reliably infer the requested game from hostname or URL today. Bootstrap routing therefore uses the configured `OPENSNAP_BOOTSTRAP_DEFAULT_GAME_IDENTIFIER` unless a future protocol-level identifier is confirmed. The redirect target is then resolved through the explicit `OPENSNAP_GAME_SERVER_MAP` plus the current process's local game endpoint.
+
+## Run Bootstrap Server
+
+Start the standalone bootstrap service:
+
+```bash
+python3 run.py bootstrap
+```
+
+Expected startup output includes:
+
+```text
+Starting openSNAP bootstrap server on 0.0.0.0:9090.
+```
+
+## Run Game Server
+
+Start the standalone game service:
+
+```bash
+python3 run.py game
+```
+
+## Run Web Service
 
 Start the web service (separate process):
 
@@ -127,7 +160,7 @@ Start the web service (separate process):
 python3 run.py web
 ```
 
-Run web and UDP services with the same `OPENSNAP_SQLITE_PATH` so account creation/login from the web page is immediately available to the UDP server.
+Run web, bootstrap, and game services with the same `OPENSNAP_SQLITE_PATH` so account creation/login from the web page is immediately available to the UDP services.
 
 Expected startup output includes:
 
@@ -158,7 +191,7 @@ python3 run.py dns
 The DNS service provides static A-record answers from `OPENSNAP_DNS_ENTRIES`.
 By default, `OPENSNAP_DNS_ENTRIES` includes entries required by bundled game modules.
 
-The value `@default` in DNS entries resolves to `OPENSNAP_DNS_DEFAULT_IP` when set, otherwise `OPENSNAP_ADVERTISE_HOST`, then `OPENSNAP_HOST` (if it is a concrete IPv4), then `127.0.0.1`.
+The value `@default` in DNS entries resolves to `OPENSNAP_DNS_DEFAULT_IP` when set, otherwise `OPENSNAP_GAME_ADVERTISE_HOST`, then `OPENSNAP_GAME_HOST` (if it is a concrete IPv4), then `127.0.0.1`.
 
 ## Storage Configuration
 
@@ -167,7 +200,7 @@ openSNAP uses SQLite storage by default.
 Environment variables:
 
 - `OPENSNAP_SQLITE_PATH`: path to SQLite database file (default: `opensnap.db`).
-- `OPENSNAP_RESET_RUNTIME_ON_STARTUP`: clears runtime tables (`sessions`, `rooms`, `room_members`) when the server starts (default: `true`).
+- `OPENSNAP_RESET_RUNTIME_ON_STARTUP`: clears transient runtime state on startup (default: `true`). In split mode, the bootstrap server preserves sessions and the game server clears room state without deleting bootstrap-issued sessions.
 - `OPENSNAP_DEFAULT_USERS`: users seeded at startup as `username:password[:seed[:team]]`, comma-separated.
 
 The default `.env.dist` includes `test:1111` in `OPENSNAP_DEFAULT_USERS`.
@@ -175,7 +208,7 @@ The default `.env.dist` includes `test:1111` in `OPENSNAP_DEFAULT_USERS`.
 Run with custom SQLite path:
 
 ```bash
-OPENSNAP_SQLITE_PATH=./opensnap.sqlite python3 run.py udp
+OPENSNAP_SQLITE_PATH=./opensnap.sqlite python3 run.py game
 ```
 
 ## Game Plugin Configuration
@@ -189,7 +222,7 @@ Environment variable:
 Run with explicit plugin selection:
 
 ```bash
-OPENSNAP_GAME_PLUGIN=<plugin_name> python3 run.py udp
+OPENSNAP_GAME_PLUGIN=<plugin_name> python3 run.py game
 ```
 
 ## Web Service Configuration
@@ -243,21 +276,21 @@ Environment variables:
 
 - `OPENSNAP_LOG_LEVEL`: one of `debug`, `info`, `warn`, `warning`, `error`, `critical` (default: `debug`).
 - `OPENSNAP_LOG_PATH`: optional log directory path. When set, logs are written to both stdout and a per-service file in that directory.
-  UDP uses `opensnap-udp.log`, DNS uses `opensnap-dns-log`, and web uses `opensnap-web.log`.
+  Bootstrap uses `opensnap-bootstrap.log`, game uses `opensnap-game.log`, DNS uses `opensnap-dns-log`, and web uses `opensnap-web.log`.
 - `OPENSNAP_LOG_HEXDUMP_LIMIT`: max bytes rendered in packet hexdumps (default: `16384`). Set to `0` for unlimited output.
 
 Examples:
 
 ```bash
-OPENSNAP_LOG_LEVEL=debug python3 run.py udp
+OPENSNAP_LOG_LEVEL=debug python3 run.py game
 ```
 
 ```bash
-OPENSNAP_LOG_LEVEL=debug OPENSNAP_LOG_HEXDUMP_LIMIT=4096 python3 run.py udp
+OPENSNAP_LOG_LEVEL=debug OPENSNAP_LOG_HEXDUMP_LIMIT=4096 python3 run.py game
 ```
 
 ```bash
-OPENSNAP_LOG_LEVEL=debug OPENSNAP_LOG_PATH=./logs python3 run.py udp
+OPENSNAP_LOG_LEVEL=debug OPENSNAP_LOG_PATH=./logs python3 run.py game
 ```
 
 With `debug` level enabled, received UDP datagrams include a formatted hexdump in logs.
@@ -307,5 +340,5 @@ This project has been possible thanks to No23 and his previous private work on `
 ## Troubleshooting
 
 - `python3: command not found`: install Python 3.11+ and reopen your shell.
-- `No module named 'opensnap'`: start services from the repository root using `python3 run.py udp` or `python3 run.py web`.
-- `Address already in use`: another process is using UDP port `9090`; stop that process or change server settings before starting openSNAP.
+- `No module named 'opensnap'`: start services from the repository root using `python3 run.py game`, `python3 run.py bootstrap`, or `python3 run.py web`.
+- `Address already in use`: another process is using the configured bootstrap or game UDP port; stop that process or change server settings before starting openSNAP.
