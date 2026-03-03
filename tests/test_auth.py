@@ -1,9 +1,11 @@
 """Bootstrap-auth helper tests."""
 
+import struct
 import unittest
 from unittest.mock import patch
 
-from opensnap.core.auth import _resolve_advertise_host
+from opensnap.core.auth import _encrypt_blowfish_ecb, _resolve_advertise_host, _verify_bootstrap_answer
+from opensnap.config import default_app_config
 
 
 class BootstrapAuthHelpersTests(unittest.TestCase):
@@ -42,6 +44,32 @@ class BootstrapAuthHelpersTests(unittest.TestCase):
                 client_host='192.168.1.199',
             )
         self.assertEqual(value, '127.0.0.1')
+
+    def test_verify_bootstrap_answer_accepts_wrapped_release_shape(self) -> None:
+        config = default_app_config()
+        clear = struct.pack('>2L', 0x80, 0) + (bytes(range(32)) + (b'ABCDEFGH' * 12))
+        payload = _encrypt_blowfish_ecb(config.server.bootstrap_key, clear)
+
+        self.assertTrue(
+            _verify_bootstrap_answer(
+                payload=payload,
+                bootstrap_key=config.server.bootstrap_key,
+                server_secret=config.server.server_secret,
+            )
+        )
+
+    def test_verify_bootstrap_answer_rejects_non_repeating_wrapped_shape(self) -> None:
+        config = default_app_config()
+        clear = struct.pack('>2L', 0x80, 0) + bytes(range(128))
+        payload = _encrypt_blowfish_ecb(config.server.bootstrap_key, clear)
+
+        self.assertFalse(
+            _verify_bootstrap_answer(
+                payload=payload,
+                bootstrap_key=config.server.bootstrap_key,
+                server_secret=config.server.server_secret,
+            )
+        )
 
 
 if __name__ == '__main__':

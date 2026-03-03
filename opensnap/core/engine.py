@@ -203,13 +203,19 @@ class SnapProtocolEngine:
             message.session_id = session.session_id
 
     def _handle_echo(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        """Echo packets receive an empty ACK-style response."""
+        """Respond to keepalive/echo packets by mirroring one payload word."""
+
+        payload = message.payload[:4].ljust(4, b'\x00')
+        channel = message.type_flags & 0x3000
+        if channel == 0:
+            channel = CHANNEL_ROOM
 
         return [
             context.reply(
                 message,
-                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
-                command=commands.CMD_SEND_ECHO,
+                type_flags=channel | FLAG_RESPONSE,
+                command=message.command,
+                payload=payload,
             )
         ]
 

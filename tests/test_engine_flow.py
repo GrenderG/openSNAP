@@ -248,6 +248,30 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(port, config.server.port)
         self.assertEqual(seed_length, len(account.seed.encode('utf-8')))
 
+    def test_send_echo_returns_same_command_and_echoed_u32(self) -> None:
+        engine = SnapProtocolEngine(config=self._config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50016)
+        request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY,
+            packet_number=0,
+            command=commands.CMD_SEND_ECHO,
+            session_id=0x12345678,
+            sequence_number=9,
+            acknowledge_number=0,
+            payload=struct.pack('>I', 0xDEADBEEF) + b'extra',
+        )
+
+        result = engine.handle_datagram(_encode(request), endpoint)
+
+        self.assertFalse(result.errors)
+        self.assertEqual(len(result.messages), 1)
+        response = result.messages[0]
+        self.assertEqual(response.command, commands.CMD_SEND_ECHO)
+        self.assertEqual(response.type_flags, CHANNEL_LOBBY | FLAG_RESPONSE)
+        self.assertEqual(response.acknowledge_number, request.sequence_number)
+        self.assertEqual(response.payload, struct.pack('>I', 0xDEADBEEF))
+
     def test_login_client_unknown_account_logs_warning(self) -> None:
         engine = SnapProtocolEngine(config=self._config, plugin=AutoModellistaPlugin())
         endpoint = Endpoint(host='127.0.0.1', port=50006)

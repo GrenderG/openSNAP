@@ -305,7 +305,36 @@ def _verify_bootstrap_answer(*, payload: bytes, bootstrap_key: bytes, server_sec
 
     clear = _decrypt_blowfish_ecb(bootstrap_key, payload)
     extracted_secret = get_c_string(clear, 8)
-    return extracted_secret == server_secret
+    if extracted_secret == server_secret:
+        return True
+    return _matches_wrapped_bootstrap_verifier(clear)
+
+
+def _matches_wrapped_bootstrap_verifier(clear: bytes) -> bool:
+    """Check the structured wrapped-verifier shape seen in release captures.
+
+    Some release-client captures send the `0x41` verifier as a fixed-width
+    wrapper: `0x00000080`, `0x00000000`, then 128 bytes whose first 32 bytes
+    are variable and whose remaining 96 bytes are the same 8-byte block
+    repeated. That matches a Blowfish-ECB encrypted short secret padded with
+    zeros, and is materially more constrained than accepting any non-empty blob.
+    """
+
+    if len(clear) < 136:
+        return False
+
+    declared_size, reserved = struct.unpack_from('>2L', clear, 0)
+    if declared_size != 0x80 or reserved != 0:
+        return False
+
+    wrapped = clear[8:136]
+    repeated_block = wrapped[32:40]
+    if len(repeated_block) != 8:
+        return False
+    if repeated_block == b'\x00' * 8:
+        return False
+
+    return wrapped[32:] == repeated_block * 12
 
 
 def _build_login_success_payload(
