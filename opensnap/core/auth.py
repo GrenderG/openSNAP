@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, modes
 
 from opensnap.core.context import HandlerContext
 from opensnap.protocol import commands
-from opensnap.protocol.constants import CHANNEL_LOBBY, FLAG_RESPONSE, FOOTER_BYTES_ALT
+from opensnap.protocol.constants import CHANNEL_LOBBY, FLAG_RESPONSE, FOOTER_BYTES_KAGE
 from opensnap.protocol.fields import get_c_string
 from opensnap.protocol.models import SnapMessage
 
@@ -50,13 +50,13 @@ class BootstrapAuthenticator:
             ]
 
         session = context.sessions.create_or_replace(message.endpoint, account)
-        if _uses_alternate_bootstrap_variant(message):
+        if _uses_kage_bootstrap_variant(message):
             advertised_host = _resolve_advertise_host(
                 configured_host=context.config.server.advertise_host,
                 bind_host=context.config.server.host,
                 client_host=message.endpoint.host,
             )
-            challenge_payload = _build_alternate_bootstrap_payload(
+            challenge_payload = _build_kage_bootstrap_payload(
                 login_field=raw_login,
                 key_material=account.bootstrap_magic_key.hex().encode('ascii'),
                 server_host=advertised_host,
@@ -204,10 +204,10 @@ def _parse_login_client_name(raw_login: str) -> str:
     return raw_login.rstrip('\r\n')
 
 
-def _uses_alternate_bootstrap_variant(message: SnapMessage) -> bool:
-    """Return whether one message uses the alternate bootstrap variant."""
+def _uses_kage_bootstrap_variant(message: SnapMessage) -> bool:
+    """Return whether one message uses the KAGE bootstrap variant."""
 
-    return message.footer_bytes == FOOTER_BYTES_ALT
+    return message.footer_bytes == FOOTER_BYTES_KAGE
 
 
 def _encrypt_blowfish_ecb(key: bytes, payload: bytes) -> bytes:
@@ -270,29 +270,33 @@ def _build_bootstrap_login_payload(
     return _encrypt_blowfish_ecb(bootstrap_key, challenge)
 
 
-def _build_alternate_bootstrap_payload(
+def _build_kage_bootstrap_payload(
     *,
     login_field: str,
     key_material: bytes,
     server_host: str,
     server_port: int,
 ) -> bytes:
-    """Build the alternate bootstrap payload for the alternate `0x2c` variant."""
+    """Build the KAGE bootstrap payload for the KAGE `0x2c` variant."""
 
     ip_int = int.from_bytes(socket.inet_aton(server_host), byteorder='big', signed=False)
     login_bytes = login_field.encode('utf-8')
+    # KAGE documents the last metadata word as the size of the data appended after
+    # the packed header ("size of following data, sent back when logging to lobby").
+    # This client variant decrypts a fixed 0x118-byte blob, so the trailing size must
+    # describe the zero-padded bytes we append after this header.
+    trailing_data = b'\x00' * (0x118 - struct.calcsize('>40s6L'))
     plaintext = struct.pack(
         '>40s6L',
         login_bytes,
         ip_int,
         server_port,
         server_port,
-        0xBB,
-        0xCC,
-        0xDD,
+        0,
+        0,
+        len(trailing_data),
     )
-    # This client variant decrypts 0x118 bytes and copies the full buffer.
-    padded_plaintext = plaintext + (b'\x00' * (0x118 - len(plaintext)))
+    padded_plaintext = plaintext + trailing_data
     return _encrypt_blowfish_ecb(key_material, padded_plaintext)
 
 
@@ -315,7 +319,9 @@ def _build_login_success_payload(
 
     login_bytes = login.encode('utf-8')
     ip_int = int.from_bytes(socket.inet_aton(server_host), byteorder='big', signed=False)
-    plaintext = struct.pack('>40s6L', login_bytes, ip_int, server_port, server_port, 0xBB, 0xCC, 0xDD)
+    # No trailing blob is appended to this packet, so the "size of following data"
+    # metadata remains zero.
+    plaintext = struct.pack('>40s6L', login_bytes, ip_int, server_port, server_port, 0, 0, 0)
     return _encrypt_blowfish_ecb(bootstrap_key, plaintext)
 
 

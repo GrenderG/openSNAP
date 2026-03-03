@@ -9,7 +9,7 @@ from opensnap.protocol.constants import (
     CHANNEL_ROOM,
     FLAG_MULTI,
     FLAG_RESPONSE,
-    FOOTER_BYTES_ALT,
+    FOOTER_BYTES_KAGE,
     FOOTER_BYTES,
 )
 from opensnap.protocol.models import Endpoint, SnapMessage
@@ -49,24 +49,24 @@ class CodecTests(unittest.TestCase):
         with self.assertRaises(PacketDecodeError):
             decode_datagram(b'\x00' * 20, endpoint)
 
-    def test_decode_accepts_alternate_footer_marker(self) -> None:
+    def test_decode_accepts_kage_footer_marker(self) -> None:
         endpoint = Endpoint(host='127.0.0.1', port=1112)
         payload = b'payload-data'
         size_word = (CHANNEL_LOBBY | FLAG_RESPONSE) | (len(payload) + 16)
         datagram = (
             struct.pack('>2H3L', size_word, (1 << 8) | 0x0E, 0x11223344, 9, 3)
             + payload
-            + FOOTER_BYTES_ALT
+            + FOOTER_BYTES_KAGE
         )
 
         decoded = decode_datagram(datagram, endpoint)
 
         self.assertEqual(len(decoded), 1)
         self.assertEqual(decoded[0].payload, payload)
-        self.assertEqual(decoded[0].footer_bytes, FOOTER_BYTES_ALT)
-        self.assertEqual(detect_footer_bytes(datagram), FOOTER_BYTES_ALT)
+        self.assertEqual(decoded[0].footer_bytes, FOOTER_BYTES_KAGE)
+        self.assertEqual(detect_footer_bytes(datagram), FOOTER_BYTES_KAGE)
 
-    def test_encode_can_use_alternate_footer_marker(self) -> None:
+    def test_encode_can_use_kage_footer_marker(self) -> None:
         endpoint = Endpoint(host='127.0.0.1', port=1113)
         message = SnapMessage(
             endpoint=endpoint,
@@ -79,9 +79,9 @@ class CodecTests(unittest.TestCase):
             payload=b'payload-data',
         )
 
-        encoded = encode_messages([message], footer_bytes=FOOTER_BYTES_ALT)
+        encoded = encode_messages([message], footer_bytes=FOOTER_BYTES_KAGE)
 
-        self.assertTrue(encoded.endswith(FOOTER_BYTES_ALT))
+        self.assertTrue(encoded.endswith(FOOTER_BYTES_KAGE))
         self.assertFalse(encoded.endswith(FOOTER_BYTES))
 
     def test_decode_multi_query_datagram_keeps_first_embedded_entry_only(self) -> None:

@@ -14,7 +14,7 @@ from opensnap.config import StorageConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.protocol import commands
-from opensnap.protocol.constants import CHANNEL_LOBBY, CHANNEL_ROOM, FLAG_MULTI, FLAG_RELIABLE, FLAG_RESPONSE, FOOTER_BYTES_ALT
+from opensnap.protocol.constants import CHANNEL_LOBBY, CHANNEL_ROOM, FLAG_MULTI, FLAG_RELIABLE, FLAG_RESPONSE, FOOTER_BYTES_KAGE
 from opensnap.protocol.fields import get_c_string, get_u32
 from opensnap.protocol.models import Endpoint, SnapMessage
 
@@ -70,6 +70,12 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(check_result.messages[0].command, commands.CMD_BOOTSTRAP_LOGIN_SUCCESS)
         success_clear = _decrypt_blowfish(config.server.bootstrap_key, check_result.messages[0].payload)
         self.assertEqual(get_c_string(success_clear, 0), 'test')
+        self.assertNotEqual(get_u32(success_clear, 40), 0)
+        self.assertEqual(get_u32(success_clear, 44), config.server.port)
+        self.assertEqual(get_u32(success_clear, 48), config.server.port)
+        self.assertEqual(get_u32(success_clear, 52), 0)
+        self.assertEqual(get_u32(success_clear, 56), 0)
+        self.assertEqual(get_u32(success_clear, 60), 0)
 
         team_payload = bytearray(0x130)
         team_payload[0x128:0x12F] = b'team-a\x00'
@@ -169,7 +175,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(login_result.messages), 1)
         self.assertEqual(login_result.messages[0].command, commands.CMD_BOOTSTRAP_LOGIN_SWAN)
 
-    def test_login_client_with_alternate_footer_uses_alternate_bootstrap_variant(self) -> None:
+    def test_login_client_with_kage_footer_uses_kage_bootstrap_variant(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint = Endpoint(host='127.0.0.1', port=50014)
@@ -190,7 +196,7 @@ class EngineFlowTests(unittest.TestCase):
             from opensnap.protocol.codec import encode_messages
 
             login_result = engine.handle_datagram(
-                encode_messages([login_request], footer_bytes=FOOTER_BYTES_ALT),
+                encode_messages([login_request], footer_bytes=FOOTER_BYTES_KAGE),
                 endpoint,
             )
 
@@ -207,9 +213,9 @@ class EngineFlowTests(unittest.TestCase):
         self.assertNotEqual(get_u32(clear, 40), 0)
         self.assertEqual(get_u32(clear, 44), config.server.port)
         self.assertEqual(get_u32(clear, 48), config.server.port)
-        self.assertEqual(get_u32(clear, 52), 0xBB)
-        self.assertEqual(get_u32(clear, 56), 0xCC)
-        self.assertEqual(get_u32(clear, 60), 0xDD)
+        self.assertEqual(get_u32(clear, 52), 0)
+        self.assertEqual(get_u32(clear, 56), 0)
+        self.assertEqual(get_u32(clear, 60), len(clear) - struct.calcsize('>40s6L'))
 
     def test_login_client_with_primary_footer_and_single_string_uses_primary_bootstrap_variant(self) -> None:
         config = self._config
