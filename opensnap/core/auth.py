@@ -346,10 +346,16 @@ def _build_login_success_payload(
 ) -> bytes:
     """Build encrypted login success payload."""
 
-    login_bytes = login.encode('utf-8')
+    # `SLUS_206.42` `kkLoginClient` stores the raw login field at `app + 1188`
+    # (`strncpy` at `0x002ef58c`), and `kkBootStrapLoginSuccess` compares the
+    # decrypted `0x2d` login field against that stored buffer with `strcmp`
+    # (`0x002ec7b8..0x002ec7d0`). The raw client field is newline-terminated, so
+    # this echoed field must preserve that newline byte to satisfy the protocol.
+    login_bytes = f'{login}\n'.encode('utf-8')
     ip_int = int.from_bytes(socket.inet_aton(server_host), byteorder='big', signed=False)
-    # No trailing blob is appended to this packet, so the "size of following data"
-    # metadata remains zero.
+    # Layout: login[40], server_ip, server_port, server_port, trailing_data_len,
+    # reserved_word, trailing_data_word0. This packet does not append trailing
+    # data, so the final three words remain zero in the current baseline.
     plaintext = struct.pack('>40s6L', login_bytes, ip_int, server_port, server_port, 0, 0, 0)
     return _encrypt_blowfish_ecb(bootstrap_key, plaintext)
 

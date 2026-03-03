@@ -69,7 +69,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(check_result.messages), 1)
         self.assertEqual(check_result.messages[0].command, commands.CMD_BOOTSTRAP_LOGIN_SUCCESS)
         success_clear = _decrypt_blowfish(config.server.bootstrap_key, check_result.messages[0].payload)
-        self.assertEqual(get_c_string(success_clear, 0), 'test')
+        self.assertEqual(get_c_string(success_clear, 0), 'test\n')
         self.assertNotEqual(get_u32(success_clear, 40), 0)
         self.assertEqual(get_u32(success_clear, 44), config.server.port)
         self.assertEqual(get_u32(success_clear, 48), config.server.port)
@@ -133,7 +133,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(check_result.messages), 1)
         self.assertEqual(check_result.messages[0].command, commands.CMD_BOOTSTRAP_LOGIN_SUCCESS)
         success_clear = _decrypt_blowfish(config.server.bootstrap_key, check_result.messages[0].payload)
-        self.assertEqual(get_c_string(success_clear, 0), 'test')
+        self.assertEqual(get_c_string(success_clear, 0), 'test\n')
 
         team_payload = bytearray(0x130)
         team_payload[0x128:0x12F] = b'team-a\x00'
@@ -1522,7 +1522,7 @@ class EngineFlowTests(unittest.TestCase):
         _join_lobby(engine, endpoint_one, sender_session, lobby_id=1, sequence=3)
         _join_lobby(engine, endpoint_two, receiver_session, lobby_id=1, sequence=3)
 
-        room_id = _create_room(engine, endpoint_one, sender_session, sequence=4, room_name='dup-race-room')
+        room_id = _create_room(engine, endpoint_one, sender_session, sequence=4, room_name='dup-game-room')
         _join_room(engine, endpoint_two, receiver_session, room_id=room_id, sequence=4)
 
         request = SnapMessage(

@@ -50,7 +50,7 @@ class WebRouteTests(unittest.TestCase):
         text = response.get_data(as_text=True)
         self.assertIn('Profile successfully retrieved.', text)
         self.assertIn('<!--INPUT-IDS-->alpha_9', text)
-        self.assertTrue(text.endswith('<!--INPUT-IDS-->alpha_9'))
+        self.assertTrue(text.endswith('<!--INPUT-IDS-->alpha_9\n'))
 
     def test_signup_route_accepts_maximum_length_credentials(self) -> None:
         response = self._client.get('/amweb/create_id.html?username=alpha_beta_1234&password=123456789012345')
@@ -63,7 +63,7 @@ class WebRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         text = response.get_data(as_text=True)
         self.assertIn('<!--INPUT-IDS-->alpha_9', text)
-        self.assertTrue(text.endswith('<!--INPUT-IDS-->alpha_9'))
+        self.assertTrue(text.endswith('<!--INPUT-IDS-->alpha_9\n'))
 
     def test_invalid_signup_username_returns_error_page(self) -> None:
         response = self._client.get('/amweb/create_id_invalid!name.html?password=abc123')
@@ -160,7 +160,7 @@ class WebRouteTests(unittest.TestCase):
         text = response.get_data(as_text=True)
         self.assertIn('Profile successfully retrieved.', text)
         self.assertIn('<!--INPUT-IDS-->betauser', text)
-        self.assertTrue(text.endswith('<!--INPUT-IDS-->betauser'))
+        self.assertTrue(text.endswith('<!--INPUT-IDS-->betauser\n'))
 
     def test_login_php_route_is_available(self) -> None:
         response = self._client.get('/login.php')

@@ -242,7 +242,8 @@ For domains not defined by static entries, openSNAP falls back to the host syste
 Environment variables:
 
 - `OPENSNAP_LOG_LEVEL`: one of `debug`, `info`, `warn`, `warning`, `error`, `critical` (default: `debug`).
-- `OPENSNAP_LOG_FILE`: optional log file path. When set, logs are written to both stdout and this file.
+- `OPENSNAP_LOG_PATH`: optional log directory path. When set, logs are written to both stdout and a per-service file in that directory.
+  UDP uses `opensnap-udp.log`, DNS uses `opensnap-dns-log`, and web uses `opensnap-web.log`.
 - `OPENSNAP_LOG_HEXDUMP_LIMIT`: max bytes rendered in packet hexdumps (default: `16384`). Set to `0` for unlimited output.
 
 Examples:
@@ -256,7 +257,7 @@ OPENSNAP_LOG_LEVEL=debug OPENSNAP_LOG_HEXDUMP_LIMIT=4096 python3 run.py udp
 ```
 
 ```bash
-OPENSNAP_LOG_LEVEL=debug OPENSNAP_LOG_FILE=./logs/opensnap.log python3 run.py udp
+OPENSNAP_LOG_LEVEL=debug OPENSNAP_LOG_PATH=./logs python3 run.py udp
 ```
 
 With `debug` level enabled, received UDP datagrams include a formatted hexdump in logs.

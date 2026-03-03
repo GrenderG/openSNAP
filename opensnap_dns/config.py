@@ -15,8 +15,8 @@ DEFAULT_DNS_PORT = 53
 DEFAULT_DNS_TTL = 60
 DEFAULT_DNS_TARGET_IP = '127.0.0.1'
 
-# Auto Modellista
-AUTO_MODELLISTA_DNS_ENTRIES: dict[str, str] = {
+# CAPCOM-AM titles.
+CAPCOM_AM_DNS_ENTRIES: dict[str, str] = {
     'bootstrap.capcom-am.games.sega.net': '@default',
     'gameweb.capcom-am.games.sega.net': '@default',
     'regweb.capcom-am.games.sega.net': '@default',
@@ -41,7 +41,7 @@ MONSTER_HUNTER_USA_PUBLIC_BETA_DNS_ENTRIES: dict[str, str] = {
 }
 
 DEFAULT_DNS_ENTRIES: dict[str, str] = {
-    **AUTO_MODELLISTA_DNS_ENTRIES,
+    **CAPCOM_AM_DNS_ENTRIES,
     **MONSTER_HUNTER_USA_DNS_ENTRIES,
     **MONSTER_HUNTER_PAL_AND_DEMO_DNS_ENTRIES,
     **MONSTER_HUNTER_USA_PUBLIC_BETA_DNS_ENTRIES,

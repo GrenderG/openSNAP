@@ -441,7 +441,7 @@ def main() -> None:
     """CLI entrypoint."""
 
     load_env_file()
-    configure_logging()
+    configure_logging(service_name='udp')
     logger = logging.getLogger('opensnap.udp')
 
     config = default_app_config()

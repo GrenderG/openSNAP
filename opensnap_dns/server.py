@@ -181,7 +181,7 @@ def main() -> None:
     """CLI entrypoint for DNS service."""
 
     load_env_file()
-    configure_logging()
+    configure_logging(service_name='dns')
     logger = logging.getLogger('opensnap.dns')
     config = default_dns_server_config()
     server = SnapDnsServer(config=config)

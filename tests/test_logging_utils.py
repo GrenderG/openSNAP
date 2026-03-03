@@ -44,12 +44,13 @@ class LoggingUtilsTests(unittest.TestCase):
         dump = format_hexdump(payload, max_bytes=0)
         self.assertNotIn('truncated', dump)
 
-    def test_configure_logging_supports_optional_file_output(self) -> None:
+    def test_configure_logging_writes_service_log_in_configured_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            log_path = Path(temp_dir) / 'logs' / 'opensnap.log'
-            os.environ['OPENSNAP_LOG_FILE'] = str(log_path)
+            log_dir = Path(temp_dir) / 'logs'
+            log_path = log_dir / 'opensnap-udp.log'
+            os.environ['OPENSNAP_LOG_PATH'] = str(log_dir)
             try:
-                configure_logging('info')
+                configure_logging('info', service_name='udp')
                 logger = logging.getLogger('opensnap.test')
                 logger.info('file-output-check')
                 for handler in logging.getLogger().handlers:
@@ -57,8 +58,8 @@ class LoggingUtilsTests(unittest.TestCase):
                 self.assertTrue(log_path.exists())
                 self.assertIn('file-output-check', log_path.read_text(encoding='utf-8'))
             finally:
-                os.environ.pop('OPENSNAP_LOG_FILE', None)
-                configure_logging('info', log_file='')
+                os.environ.pop('OPENSNAP_LOG_PATH', None)
+                configure_logging('info', service_name='udp')
 
 
 if __name__ == '__main__':

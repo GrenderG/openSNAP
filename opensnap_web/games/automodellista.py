@@ -286,6 +286,8 @@ def _is_valid_password(password: str) -> bool:
 def _build_signup_payload(result: SignupResult) -> str:
     """Build successful COMP-SIGNUP payload."""
 
+    # The browser-side client consumes `INPUT-IDS` as a newline-terminated line.
+    # Keep the terminator because it is part of the expected protocol payload.
     return (
         '<html>\n'
         '<body>\n'
@@ -294,7 +296,7 @@ def _build_signup_payload(result: SignupResult) -> str:
         '</body>\n'
         '</html>\n'
         '<!--COMP-SIGNUP-->\n'
-        f'<!--INPUT-IDS-->{result.username}'
+        f'<!--INPUT-IDS-->{result.username}\n'
     )
 
 

@@ -110,7 +110,7 @@ def default_app_config() -> AppConfig:
             reset_runtime_on_startup=reset_runtime_on_startup,
         ),
         users=_read_default_users(),
-        # Lobby naming keeps three race groups plus event and club-meeting groups.
+        # Lobby naming keeps three game groups plus event and club-meeting groups.
         # m-* is mountain, c-* is city, s-* is circuit, plus event and cm.
         lobbies=(
             LobbyConfig(lobby_id=1, name='m-0'),

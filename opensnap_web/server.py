@@ -13,7 +13,7 @@ def main() -> None:
     """Run Flask web service."""
 
     load_env_file()
-    configure_logging()
+    configure_logging(service_name='web')
     logger = logging.getLogger('opensnap.web')
     config = default_web_server_config()
     app = create_web_app(config)
