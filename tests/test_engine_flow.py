@@ -466,6 +466,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(chat_session_ids, {receiver_session})
         chat_endpoints = {message.endpoint for message in chat_messages}
         self.assertEqual(chat_endpoints, {endpoint_two})
+        self.assertEqual(chat_messages[0].payload, chat_request.payload)
 
     def test_room_chat_broadcasts_to_other_room_members_and_acks_sender(self) -> None:
         config = self._config
@@ -505,6 +506,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(chat_session_ids, {receiver_session})
         chat_endpoints = {message.endpoint for message in chat_messages}
         self.assertEqual(chat_endpoints, {endpoint_two})
+        self.assertEqual(chat_messages[0].payload, chat_request.payload)
 
     def test_room_join_notifies_existing_members(self) -> None:
         config = self._config
@@ -552,7 +554,7 @@ class EngineFlowTests(unittest.TestCase):
             self.assertEqual(callback_session_id, joiner_session)
             self.assertEqual(callback_unknown, 0)
             self.assertEqual(callback_username.rstrip(b'\x00').decode('utf-8'), 'test\n')
-            self.assertEqual(callback_team.rstrip(b'\x00').decode('utf-8'), 'team')
+            self.assertEqual(callback_team.rstrip(b'\x00').decode('utf-8'), '')
 
     def test_lobby_join_result_wrapper_uses_operation_id(self) -> None:
         config = self._config

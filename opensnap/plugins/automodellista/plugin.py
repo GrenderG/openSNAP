@@ -151,7 +151,7 @@ class AutoModellistaPlugin:
         entries = []
         for session in members:
             account = context.accounts.get_by_id(session.user_id)
-            team = _network_team('' if account is None else account.team)
+            team = '' if account is None else account.team
             entries.append(
                 struct.pack(
                     '>16s2L32s',
@@ -421,7 +421,7 @@ class AutoModellistaPlugin:
                 command=commands.CMD_ACK,
                 session_id=session.session_id,
             )
-            chat_payload = _build_chat_echo_payload(session, message.payload)
+            chat_payload = _build_chat_echo_payload(message.payload)
             chats = _broadcast_lobby_chat(
                 context,
                 session.lobby_id,
@@ -437,7 +437,7 @@ class AutoModellistaPlugin:
                 command=commands.CMD_ACK,
                 session_id=session.session_id,
             )
-            chat_payload = _build_chat_echo_payload(session, message.payload)
+            chat_payload = _build_chat_echo_payload(message.payload)
             chats = _broadcast_room_chat(
                 context,
                 session.room_id,
@@ -660,43 +660,21 @@ def _network_username(value: str) -> str:
     return f'{value}\n'
 
 
-def _network_team(value: str) -> str:
-    """Avoid empty team strings in room/user callback payloads."""
+def _build_chat_echo_payload(payload: bytes) -> bytes:
+    """Mirror the original client chat payload unchanged.
 
-    if value:
-        return value
-    return 'team'
+    Payload layout:
+    - `u8 username_len`
+    - `u8 team_len`
+    - `username_len` bytes of username
+    - `team_len` bytes of team
+    - `len(payload) - 2 - username_len - team_len` bytes of message text
 
+    Auto Modellista already sends the full chat record, so the server should
+    relay those bytes unchanged instead of rebuilding the structure.
+    """
 
-def _build_chat_echo_payload(session: Session, payload: bytes) -> bytes:
-    """Mirror chat payload with user identity."""
-
-    username = session.username
-    team = 'team'
-    message = 'openSNAP message.'
-
-    if len(payload) >= 2:
-        user_len = payload[0]
-        team_len = payload[1]
-        user_start = 2
-        team_start = user_start + user_len
-        body_start = team_start + team_len
-        if body_start <= len(payload):
-            username = payload[user_start:team_start].decode('utf-8', errors='ignore')
-            team = payload[team_start:body_start].decode('utf-8', errors='ignore')
-            message = payload[body_start:].decode('utf-8', errors='ignore') or message
-
-    username_bytes = username.encode('utf-8')
-    team_bytes = team.encode('utf-8')
-    message_bytes = message.encode('utf-8')
-    return struct.pack(
-        f'>2B{len(username_bytes)}s{len(team_bytes)}s{len(message_bytes)}s',
-        len(username_bytes),
-        len(team_bytes),
-        username_bytes,
-        team_bytes,
-        message_bytes,
-    )
+    return payload
 
 
 def _broadcast_lobby_chat(
@@ -831,7 +809,7 @@ def _build_room_join_callbacks(
     """Notify existing room members that a player joined."""
 
     account = context.accounts.get_by_id(joining_session.user_id)
-    team = _network_team('' if account is None else account.team)
+    team = '' if account is None else account.team
     payload = struct.pack(
         '>16s2L16s',
         _pack_fixed(_network_username(joining_session.username), 16),
