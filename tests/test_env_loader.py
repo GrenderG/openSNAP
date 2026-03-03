@@ -40,7 +40,7 @@ class EnvLoaderTests(unittest.TestCase):
                 '\n'.join(
                     (
                         'OPENSNAP_DNS_ENTRIES={',
-                        '  # CAPCOM-AM titles',
+                        '  # Auto Modellista',
                         '  "bootstrap.capcom-am.games.sega.net": "@default",',
                         '  "gameweb.capcom-am.games.sega.net": "@default",',
                         '  "regweb.capcom-am.games.sega.net": "@default"',
@@ -58,7 +58,7 @@ class EnvLoaderTests(unittest.TestCase):
         assert value is not None
         self.assertIn('bootstrap.capcom-am.games.sega.net', value)
         self.assertIn('regweb.capcom-am.games.sega.net', value)
-        self.assertNotIn('CAPCOM-AM titles', value)
+        self.assertNotIn('Auto Modellista', value)
 
     def test_missing_env_file_is_ignored(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
