@@ -14,7 +14,16 @@ from opensnap.config import StorageConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.protocol import commands
-from opensnap.protocol.constants import CHANNEL_LOBBY, CHANNEL_ROOM, FLAG_MULTI, FLAG_RELIABLE, FLAG_RESPONSE, FOOTER_BYTES_KAGE
+from opensnap.protocol.constants import (
+    CHANNEL_LOBBY,
+    CHANNEL_ROOM,
+    FLAG_LOBBY,
+    FLAG_MULTI,
+    FLAG_RELAY,
+    FLAG_RELIABLE,
+    FLAG_RESPONSE,
+    FOOTER_BYTES_KAGE,
+)
 from opensnap.protocol.fields import get_c_string, get_u32
 from opensnap.protocol.models import Endpoint, SnapMessage
 
@@ -441,7 +450,7 @@ class EngineFlowTests(unittest.TestCase):
 
         chat_request = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=0x1400,
+            type_flags=FLAG_RELAY | FLAG_LOBBY,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
@@ -484,7 +493,7 @@ class EngineFlowTests(unittest.TestCase):
 
         chat_request = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=0x2400,
+            type_flags=FLAG_RELAY | CHANNEL_ROOM,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
@@ -733,7 +742,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(callback.type_flags & FLAG_RELIABLE, 0)
         self.assertEqual(struct.unpack('>L', callback.payload)[0], leaver_session)
 
-    def test_host_room_leave_after_post_game_transition_sends_8003_to_remaining_members(self) -> None:
+    def test_host_room_leave_after_post_game_transition_keeps_normal_leave_flow(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint_one = Endpoint(host='127.0.0.1', port=50116)
@@ -825,11 +834,10 @@ class EngineFlowTests(unittest.TestCase):
         )
         leave_result = engine.handle_datagram(_encode(leave_request), endpoint_one)
         self.assertFalse(leave_result.errors)
-        self.assertEqual(len(leave_result.messages), 3)
+        self.assertEqual(len(leave_result.messages), 2)
 
         result_wrapper = leave_result.messages[0]
         leave_callback = leave_result.messages[1]
-        exit_completion = leave_result.messages[2]
         self.assertEqual(result_wrapper.command, commands.CMD_RESULT_WRAPPER)
         self.assertEqual(struct.unpack_from('>2L', result_wrapper.payload), (0x07, 0))
 
@@ -837,15 +845,6 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(leave_callback.endpoint, endpoint_two)
         self.assertEqual(struct.unpack('>L', leave_callback.payload)[0], host_session)
         self.assertEqual(leave_callback.type_flags & FLAG_RELIABLE, 0)
-
-        self.assertEqual(exit_completion.command, commands.CMD_SEND)
-        self.assertEqual(exit_completion.endpoint, endpoint_two)
-        self.assertEqual(exit_completion.session_id, guest_session)
-        self.assertEqual(exit_completion.payload, struct.pack('>H', 0x8003))
-        self.assertEqual(
-            exit_completion.type_flags & (CHANNEL_ROOM | FLAG_RELIABLE),
-            CHANNEL_ROOM | FLAG_RELIABLE,
-        )
 
         # Post-game room leave still uses the normal leave selector.
         # Switching this wrapper to `0x06` routes the guest into the
@@ -869,7 +868,7 @@ class EngineFlowTests(unittest.TestCase):
             (0x07, 0),
         )
 
-    def test_guest_room_leave_after_post_game_transition_sends_8003_to_remaining_host(self) -> None:
+    def test_guest_room_leave_after_post_game_transition_keeps_normal_leave_flow(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint_one = Endpoint(host='127.0.0.1', port=50118)
@@ -974,11 +973,10 @@ class EngineFlowTests(unittest.TestCase):
         )
         leave_result = engine.handle_datagram(_encode(leave_request), endpoint_two)
         self.assertFalse(leave_result.errors)
-        self.assertEqual(len(leave_result.messages), 3)
+        self.assertEqual(len(leave_result.messages), 2)
 
         result_wrapper = leave_result.messages[0]
         leave_callback = leave_result.messages[1]
-        exit_completion = leave_result.messages[2]
         self.assertEqual(result_wrapper.command, commands.CMD_RESULT_WRAPPER)
         self.assertEqual(struct.unpack_from('>2L', result_wrapper.payload), (0x07, 0))
 
@@ -986,15 +984,6 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(leave_callback.endpoint, endpoint_one)
         self.assertEqual(struct.unpack('>L', leave_callback.payload)[0], guest_session)
         self.assertEqual(leave_callback.type_flags & FLAG_RELIABLE, 0)
-
-        self.assertEqual(exit_completion.command, commands.CMD_SEND)
-        self.assertEqual(exit_completion.endpoint, endpoint_one)
-        self.assertEqual(exit_completion.session_id, host_session)
-        self.assertEqual(exit_completion.payload, struct.pack('>H', 0x8003))
-        self.assertEqual(
-            exit_completion.type_flags & (CHANNEL_ROOM | FLAG_RELIABLE),
-            CHANNEL_ROOM | FLAG_RELIABLE,
-        )
 
     def test_lobby_leave_notifies_remaining_room_members(self) -> None:
         config = self._config
@@ -2004,6 +1993,69 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(duplicate_result.messages), 1)
         self.assertEqual(duplicate_result.messages[0].command, commands.CMD_ACK)
         self.assertEqual(duplicate_result.messages[0].endpoint, endpoint_one)
+
+    def test_duplicate_reliable_leave_is_ack_only(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50140)
+
+        session_id = _create_session_via_login(engine, endpoint, 'test')
+        _join_lobby(engine, endpoint, session_id, lobby_id=1, sequence=3)
+        _create_room(engine, endpoint, session_id, sequence=4, room_name='dup-leave-room')
+
+        request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_LEAVE,
+            session_id=session_id,
+            sequence_number=22,
+            acknowledge_number=0,
+            payload=b'',
+        )
+
+        first_result = engine.handle_datagram(_encode(request), endpoint)
+        self.assertFalse(first_result.errors)
+        self.assertEqual(len(first_result.messages), 1)
+        self.assertEqual(first_result.messages[0].command, commands.CMD_RESULT_WRAPPER)
+
+        duplicate_result = engine.handle_datagram(_encode(request), endpoint)
+        self.assertFalse(duplicate_result.errors)
+        self.assertEqual(len(duplicate_result.messages), 1)
+        self.assertEqual(duplicate_result.messages[0].command, commands.CMD_ACK)
+        self.assertEqual(duplicate_result.messages[0].endpoint, endpoint)
+        self.assertEqual(duplicate_result.messages[0].acknowledge_number, 22)
+
+    def test_duplicate_reliable_lobby_leave_is_ack_only(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50141)
+
+        session_id = _create_session_via_login(engine, endpoint, 'test')
+        _join_lobby(engine, endpoint, session_id, lobby_id=1, sequence=3)
+
+        request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_LEAVE,
+            session_id=session_id,
+            sequence_number=23,
+            acknowledge_number=0,
+            payload=b'',
+        )
+
+        first_result = engine.handle_datagram(_encode(request), endpoint)
+        self.assertFalse(first_result.errors)
+        self.assertEqual(len(first_result.messages), 1)
+        self.assertEqual(first_result.messages[0].command, commands.CMD_RESULT_WRAPPER)
+
+        duplicate_result = engine.handle_datagram(_encode(request), endpoint)
+        self.assertFalse(duplicate_result.errors)
+        self.assertEqual(len(duplicate_result.messages), 1)
+        self.assertEqual(duplicate_result.messages[0].command, commands.CMD_ACK)
+        self.assertEqual(duplicate_result.messages[0].endpoint, endpoint)
+        self.assertEqual(duplicate_result.messages[0].acknowledge_number, 23)
 
     def test_duplicate_reliable_send_target_is_ack_only(self) -> None:
         config = self._config

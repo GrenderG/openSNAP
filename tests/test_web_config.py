@@ -29,6 +29,39 @@ class WebConfigTests(unittest.TestCase):
 
         self.assertEqual(config.port, 8081)
 
+    def test_default_https_settings_follow_web_defaults(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('OPENSNAP_WEB_HTTPS_HOST', None)
+            os.environ.pop('OPENSNAP_WEB_HTTPS_PORT', None)
+            os.environ.pop('OPENSNAP_WEB_HTTPS_CERTFILE', None)
+            os.environ.pop('OPENSNAP_WEB_HTTPS_KEYFILE', None)
+            config = default_web_server_config()
+
+        self.assertEqual(config.https_host, config.host)
+        self.assertEqual(config.https_port, 443)
+        self.assertFalse(config.https_enabled)
+
+    def test_invalid_https_port_falls_back_to_443(self) -> None:
+        with patch.dict(os.environ, {'OPENSNAP_WEB_HTTPS_PORT': 'invalid'}, clear=False):
+            config = default_web_server_config()
+
+        self.assertEqual(config.https_port, 443)
+
+    def test_https_listener_is_enabled_only_with_cert_and_key(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                'OPENSNAP_WEB_HTTPS_CERTFILE': '/tmp/test-cert.pem',
+                'OPENSNAP_WEB_HTTPS_KEYFILE': '/tmp/test-key.pem',
+            },
+            clear=False,
+        ):
+            config = default_web_server_config()
+
+        self.assertTrue(config.https_enabled)
+        self.assertEqual(config.https_certfile, '/tmp/test-cert.pem')
+        self.assertEqual(config.https_keyfile, '/tmp/test-key.pem')
+
 
 if __name__ == '__main__':
     unittest.main()

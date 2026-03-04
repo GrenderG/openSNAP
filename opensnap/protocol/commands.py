@@ -7,20 +7,20 @@
 
 # Full command table documented from SNAP packet notes.
 CMD_ACK = 0x00
-CMD_LOGIN_TO_KICS = 0x01  # Common packet context: 0x3000.
+CMD_LOGIN_TO_KICS = 0x01  # Common routed lobby/room channel context.
 CMD_LOGOUT_CLIENT = 0x02
 CMD_CREATE_LOBBY = 0x03
-CMD_CREATE_GAME_ROOM = 0x04  # Common packet context: 0xB000.
+CMD_CREATE_GAME_ROOM = 0x04  # Common lobby request channel context.
 CMD_DELETE = 0x05  # Used by lobby and room delete flows.
 CMD_JOIN = 0x06  # Used for both lobby and room joins by channel flags.
 CMD_LEAVE = 0x07  # Used for both lobby and room leaves by channel flags.
 CMD_CHANGE_ATTRIBUTE = 0x08
 CMD_QUERY_ATTRIBUTE = 0x09  # Lobby or room attribute query by channel flags.
 CMD_QUERY_USER = 0x0A  # Lobby or room query by channel flags.
-CMD_QUERY_GAME_ROOMS = 0x0B  # Common packet context: 0xB000.
-CMD_CHANGE_USER_PROPERTY = 0x0C  # Common packet context: 0xA000.
-CMD_CHANGE_USER_STATUS = 0x0D  # Common packet context: 0xA000.
-CMD_QUERY_LOBBIES = 0x0E  # Common packet context: 0xB000.
+CMD_QUERY_GAME_ROOMS = 0x0B  # Common lobby request channel context.
+CMD_CHANGE_USER_PROPERTY = 0x0C  # Common reliable room channel context.
+CMD_CHANGE_USER_STATUS = 0x0D  # Common reliable room channel context.
+CMD_QUERY_LOBBIES = 0x0E  # Common lobby request channel context.
 CMD_SEND = 0x0F  # Chat or game packet depending on type flags.
 CMD_SEND_TARGET = 0x10  # Targeted variant with payload subcommands.
 CMD_SEND_GAME_PACKET_TO_GAME_SERVER = 0x11
@@ -145,7 +145,7 @@ CMD_BOOTSTRAP_LOGIN_SWAN_CHECK = 0x41
 # - 0x27, 0x28, and 0x29 are special result-wrapper paths in callback tables.
 # - CMD_QUERY_LOBBIES (0x0E) is reused by multiple lobby/menu callback paths.
 # - CMD_SEND (0x0F) and CMD_SEND_TARGET (0x10) callback selection depends on
-#   chat/game transport flags such as 0x0400, 0x1400, and 0x8000.
+#   relay, channel, and reliable transport bits in the type flags.
 # - CMD_SEND_ECHO (0x14) and CMD_FINISH_VOICE_CHAT (0x13) share echo callback flow
 #   in command-table notes.
 # - CMD_BOOTSTRAP_LOGIN_SUCCESS (0x2D), CMD_BOOTSTRAP_LOGIN_FAIL (0x2E), and

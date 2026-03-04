@@ -12,7 +12,16 @@ from opensnap.core.router import CommandRouter
 from opensnap.plugins.base import GamePlugin
 from opensnap.protocol import commands
 from opensnap.protocol.codec import PacketDecodeError, decode_datagram
-from opensnap.protocol.constants import CHANNEL_LOBBY, CHANNEL_ROOM, FLAG_RELIABLE, FLAG_RESPONSE
+from opensnap.protocol.constants import (
+    CHANNEL_LOBBY,
+    CHANNEL_MASK,
+    CHANNEL_ROOM,
+    FLAG_RESPONSE,
+    FLAG_RELIABLE,
+    RELAY_CONTEXT_MASK,
+    TYPE_LOBBY_RELAY,
+    TYPE_ROOM_RELAY,
+)
 from opensnap.protocol.models import Endpoint, SnapMessage
 from opensnap.storage.factory import create_storage
 
@@ -121,8 +130,8 @@ class SnapProtocolEngine:
             # Track highest inbound sequence per session so direct fanout ACKs can
             # mirror client-side flow control state.
             accepted = self._sessions.accept_incoming(message.session_id, message.sequence_number)
-            if not accepted and self._is_duplicate_reliable_send(message):
-                ack = self._build_duplicate_reliable_send_ack(message)
+            if not accepted and self._should_ack_duplicate_only(message):
+                ack = self._build_duplicate_reliable_ack(message)
                 if ack is not None:
                     outbound.append(ack)
                 self._logger.debug(
@@ -251,7 +260,7 @@ class SnapProtocolEngine:
         """Respond to keepalive/echo packets by mirroring one payload word."""
 
         payload = message.payload[:4].ljust(4, b'\x00')
-        channel = message.type_flags & 0x3000
+        channel = message.type_flags & CHANNEL_MASK
         if channel == 0:
             channel = CHANNEL_ROOM
 
@@ -271,8 +280,8 @@ class SnapProtocolEngine:
         return []
 
     @staticmethod
-    def _is_duplicate_reliable_send(message: SnapMessage) -> bool:
-        """Check whether this command should be ACK-only on duplicate sequence."""
+    def _should_ack_duplicate_only(message: SnapMessage) -> bool:
+        """Check whether this reliable duplicate should return transport ACK only."""
 
         if (message.type_flags & FLAG_RELIABLE) == 0:
             return False
@@ -281,25 +290,31 @@ class SnapProtocolEngine:
         # Treating those as duplicates drops valid relays in game-loading flow.
         if message.embedded_in_multi and message.sequence_number == 0:
             return False
-        return message.command in {commands.CMD_SEND, commands.CMD_SEND_TARGET}
+        return message.command in {commands.CMD_SEND, commands.CMD_SEND_TARGET, commands.CMD_LEAVE}
 
-    def _build_duplicate_reliable_send_ack(self, message: SnapMessage) -> SnapMessage | None:
-        """Build ACK for duplicate reliable send commands without re-dispatch."""
+    def _build_duplicate_reliable_ack(self, message: SnapMessage) -> SnapMessage | None:
+        """Build a transport ACK for a duplicate reliable command."""
 
         if message.command == commands.CMD_SEND_TARGET:
             ack_type_flags = CHANNEL_ROOM | FLAG_RESPONSE
         elif message.command == commands.CMD_SEND:
-            if (message.type_flags & 0x3400) == 0x1400:
+            callback_flags = message.type_flags & RELAY_CONTEXT_MASK
+            if callback_flags == TYPE_LOBBY_RELAY:
                 ack_type_flags = CHANNEL_LOBBY | FLAG_RESPONSE
-            elif (message.type_flags & 0x3400) == 0x2400:
+            elif callback_flags == TYPE_ROOM_RELAY:
                 ack_type_flags = CHANNEL_ROOM | FLAG_RESPONSE
             elif message.type_flags & CHANNEL_ROOM:
                 ack_type_flags = CHANNEL_ROOM | FLAG_RESPONSE
             else:
-                channel = message.type_flags & 0x3000
+                channel = message.type_flags & CHANNEL_MASK
                 if channel == 0:
                     channel = CHANNEL_ROOM
                 ack_type_flags = channel | FLAG_RESPONSE
+        elif message.command == commands.CMD_LEAVE:
+            channel = message.type_flags & CHANNEL_MASK
+            if channel == 0:
+                channel = CHANNEL_ROOM
+            ack_type_flags = channel | FLAG_RESPONSE
         else:
             return None
 

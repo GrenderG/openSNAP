@@ -231,6 +231,10 @@ Environment variables for the Flask service:
 
 - `OPENSNAP_WEB_HOST`: bind host (default: `0.0.0.0`).
 - `OPENSNAP_WEB_PORT`: bind port (default: `80`).
+- `OPENSNAP_WEB_HTTPS_HOST`: HTTPS bind host for `rankweb` (default: value of `OPENSNAP_WEB_HOST`).
+- `OPENSNAP_WEB_HTTPS_PORT`: HTTPS bind port for `rankweb` (default: `443`).
+- `OPENSNAP_WEB_HTTPS_CERTFILE`: certificate path for the optional HTTPS listener.
+- `OPENSNAP_WEB_HTTPS_KEYFILE`: private key path for the optional HTTPS listener.
 - `OPENSNAP_WEB_GAME_PLUGIN`: web game module name (default: value of `OPENSNAP_GAME_PLUGIN`; bundled modules include `automodellista` and `monsterhunter`).
 
 Example:
@@ -238,6 +242,12 @@ Example:
 ```bash
 OPENSNAP_WEB_PORT=80 python3 run.py web
 ```
+
+Auto Modellista leaves the SNAP UDP flow after post-game lobby leave and enters
+its web/database flow. The embedded info pages use `http://gameweb...`, while
+the ranking upload path uses `https://rankweb...`. Run the web service for the
+post-game return path, and configure the optional HTTPS listener if you want to
+serve the embedded `rankweb` URL locally.
 
 ## DNS Service Configuration
 
