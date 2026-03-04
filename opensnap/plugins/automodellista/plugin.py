@@ -40,7 +40,7 @@ PENDING_ROOM_JOIN_MAX_RETRIES = 3
 
 @dataclass(slots=True)
 class _PendingRoomJoin:
-    """Tracked room join waiting for the host-side sync to begin."""
+    """Tracked room join waiting for the guest-side sync to begin."""
 
     room_id: int
     ticks_until_retry: int = PENDING_ROOM_JOIN_RETRY_TICKS
@@ -59,7 +59,7 @@ class AutoModellistaPlugin(GamePlugin):
         # Track which post-game packet families each room member has reported
         # for the current game. Keys are room_id -> {session_id: bitmask}.
         self._post_game_reports: dict[int, dict[int, PostGameReportMask]] = {}
-        # Track guest joins until the room sync begins (`0x8005` / `0x8102`).
+        # Track guest joins until the joiner confirms room sync (`0x8102` / `0x8008`).
         self._pending_room_joins: dict[int, _PendingRoomJoin] = {}
 
     def register_handlers(self, router: CommandRouter, context: HandlerContext) -> None:
@@ -771,10 +771,10 @@ class AutoModellistaPlugin(GamePlugin):
         ]
 
     def _clear_pending_room_join_for_send_target(self, payload: bytes) -> None:
-        """Clear pending join retries once the room sync handshake starts."""
+        """Clear pending join retries once the joiner-side room sync begins."""
 
         subcommand = get_u16(payload, 8)
-        if subcommand in {RoomSubcommand.JOIN_HOST_SYNC, RoomSubcommand.JOIN_READY}:
+        if subcommand == RoomSubcommand.JOIN_READY:
             self._pending_room_joins.pop(get_u32(payload, 4), None)
             return
 

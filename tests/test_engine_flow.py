@@ -622,7 +622,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(duplicate_result.messages[0].endpoint, endpoint_two)
         self.assertEqual(struct.unpack_from('>2L', duplicate_result.messages[0].payload), (0x06, 0))
 
-    def test_room_join_callback_retries_on_tick_until_host_sync_begins(self) -> None:
+    def test_room_join_callback_retries_on_tick_when_join_sync_stalls(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint_one = Endpoint(host='127.0.0.1', port=50120)
@@ -658,7 +658,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(retry_messages[0].session_id, host_session)
         self.assertEqual(retry_messages[0].type_flags & FLAG_RELIABLE, 0)
 
-    def test_room_join_callback_retry_stops_after_host_sync_packet(self) -> None:
+    def test_room_join_callback_retry_continues_after_host_sync_packet(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint_one = Endpoint(host='127.0.0.1', port=50122)
@@ -697,6 +697,69 @@ class EngineFlowTests(unittest.TestCase):
         host_sync_result = engine.handle_datagram(_encode(host_sync_request), endpoint_one)
         self.assertFalse(host_sync_result.errors)
         self.assertEqual(len(host_sync_result.messages), 2)
+
+        for _ in range(3):
+            self.assertEqual(engine.tick(), [])
+
+        retry_messages = engine.tick()
+        self.assertEqual(len(retry_messages), 1)
+        self.assertEqual(retry_messages[0].command, commands.CMD_JOIN)
+        self.assertEqual(retry_messages[0].endpoint, endpoint_one)
+        self.assertEqual(retry_messages[0].session_id, host_session)
+
+    def test_room_join_callback_retry_stops_after_guest_sync_packet(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint_one = Endpoint(host='127.0.0.1', port=50124)
+        endpoint_two = Endpoint(host='127.0.0.2', port=50125)
+
+        host_session = _create_session_via_login(engine, endpoint_one, 'test')
+        joiner_session = _create_session_via_login(engine, endpoint_two, 'test')
+        _join_lobby(engine, endpoint_one, host_session, lobby_id=1, sequence=3)
+        _join_lobby(engine, endpoint_two, joiner_session, lobby_id=1, sequence=3)
+
+        room_id = _create_room(engine, endpoint_one, host_session, sequence=4, room_name='join-stop-on-guest-sync')
+        join_request = SnapMessage(
+            endpoint=endpoint_two,
+            type_flags=CHANNEL_ROOM,
+            packet_number=0,
+            command=commands.CMD_JOIN,
+            session_id=joiner_session,
+            sequence_number=4,
+            acknowledge_number=0,
+            payload=struct.pack('>L', room_id),
+        )
+        join_result = engine.handle_datagram(_encode(join_request), endpoint_two)
+        self.assertFalse(join_result.errors)
+        self.assertEqual(len(join_result.messages), 2)
+
+        host_sync_request = SnapMessage(
+            endpoint=endpoint_one,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND_TARGET,
+            session_id=host_session,
+            sequence_number=5,
+            acknowledge_number=0,
+            payload=struct.pack('>LLHL', 1, joiner_session, 0x8005, host_session),
+        )
+        host_sync_result = engine.handle_datagram(_encode(host_sync_request), endpoint_one)
+        self.assertFalse(host_sync_result.errors)
+        self.assertEqual(len(host_sync_result.messages), 2)
+
+        guest_sync_request = SnapMessage(
+            endpoint=endpoint_two,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND_TARGET,
+            session_id=joiner_session,
+            sequence_number=5,
+            acknowledge_number=0,
+            payload=struct.pack('>2LHLB', 1, host_session, 0x8102, joiner_session, 1),
+        )
+        guest_sync_result = engine.handle_datagram(_encode(guest_sync_request), endpoint_two)
+        self.assertFalse(guest_sync_result.errors)
+        self.assertEqual(len(guest_sync_result.messages), 2)
 
         for _ in range(4):
             self.assertEqual(engine.tick(), [])
