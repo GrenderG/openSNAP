@@ -12,11 +12,23 @@ openSNAP is designed with a strict separation between:
 
 This keeps core behavior reusable while allowing game integrations to be added independently.
 
+## Reverse Engineering Notes
+
+`SLUS_206.42` has been the primary reference for reverse engineering and protocol analysis because it contains debug symbols, which made the SNAP client flow and callback/state mapping significantly easier to trace.
+
+`SLUS_204.98` and `SLUS_280.31` also contain debug symbols.
+
+`SLUS_204.98` appears to use a slightly different protocol variant that is closer to the older SEGA KAGE server behavior, so `SLUS_206.42` has been the main authority for current implementation work.
+
 ## Project Status
 
-openSNAP is still in an early work-in-progress stage.
+Current status:
 
-More help is needed, especially for protocol research, packet analysis, compatibility testing, and implementation work.
+- Fully functional and playable:
+  - Auto Modellista
+  - Auto Modellista Beta 2
+- Partially supported:
+  - Auto Modellista Beta 1 (additional research is still required)
 
 ## SNAP History (Brief)
 
@@ -33,6 +45,13 @@ Historical references:
 - Nokia/SEGA transfer announcement (Aug 19, 2003): https://www.globenewswire.com/news-release/2003/08/19/1847054/0/en/Nokia-and-SEGA-reach-agreement-on-the-transfer-of-select-SEGA-com-leading-technology.html
 - Sega middleware rollout coverage (Dec 4, 2002): https://www.gamedeveloper.com/game-platforms/sega-networking-middleware-rolls-out-to-ps2-gamecube-developers
 - Nokia/Sun SNAP Mobile coverage (Jul 1, 2004): https://www.gamespot.com/articles/nokia-and-sun-bringing-snap-to-java-handsets/1100-6101766/
+
+## Future Goals
+
+Next planned protocol targets:
+
+- Western versions of Resident Evil Outbreak
+- Western versions of Monster Hunter
 
 ## Prerequisites
 
@@ -343,12 +362,13 @@ Note: replay regression tests use optional local packet-capture logs. If those l
 - `opensnap_dns`: separate standalone DNS service package.
 - `tests`: unit and regression tests.
 
-## Acknowledgements
-
-This project has been possible thanks to No23 and his previous private work on `snapsi`.
-
 ## Troubleshooting
 
 - `python3: command not found`: install Python 3.11+ and reopen your shell.
 - `No module named 'opensnap'`: start services from the repository root using `python3 run.py game`, `python3 run.py bootstrap`, or `python3 run.py web`.
 - `Address already in use`: another process is using the configured bootstrap or game UDP port; stop that process or change server settings before starting openSNAP.
+
+## Acknowledgements
+
+- This project has been possible thanks to No23 and his previous private work on `snapsi`.
+- flyinghead's `kage_server` repository was used as a reference while understanding parts of the protocol behavior.
