@@ -243,7 +243,7 @@ Example:
 OPENSNAP_WEB_PORT=80 python3 run.py web
 ```
 
-Auto Modellista leaves the SNAP UDP flow after post-game lobby leave and enters
+Games leave the SNAP UDP flow after post-game lobby leave and enters
 its web/database flow. The embedded info pages use `http://gameweb...`, while
 the ranking upload path uses `https://rankweb...`. Run the web service for the
 post-game return path, and configure the optional HTTPS listener if you want to
