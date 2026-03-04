@@ -782,16 +782,28 @@ class AutoModellistaPlugin(GamePlugin):
             self._pending_room_joins.pop(get_u32(payload, 10), None)
 
     def _build_multi_lobby_user_query_payload(self, context: HandlerContext, message: SnapMessage) -> bytes:
-        # snapsi keeps this first entry special: lobby id 1 uses the count from lobby 0.
-        payload = struct.pack('>L4sL', 1, USER_ATTRIBUTE_TOKEN, context.sessions.count_users_in_lobby(0))
+        lobbies = context.lobbies.list()
+        if not lobbies:
+            return b''
 
-        # Keep snapsi's embedded-entry header word (0x501C), packet numbering, and id range.
+        first_lobby_id = lobbies[0].lobby_id
+        payload = struct.pack(
+            '>L4sL',
+            first_lobby_id,
+            USER_ATTRIBUTE_TOKEN,
+            context.sessions.count_users_in_lobby(first_lobby_id),
+        )
+
+        # Keep the observed embedded-entry header word (0x501C) and mirror the
+        # client's burst layout: the outer message carries the first lobby id,
+        # then embedded entries continue with the remaining lobbies.
         follow_up_size_word = 0x501C
-        for lobby_id in range(1, 0x13):
+        for packet_number, lobby in enumerate(lobbies[1:], start=1):
+            lobby_id = lobby.lobby_id
             payload += struct.pack(
                 '>HBB3LL4sL',
                 follow_up_size_word,
-                lobby_id & 0xFF,
+                packet_number & 0xFF,
                 commands.CMD_QUERY_ATTRIBUTE,
                 message.session_id,
                 0,

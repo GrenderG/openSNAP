@@ -433,8 +433,15 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(result.messages[0].command, commands.CMD_QUERY_ATTRIBUTE)
 
         payload = result.messages[0].payload
-        self.assertEqual(struct.unpack_from('>L', payload, 8)[0], 1)
+        self.assertEqual(struct.unpack_from('>L', payload, 8)[0], 0)
         self.assertEqual(struct.unpack_from('>H', payload, 12)[0], 0x501C)
+        self.assertEqual(payload[14], 1)
+        self.assertEqual(payload[15], commands.CMD_QUERY_ATTRIBUTE)
+        self.assertEqual(struct.unpack_from('>L', payload, 28)[0], 2)
+        self.assertEqual(
+            len(payload),
+            12 + ((len(config.lobbies) - 1) * 28),
+        )
 
     def test_lobby_chat_broadcasts_to_other_lobby_members_and_acks_sender(self) -> None:
         config = self._config
