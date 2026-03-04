@@ -42,6 +42,7 @@ class DnsConfigTests(unittest.TestCase):
         self.assertEqual(config.entries['bootstrap.capcom-am.games.sega.net'], '10.0.0.2')
         self.assertEqual(config.entries['custom.example.net'], '10.0.0.9')
         self.assertEqual(config.entries['gameweb.capcom-am.games.sega.net'], '192.168.1.151')
+        self.assertEqual(config.entries['rankweb.capcom-am.games.sega.net'], '192.168.1.151')
 
     def test_dns_entries_accept_python_dict_literal(self) -> None:
         with patch.dict(

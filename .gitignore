@@ -227,3 +227,4 @@ SLUS_206.42
 # Files from https://github.com/flyinghead/kage_server/ used for debugging / comparison.
 kageserver.cpp
 bomberman.cpp
+kage_server/

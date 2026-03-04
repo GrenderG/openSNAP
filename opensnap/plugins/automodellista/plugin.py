@@ -1,5 +1,7 @@
 """Auto Modellista game plugin."""
 
+from dataclasses import dataclass
+from enum import IntEnum, IntFlag, auto
 import logging
 import struct
 
@@ -16,16 +18,80 @@ _LOGGER = logging.getLogger('opensnap.plugins.automodellista')
 # Binary-verified attribute selector used by kkQueryLobbyAttribute/kkQueryGameRoomAttribute:
 # SLUS_206.42 cpnGetJoinUserLobby/cpnGetJoinUserRoom load 0x55534552 ("USER").
 USER_ATTRIBUTE_TOKEN = b'USER'
-# Operation identifiers expected in CMD_RESULT_WRAPPER (0x28) payload
-# word0 for Auto Modellista client progression.
-CB_CREATE_GAME_ROOM = 0x04
-CB_JOIN_LOBBY = 0x06
-CB_JOIN_GAME_ROOM = 0x06
-CB_LEAVE_LOBBY = 0x07
-CB_LEAVE_GAME_ROOM = 0x07
-CB_CHANGE_ATTRIBUTE = 0x08
-CB_CHANGE_USER_PROPERTY = 0x0C
-CB_CHANGE_USER_STATUS = 0x0D
+class GameTags(IntEnum):
+    """Complete logical room-game tag set used by the plugin state machine.
+
+    These values are a normalized internal vocabulary. The PS2 client still
+    sends raw room subcommands such as `0x8001`, `0x0658..0x065f`,
+    `0x1468..0x146f`, and `0x8009`; those are decoded into this enum after
+    parsing so the code can keep a complete staged tag model without confusing
+    it with the raw SNAP wire values.
+
+    The same numeric values are also used by `CMD_RESULT_WRAPPER` (`0x28`)
+    selector word0. `kkDispatchingOperation` (`0x002ee030..0x002ee31c`)
+    byte-swaps the first two payload words, then dispatches by selector:
+    - `0x06` -> join callbacks (slots 33/34: lobby / game room)
+    - `0x07` -> leave callbacks (slots 35/36: lobby / game room)
+    """
+
+    SYNC = 0x00
+    SYS = 0x01
+    SYS2 = 0x02
+    SYS_OK = 0x03
+    START_OK = 0x04
+    READY = 0x05
+    GAME_START = 0x06
+    GAME_OVER = 0x07
+    JOIN_OK = 0x08
+    JOIN_NG = 0x09
+    PAUSE = 0x0A
+    WAIT_OVER = 0x0B
+    RESULT = 0x0C
+    RESULT2 = 0x0D
+    OWNER = 0x0E
+    ECHO = 0x0F
+    RESET = 0x10
+    TIME_OUT = 0x11
+
+class RoomGameState(IntEnum):
+    """Tracked server-side room flow phases used by the plugin."""
+
+    INIT = auto()
+    SYNC_STARTED = auto()
+    IN_GAME = auto()
+    GAME_OVER = auto()
+    RESULT = auto()
+
+
+class PostGameReportMask(IntFlag):
+    """Tracked post-game report families for one room member."""
+
+    NONE = 0
+    GAME_OVER = 0x01
+    RESULT = 0x02
+    COMPLETE = GAME_OVER | RESULT
+
+
+ROOM_SUBCOMMAND_GAME_START = 0x8001
+ROOM_SUBCOMMAND_RESULT2 = 0x8009
+ROOM_SUBCOMMAND_GAME_OVER_MIN = 0x0658
+ROOM_SUBCOMMAND_GAME_OVER_MAX = 0x065F
+ROOM_SUBCOMMAND_RESULT_MIN = 0x1468
+ROOM_SUBCOMMAND_RESULT_MAX = 0x146F
+ROOM_SUBCOMMAND_JOIN_HOST_SYNC = 0x8005
+ROOM_SUBCOMMAND_JOIN_GUEST_SYNC = 0x8102
+ROOM_SUBCOMMAND_JOIN_READY = 0x8008
+PENDING_ROOM_JOIN_RETRY_TICKS = 3
+PENDING_ROOM_JOIN_MAX_RETRIES = 3
+
+
+@dataclass(slots=True)
+class _PendingRoomJoin:
+    """Tracked room join waiting for the host-side sync to begin."""
+
+    room_id: int
+    ticks_until_retry: int = PENDING_ROOM_JOIN_RETRY_TICKS
+    retries_remaining: int = PENDING_ROOM_JOIN_MAX_RETRIES
 
 
 class AutoModellistaPlugin:
@@ -36,6 +102,12 @@ class AutoModellistaPlugin:
     def __init__(self) -> None:
         # Retransmitted reliable create-room packets reuse sequence numbers.
         self._create_room_results: dict[tuple[int, int], int] = {}
+        self._room_game_states: dict[int, RoomGameState] = {}
+        # Track which post-game packet families each room member has reported
+        # for the current game. Keys are room_id -> {session_id: bitmask}.
+        self._post_game_reports: dict[int, dict[int, PostGameReportMask]] = {}
+        # Track guest joins until the room sync begins (`0x8005` / `0x8102`).
+        self._pending_room_joins: dict[int, _PendingRoomJoin] = {}
 
     def register_handlers(self, router: CommandRouter, context: HandlerContext) -> None:
         """Register plugin handlers."""
@@ -55,10 +127,45 @@ class AutoModellistaPlugin:
         router.register(commands.CMD_CHANGE_ATTRIBUTE, self._handle_change_attribute)
 
     def on_tick(self, context: HandlerContext) -> list[SnapMessage]:
-        """No periodic game-specific packets yet."""
+        """Run periodic game-specific recovery tasks."""
 
-        del context
-        return []
+        messages: list[SnapMessage] = []
+        for joining_session_id in tuple(self._pending_room_joins):
+            pending = self._pending_room_joins.get(joining_session_id)
+            if pending is None:
+                continue
+
+            joining_session = context.sessions.get(joining_session_id)
+            if joining_session is None or joining_session.room_id != pending.room_id:
+                self._pending_room_joins.pop(joining_session_id, None)
+                continue
+
+            recipients = [
+                member for member in context.sessions.list_room_members(pending.room_id)
+                if member.session_id != joining_session_id
+            ]
+            if not recipients:
+                self._pending_room_joins.pop(joining_session_id, None)
+                continue
+
+            if pending.ticks_until_retry > 0:
+                pending.ticks_until_retry -= 1
+                continue
+
+            messages.extend(
+                _build_room_join_callbacks(
+                    context=context,
+                    joining_session=joining_session,
+                    recipients=recipients,
+                )
+            )
+            if pending.retries_remaining <= 1:
+                self._pending_room_joins.pop(joining_session_id, None)
+            else:
+                pending.retries_remaining -= 1
+                pending.ticks_until_retry = PENDING_ROOM_JOIN_RETRY_TICKS
+
+        return messages
 
     def _handle_query_lobbies(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         entries = []
@@ -185,7 +292,7 @@ class AutoModellistaPlugin:
                     message,
                     type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
                     command=commands.CMD_RESULT_WRAPPER,
-                    payload=struct.pack('>2L', CB_CREATE_GAME_ROOM, cached_result),
+                    payload=struct.pack('>2L', GameTags.START_OK, cached_result),
                     session_id=session.session_id,
                 )
             ]
@@ -204,7 +311,7 @@ class AutoModellistaPlugin:
                     message,
                     type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
                     command=commands.CMD_RESULT_WRAPPER,
-                    payload=struct.pack('>2L', CB_CREATE_GAME_ROOM, 1),
+                    payload=struct.pack('>2L', GameTags.START_OK, 1),
                     session_id=session.session_id,
                 )
             ]
@@ -218,9 +325,10 @@ class AutoModellistaPlugin:
             host_session_id=session.session_id,
         )
         context.sessions.set_room(session.session_id, room.room_id)
+        self._reset_post_game_state(room.room_id)
         self._create_room_results[cache_key] = room.room_id
 
-        payload = struct.pack('>2L', CB_CREATE_GAME_ROOM, room.room_id)
+        payload = struct.pack('>2L', GameTags.START_OK, room.room_id)
         return [
             context.reply(
                 message,
@@ -243,7 +351,7 @@ class AutoModellistaPlugin:
             lobby_id = get_u32(message.payload, 0)
             context.sessions.set_lobby(session.session_id, lobby_id)
             context.sessions.set_room(session.session_id, 0)
-            payload = struct.pack('>2L', CB_JOIN_LOBBY, 0)
+            payload = struct.pack('>2L', GameTags.GAME_START, 0)
             return [
                 context.reply(
                     message,
@@ -260,10 +368,10 @@ class AutoModellistaPlugin:
             room = context.rooms.get(room_id)
 
             # Reliable join retransmits are expected on packet loss.
-            # If the client is already in this room, treat as idempotent success
-            # and avoid replaying host/join callbacks that can desynchronize state.
+            # If the client is already in this room, keep the join idempotent and
+            # let the periodic callback retry path recover any missed host callback.
             if room is not None and session.room_id == room_id and session.session_id in room.members:
-                payload = struct.pack('>2L', CB_JOIN_GAME_ROOM, 0)
+                payload = struct.pack('>2L', GameTags.GAME_START, 0)
                 return [
                     context.reply(
                         message,
@@ -281,15 +389,21 @@ class AutoModellistaPlugin:
             success = context.rooms.join(room_id, session.session_id)
             if success:
                 context.sessions.set_room(session.session_id, room_id)
+                self._reset_post_game_state(room_id)
                 callbacks = _build_room_join_callbacks(
                     context=context,
                     joining_session=session,
                     recipients=existing_members,
                 )
-                payload = struct.pack('>2L', CB_JOIN_GAME_ROOM, 0)
+                if callbacks:
+                    self._pending_room_joins[session.session_id] = _PendingRoomJoin(room_id=room_id)
+                else:
+                    self._pending_room_joins.pop(session.session_id, None)
+                payload = struct.pack('>2L', GameTags.GAME_START, 0)
             else:
                 callbacks = []
-                payload = struct.pack('>2L', CB_JOIN_GAME_ROOM, 1)
+                self._pending_room_joins.pop(session.session_id, None)
+                payload = struct.pack('>2L', GameTags.GAME_START, 1)
 
             return [
                 context.reply(
@@ -316,13 +430,19 @@ class AutoModellistaPlugin:
         acknowledge_number = _ack_for_request(message, session)
 
         if (message.type_flags & 0x3000) == CHANNEL_LOBBY:
+            self._pending_room_joins.pop(session.session_id, None)
             callbacks: list[SnapMessage] = []
+            exit_completions: list[SnapMessage] = []
             if session.room_id > 0:
                 room_id = session.room_id
                 recipients = [
                     member for member in context.sessions.list_room_members(room_id)
                     if member.session_id != session.session_id
                 ]
+                was_post_game_transition = (
+                    self._room_game_states.get(room_id) is RoomGameState.RESULT
+                )
+                self._reset_post_game_state(room_id)
                 context.rooms.leave(room_id, session.session_id)
                 context.sessions.set_room(session.session_id, 0)
                 callbacks = _build_room_leave_callbacks(
@@ -330,8 +450,16 @@ class AutoModellistaPlugin:
                     leaving_session_id=session.session_id,
                     recipients=recipients,
                 )
+                if was_post_game_transition and recipients:
+                    exit_completions = _build_post_game_leave_completion_messages(
+                        context=context,
+                        recipients=recipients,
+                    )
             context.sessions.set_lobby(session.session_id, 0)
-            payload = struct.pack('>2L', CB_LEAVE_LOBBY, 0)
+            # Even during the post-game return path, a real CMD_LEAVE must keep
+            # the leave callback selector. Reusing the join selector here sends
+            # the client down the join-room callback path ("Getting information").
+            payload = struct.pack('>2L', GameTags.GAME_OVER, 0)
             return [
                 context.reply(
                     message,
@@ -341,16 +469,22 @@ class AutoModellistaPlugin:
                     session_id=session.session_id,
                     acknowledge_number=acknowledge_number,
                 )
-            ] + callbacks
+            ] + callbacks + exit_completions
 
         if (message.type_flags & 0x3000) == CHANNEL_ROOM:
+            self._pending_room_joins.pop(session.session_id, None)
             callbacks: list[SnapMessage] = []
+            exit_completions: list[SnapMessage] = []
             room_id = session.room_id
             if room_id > 0:
                 recipients = [
                     member for member in context.sessions.list_room_members(room_id)
                     if member.session_id != session.session_id
                 ]
+                was_post_game_transition = (
+                    self._room_game_states.get(room_id) is RoomGameState.RESULT
+                )
+                self._reset_post_game_state(room_id)
                 context.rooms.leave(room_id, session.session_id)
                 context.sessions.set_room(session.session_id, 0)
                 callbacks = _build_room_leave_callbacks(
@@ -358,7 +492,15 @@ class AutoModellistaPlugin:
                     leaving_session_id=session.session_id,
                     recipients=recipients,
                 )
-            payload = struct.pack('>2L', CB_LEAVE_GAME_ROOM, 0)
+                if was_post_game_transition and recipients:
+                    exit_completions = _build_post_game_leave_completion_messages(
+                        context=context,
+                        recipients=recipients,
+                    )
+            # Room leave keeps the leave selector in both manual and post-game
+            # flows. The post-game distinction is carried by the earlier room
+            # transition packet (`0x8009`), not by changing the 0x28 selector.
+            payload = struct.pack('>2L', GameTags.GAME_OVER, 0)
             return [
                 context.reply(
                     message,
@@ -368,7 +510,7 @@ class AutoModellistaPlugin:
                     session_id=session.session_id,
                     acknowledge_number=acknowledge_number,
                 )
-            ] + callbacks
+            ] + callbacks + exit_completions
 
         _LOGGER.warning(
             'Rejecting leave command from %s:%d: unsupported channel type=0x%04x.',
@@ -384,10 +526,8 @@ class AutoModellistaPlugin:
             return []
 
         if message.type_flags & FLAG_MULTI:
-            # TODO(openSNAP): Keep validating multi-send relay against captures.
-            #  Current implementation relays tunneled room payloads in multi packets
-            #  using the same sender/all-members policy as single SEND packets.
-            #  Re-check once additional ready-battle and in-game traces are decoded.
+            # Observed multi-packet room sends relay the embedded room payload
+            # with the same sender/all-members policy as single CMD_SEND.
             channel = message.type_flags & 0x3000
             if channel == 0:
                 channel = CHANNEL_ROOM
@@ -399,15 +539,11 @@ class AutoModellistaPlugin:
             )]
 
             if channel == CHANNEL_ROOM and len(message.payload) >= 2:
-                include_sender = _should_include_sender_for_room_game_payload(message.payload)
-                exclude_session_id = None if include_sender else session.session_id
                 responses.extend(
-                    _broadcast_room_game_packet(
+                    self._handle_room_game_send(
                         context=context,
+                        session=session,
                         request=message,
-                        room_id=session.room_id,
-                        payload=message.payload,
-                        exclude_session_id=exclude_session_id,
                         type_flags=(message.type_flags & ~FLAG_MULTI),
                     )
                 )
@@ -467,16 +603,11 @@ class AutoModellistaPlugin:
                 )
                 return [ack_to_sender]
 
-            include_sender = _should_include_sender_for_room_game_payload(message.payload)
-            exclude_session_id = None if include_sender else session.session_id
-            broadcasts = _broadcast_room_game_packet(
+            return [ack_to_sender] + self._handle_room_game_send(
                 context=context,
+                session=session,
                 request=message,
-                room_id=session.room_id,
-                payload=message.payload,
-                exclude_session_id=exclude_session_id,
             )
-            return [ack_to_sender] + broadcasts
 
         _LOGGER.warning(
             'Rejecting send command from %s:%d: unsupported type=0x%04x.',
@@ -485,6 +616,129 @@ class AutoModellistaPlugin:
             message.type_flags,
         )
         return []
+
+    def _handle_room_game_send(
+        self,
+        *,
+        context: HandlerContext,
+        session: Session,
+        request: SnapMessage,
+        type_flags: int | None = None,
+    ) -> list[SnapMessage]:
+        """Handle one room game packet using an explicit flow-tag dispatch."""
+
+        if len(request.payload) < 2:
+            return []
+
+        subcommand = get_u16(request.payload, 0)
+        tag = _decode_game_tag(subcommand)
+        include_sender = _should_echo_game_tag(tag)
+        exclude_session_id = None if include_sender else session.session_id
+        broadcasts = _broadcast_room_game_packet(
+            context=context,
+            request=request,
+            room_id=session.room_id,
+            payload=request.payload,
+            exclude_session_id=exclude_session_id,
+            type_flags=type_flags,
+        )
+        transitions = self._build_post_game_transition_messages(
+            context=context,
+            session=session,
+            tag=tag,
+        )
+        return broadcasts + transitions
+
+    def _build_post_game_transition_messages(
+        self,
+        *,
+        context: HandlerContext,
+        session: Session,
+        tag: GameTags | None,
+    ) -> list[SnapMessage]:
+        """Emit the binary-verified post-game room transition when all players finish.
+
+        `SLUS_206.42` sends two proven post-game room packet families:
+        - `0x0658..0x065f` end markers
+        - `0x1468..0x146f` finish/result payloads
+
+        The client sends distinct end-marker and finish/result packet families
+        before it enters the room-exit flow. Wait until every room member has
+        reported both proven families, then emit room subcommand `0x8009`,
+        because `Recv_GamePacket(0x8009)` is the confirmed path into
+        `To_RoomExit(2)`.
+
+        `Recv_GamePacket` only decodes the first 16-bit subcommand before taking
+        the `0x8009` branch. It does not read any trailing payload bytes in that
+        branch, so the exact required wire body is the two-byte `0x8009` value.
+        """
+
+        room_id = session.room_id
+        if room_id <= 0:
+            return []
+
+        if tag is GameTags.GAME_START:
+            self._reset_post_game_state(room_id)
+            self._room_game_states[room_id] = RoomGameState.SYNC_STARTED
+            return []
+
+        room_state = self._room_game_states.get(room_id, RoomGameState.INIT)
+        if room_state is RoomGameState.SYNC_STARTED and tag is None:
+            self._room_game_states[room_id] = RoomGameState.IN_GAME
+            room_state = RoomGameState.IN_GAME
+
+        if room_state is RoomGameState.INIT:
+            return []
+
+        if tag is GameTags.GAME_OVER:
+            room_state = RoomGameState.GAME_OVER
+            self._room_game_states[room_id] = room_state
+
+        if room_state is RoomGameState.RESULT:
+            return []
+
+        report_flag = _post_game_report_mask(tag)
+        if report_flag is PostGameReportMask.NONE:
+            return []
+
+        _prune_stale_room_members(context, room_id)
+        members = context.sessions.list_room_members(room_id)
+        if not members:
+            self._reset_post_game_state(room_id)
+            return []
+
+        active_member_ids = {member.session_id for member in members}
+        room_reports = self._post_game_reports.setdefault(room_id, {})
+        for member_id in tuple(room_reports):
+            if member_id not in active_member_ids:
+                room_reports.pop(member_id, None)
+
+        room_reports[session.session_id] = room_reports.get(session.session_id, PostGameReportMask.NONE) | report_flag
+        if any(room_reports.get(member_id, PostGameReportMask.NONE) != PostGameReportMask.COMPLETE for member_id in active_member_ids):
+            return []
+
+        self._post_game_reports.pop(room_id, None)
+        self._room_game_states[room_id] = RoomGameState.RESULT
+        transition_payload = struct.pack('>H', ROOM_SUBCOMMAND_RESULT2)
+        messages: list[SnapMessage] = []
+        for member in members:
+            messages.append(
+                context.direct(
+                    endpoint=member.endpoint,
+                    session_id=member.session_id,
+                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    command=commands.CMD_SEND,
+                    payload=transition_payload,
+                    acknowledge_number=_ack_for_session(member),
+                )
+            )
+        return messages
+
+    def _reset_post_game_state(self, room_id: int) -> None:
+        """Drop tracked post-game state for one room."""
+
+        self._room_game_states.pop(room_id, None)
+        self._post_game_reports.pop(room_id, None)
 
     def _handle_send_target(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         session = _resolve_session(context, message)
@@ -508,6 +762,8 @@ class AutoModellistaPlugin:
                 len(message.payload),
             )
             return response
+
+        self._clear_pending_room_join_for_send_target(message.payload)
 
         target_session_id = get_u32(message.payload, 4)
         target = context.sessions.get(target_session_id)
@@ -547,19 +803,19 @@ class AutoModellistaPlugin:
         return response
 
     def _handle_change_user_status(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        return self._simple_change_ack(context, message, CB_CHANGE_USER_STATUS)
+        return self._simple_change_ack(context, message, GameTags.RESULT2)
 
     def _handle_change_user_property(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        return self._simple_change_ack(context, message, CB_CHANGE_USER_PROPERTY)
+        return self._simple_change_ack(context, message, GameTags.RESULT)
 
     def _handle_change_attribute(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        return self._simple_change_ack(context, message, CB_CHANGE_ATTRIBUTE)
+        return self._simple_change_ack(context, message, GameTags.JOIN_OK)
 
     def _simple_change_ack(
         self,
         context: HandlerContext,
         message: SnapMessage,
-        callback_id: int,
+        callback_id: GameTags,
     ) -> list[SnapMessage]:
         session = _resolve_session(context, message)
         if session is None:
@@ -577,6 +833,17 @@ class AutoModellistaPlugin:
                 acknowledge_number=acknowledge_number,
             )
         ]
+
+    def _clear_pending_room_join_for_send_target(self, payload: bytes) -> None:
+        """Clear pending join retries once the room sync handshake starts."""
+
+        subcommand = get_u16(payload, 8)
+        if subcommand in {ROOM_SUBCOMMAND_JOIN_HOST_SYNC, ROOM_SUBCOMMAND_JOIN_READY}:
+            self._pending_room_joins.pop(get_u32(payload, 4), None)
+            return
+
+        if subcommand == ROOM_SUBCOMMAND_JOIN_GUEST_SYNC and len(payload) >= 14:
+            self._pending_room_joins.pop(get_u32(payload, 10), None)
 
     def _build_multi_lobby_user_query_payload(self, context: HandlerContext, message: SnapMessage) -> bytes:
         # snapsi keeps this first entry special: lobby id 1 uses the count from lobby 0.
@@ -780,24 +1047,34 @@ def _build_send_target_payload(payload: bytes) -> bytes | None:
     return payload[:4] + b'\x00\x00\x00\x00' + payload[8:]
 
 
-def _should_include_sender_for_room_game_payload(payload: bytes) -> bool:
-    """Return True when room-game payloads must be echoed back to sender.
+def _decode_game_tag(subcommand: int) -> GameTags | None:
+    """Map a proven room subcommand into one internal game tag."""
 
-    Binary parity:
-    - Start-game trigger uses subcommand 0x8001 and must relay to all members.
-    - End-of-game flow uses two CMD_SEND families that are consumed per-slot:
-      - 0x0658..0x065f (end marker)
-      - 0x1468..0x146f (finish marker)
-    """
+    if subcommand == ROOM_SUBCOMMAND_GAME_START:
+        return GameTags.GAME_START
+    if ROOM_SUBCOMMAND_GAME_OVER_MIN <= subcommand <= ROOM_SUBCOMMAND_GAME_OVER_MAX:
+        return GameTags.GAME_OVER
+    if ROOM_SUBCOMMAND_RESULT_MIN <= subcommand <= ROOM_SUBCOMMAND_RESULT_MAX:
+        return GameTags.RESULT
+    if subcommand == ROOM_SUBCOMMAND_RESULT2:
+        return GameTags.RESULT2
+    return None
 
-    if len(payload) < 2:
-        return False
 
-    subcommand = get_u16(payload, 0)
-    if subcommand == 0x8001:
-        return True
+def _post_game_report_mask(tag: GameTags | None) -> PostGameReportMask:
+    """Return the tracked post-game report mask for one internal game tag."""
 
-    return (0x0658 <= subcommand <= 0x065F) or (0x1468 <= subcommand <= 0x146F)
+    if tag is GameTags.GAME_OVER:
+        return PostGameReportMask.GAME_OVER
+    if tag is GameTags.RESULT:
+        return PostGameReportMask.RESULT
+    return PostGameReportMask.NONE
+
+
+def _should_echo_game_tag(tag: GameTags | None) -> bool:
+    """Return whether one internal game tag should be echoed to sender."""
+
+    return tag is GameTags.GAME_START
 
 
 def _build_room_join_callbacks(
@@ -856,6 +1133,37 @@ def _build_room_leave_callbacks(
                 session_id=member.session_id,
                 type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
                 command=commands.CMD_LEAVE,
+                payload=payload,
+                acknowledge_number=_ack_for_session(member),
+            )
+        )
+    return messages
+
+
+def _build_post_game_leave_completion_messages(
+    *,
+    context: HandlerContext,
+    recipients: list[Session],
+) -> list[SnapMessage]:
+    """Send the reliable post-game room completion signal to remaining members.
+
+    `Recv_GamePacket(0x8003)` clears `menu[20360]`. In the current post-game
+    traces, keeping only the non-reliable peer `CMD_LEAVE` callback leaves the
+    remaining player in the longer timeout path. The leave result wrapper must
+    stay on selector `0x07`; `0x06` is the join family and re-enters join-room
+    logic. The state-aware post-game bridge is this separate reliable `0x8003`
+    packet to whichever room members remain after the first post-game leave.
+    """
+
+    payload = struct.pack('>H', 0x8003)
+    messages: list[SnapMessage] = []
+    for member in recipients:
+        messages.append(
+            context.direct(
+                endpoint=member.endpoint,
+                session_id=member.session_id,
+                type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                command=commands.CMD_SEND,
                 payload=payload,
                 acknowledge_number=_ack_for_session(member),
             )

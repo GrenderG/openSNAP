@@ -613,6 +613,85 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(duplicate_result.messages[0].endpoint, endpoint_two)
         self.assertEqual(struct.unpack_from('>2L', duplicate_result.messages[0].payload), (0x06, 0))
 
+    def test_room_join_callback_retries_on_tick_until_host_sync_begins(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint_one = Endpoint(host='127.0.0.1', port=50120)
+        endpoint_two = Endpoint(host='127.0.0.2', port=50121)
+
+        host_session = _create_session_via_login(engine, endpoint_one, 'test')
+        joiner_session = _create_session_via_login(engine, endpoint_two, 'test')
+        _join_lobby(engine, endpoint_one, host_session, lobby_id=1, sequence=3)
+        _join_lobby(engine, endpoint_two, joiner_session, lobby_id=1, sequence=3)
+
+        room_id = _create_room(engine, endpoint_one, host_session, sequence=4, room_name='join-retry-room')
+        join_request = SnapMessage(
+            endpoint=endpoint_two,
+            type_flags=CHANNEL_ROOM,
+            packet_number=0,
+            command=commands.CMD_JOIN,
+            session_id=joiner_session,
+            sequence_number=4,
+            acknowledge_number=0,
+            payload=struct.pack('>L', room_id),
+        )
+        join_result = engine.handle_datagram(_encode(join_request), endpoint_two)
+        self.assertFalse(join_result.errors)
+        self.assertEqual(len(join_result.messages), 2)
+
+        for _ in range(3):
+            self.assertEqual(engine.tick(), [])
+
+        retry_messages = engine.tick()
+        self.assertEqual(len(retry_messages), 1)
+        self.assertEqual(retry_messages[0].command, commands.CMD_JOIN)
+        self.assertEqual(retry_messages[0].endpoint, endpoint_one)
+        self.assertEqual(retry_messages[0].session_id, host_session)
+        self.assertEqual(retry_messages[0].type_flags & FLAG_RELIABLE, 0)
+
+    def test_room_join_callback_retry_stops_after_host_sync_packet(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint_one = Endpoint(host='127.0.0.1', port=50122)
+        endpoint_two = Endpoint(host='127.0.0.2', port=50123)
+
+        host_session = _create_session_via_login(engine, endpoint_one, 'test')
+        joiner_session = _create_session_via_login(engine, endpoint_two, 'test')
+        _join_lobby(engine, endpoint_one, host_session, lobby_id=1, sequence=3)
+        _join_lobby(engine, endpoint_two, joiner_session, lobby_id=1, sequence=3)
+
+        room_id = _create_room(engine, endpoint_one, host_session, sequence=4, room_name='join-stop-retry-room')
+        join_request = SnapMessage(
+            endpoint=endpoint_two,
+            type_flags=CHANNEL_ROOM,
+            packet_number=0,
+            command=commands.CMD_JOIN,
+            session_id=joiner_session,
+            sequence_number=4,
+            acknowledge_number=0,
+            payload=struct.pack('>L', room_id),
+        )
+        join_result = engine.handle_datagram(_encode(join_request), endpoint_two)
+        self.assertFalse(join_result.errors)
+        self.assertEqual(len(join_result.messages), 2)
+
+        host_sync_request = SnapMessage(
+            endpoint=endpoint_one,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND_TARGET,
+            session_id=host_session,
+            sequence_number=5,
+            acknowledge_number=0,
+            payload=struct.pack('>LLHL', 1, joiner_session, 0x8005, host_session),
+        )
+        host_sync_result = engine.handle_datagram(_encode(host_sync_request), endpoint_one)
+        self.assertFalse(host_sync_result.errors)
+        self.assertEqual(len(host_sync_result.messages), 2)
+
+        for _ in range(4):
+            self.assertEqual(engine.tick(), [])
+
     def test_room_leave_notifies_remaining_members(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
@@ -653,6 +732,269 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(callback.type_flags & FLAG_RESPONSE, FLAG_RESPONSE)
         self.assertEqual(callback.type_flags & FLAG_RELIABLE, 0)
         self.assertEqual(struct.unpack('>L', callback.payload)[0], leaver_session)
+
+    def test_host_room_leave_after_post_game_transition_sends_8003_to_remaining_members(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint_one = Endpoint(host='127.0.0.1', port=50116)
+        endpoint_two = Endpoint(host='127.0.0.2', port=50117)
+
+        host_session = _create_session_via_login(engine, endpoint_one, 'test')
+        guest_session = _create_session_via_login(engine, endpoint_two, 'test')
+        _join_lobby(engine, endpoint_one, host_session, lobby_id=1, sequence=3)
+        _join_lobby(engine, endpoint_two, guest_session, lobby_id=1, sequence=3)
+
+        room_id = _create_room(engine, endpoint_one, host_session, sequence=4, room_name='post-game-leave-room')
+        _join_room(engine, endpoint_two, guest_session, room_id=room_id, sequence=4)
+
+        engine.handle_datagram(
+            _encode(
+                SnapMessage(
+                    endpoint=endpoint_one,
+                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    packet_number=0,
+                    command=commands.CMD_SEND,
+                    session_id=host_session,
+                    sequence_number=5,
+                    acknowledge_number=0,
+                    payload=struct.pack('>H', 0x8001),
+                )
+            ),
+            endpoint_one,
+        )
+
+        guest_finish_payload = struct.pack('>H', 0x1469) + b'\x00\x00\x17\x74\x01\x58\x82\x73\x01\x00\x82\x73\x01\x00\x97\x12\x4e\x43'
+        guest_finish_detail = SnapMessage(
+            endpoint=endpoint_two,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=guest_session,
+            sequence_number=5,
+            acknowledge_number=0,
+            payload=guest_finish_payload,
+        )
+        engine.handle_datagram(_encode(guest_finish_detail), endpoint_two)
+
+        host_finish_payload = struct.pack('>H', 0x1468) + b'\x00\x00\x17\x74\x01\x58\x82\x73\x01\x00\x82\x73\x01\x00\x97\x12\x4e\x43'
+        host_finish_detail = SnapMessage(
+            endpoint=endpoint_one,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=host_session,
+            sequence_number=6,
+            acknowledge_number=0,
+            payload=host_finish_payload,
+        )
+        engine.handle_datagram(_encode(host_finish_detail), endpoint_one)
+
+        guest_finish = SnapMessage(
+            endpoint=endpoint_two,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=guest_session,
+            sequence_number=6,
+            acknowledge_number=0,
+            payload=struct.pack('>H', 0x0659) + b'\x00\x00\x26\x9a',
+        )
+        engine.handle_datagram(_encode(guest_finish), endpoint_two)
+
+        host_finish = SnapMessage(
+            endpoint=endpoint_one,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=host_session,
+            sequence_number=7,
+            acknowledge_number=0,
+            payload=struct.pack('>H', 0x0658) + b'\x00\x00\x41\x91',
+        )
+        engine.handle_datagram(_encode(host_finish), endpoint_one)
+
+        leave_request = SnapMessage(
+            endpoint=endpoint_one,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_LEAVE,
+            session_id=host_session,
+            sequence_number=8,
+            acknowledge_number=0,
+            payload=b'',
+        )
+        leave_result = engine.handle_datagram(_encode(leave_request), endpoint_one)
+        self.assertFalse(leave_result.errors)
+        self.assertEqual(len(leave_result.messages), 3)
+
+        result_wrapper = leave_result.messages[0]
+        leave_callback = leave_result.messages[1]
+        exit_completion = leave_result.messages[2]
+        self.assertEqual(result_wrapper.command, commands.CMD_RESULT_WRAPPER)
+        self.assertEqual(struct.unpack_from('>2L', result_wrapper.payload), (0x07, 0))
+
+        self.assertEqual(leave_callback.command, commands.CMD_LEAVE)
+        self.assertEqual(leave_callback.endpoint, endpoint_two)
+        self.assertEqual(struct.unpack('>L', leave_callback.payload)[0], host_session)
+        self.assertEqual(leave_callback.type_flags & FLAG_RELIABLE, 0)
+
+        self.assertEqual(exit_completion.command, commands.CMD_SEND)
+        self.assertEqual(exit_completion.endpoint, endpoint_two)
+        self.assertEqual(exit_completion.session_id, guest_session)
+        self.assertEqual(exit_completion.payload, struct.pack('>H', 0x8003))
+        self.assertEqual(
+            exit_completion.type_flags & (CHANNEL_ROOM | FLAG_RELIABLE),
+            CHANNEL_ROOM | FLAG_RELIABLE,
+        )
+
+        # Post-game room leave still uses the normal leave selector.
+        # Switching this wrapper to `0x06` routes the guest into the
+        # join-game-room callback path ("Getting information").
+        guest_leave_request = SnapMessage(
+            endpoint=endpoint_two,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_LEAVE,
+            session_id=guest_session,
+            sequence_number=7,
+            acknowledge_number=0,
+            payload=b'',
+        )
+        guest_leave_result = engine.handle_datagram(_encode(guest_leave_request), endpoint_two)
+        self.assertFalse(guest_leave_result.errors)
+        self.assertGreaterEqual(len(guest_leave_result.messages), 1)
+        self.assertEqual(guest_leave_result.messages[0].command, commands.CMD_RESULT_WRAPPER)
+        self.assertEqual(
+            struct.unpack_from('>2L', guest_leave_result.messages[0].payload),
+            (0x07, 0),
+        )
+
+    def test_guest_room_leave_after_post_game_transition_sends_8003_to_remaining_host(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint_one = Endpoint(host='127.0.0.1', port=50118)
+        endpoint_two = Endpoint(host='127.0.0.2', port=50119)
+
+        host_session = _create_session_via_login(engine, endpoint_one, 'test')
+        guest_session = _create_session_via_login(engine, endpoint_two, 'test')
+        _join_lobby(engine, endpoint_one, host_session, lobby_id=1, sequence=3)
+        _join_lobby(engine, endpoint_two, guest_session, lobby_id=1, sequence=3)
+
+        room_id = _create_room(engine, endpoint_one, host_session, sequence=4, room_name='post-game-guest-leave-room')
+        _join_room(engine, endpoint_two, guest_session, room_id=room_id, sequence=4)
+
+        engine.handle_datagram(
+            _encode(
+                SnapMessage(
+                    endpoint=endpoint_one,
+                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    packet_number=0,
+                    command=commands.CMD_SEND,
+                    session_id=host_session,
+                    sequence_number=5,
+                    acknowledge_number=0,
+                    payload=struct.pack('>H', 0x8001),
+                )
+            ),
+            endpoint_one,
+        )
+
+        guest_finish_payload = struct.pack('>H', 0x1469) + b'\x00\x00\x17\x74\x01\x58\x82\x73\x01\x00\x82\x73\x01\x00\x97\x12\x4e\x43'
+        host_finish_payload = struct.pack('>H', 0x1468) + b'\x00\x00\x17\x74\x01\x58\x82\x73\x01\x00\x82\x73\x01\x00\x97\x12\x4e\x43'
+        engine.handle_datagram(
+            _encode(
+                SnapMessage(
+                    endpoint=endpoint_two,
+                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    packet_number=0,
+                    command=commands.CMD_SEND,
+                    session_id=guest_session,
+                    sequence_number=5,
+                    acknowledge_number=0,
+                    payload=guest_finish_payload,
+                )
+            ),
+            endpoint_two,
+        )
+        engine.handle_datagram(
+            _encode(
+                SnapMessage(
+                    endpoint=endpoint_one,
+                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    packet_number=0,
+                    command=commands.CMD_SEND,
+                    session_id=host_session,
+                    sequence_number=6,
+                    acknowledge_number=0,
+                    payload=host_finish_payload,
+                )
+            ),
+            endpoint_one,
+        )
+        engine.handle_datagram(
+            _encode(
+                SnapMessage(
+                    endpoint=endpoint_two,
+                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    packet_number=0,
+                    command=commands.CMD_SEND,
+                    session_id=guest_session,
+                    sequence_number=6,
+                    acknowledge_number=0,
+                    payload=struct.pack('>H', 0x0659) + b'\x00\x00\x26\x9a',
+                )
+            ),
+            endpoint_two,
+        )
+        engine.handle_datagram(
+            _encode(
+                SnapMessage(
+                    endpoint=endpoint_one,
+                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    packet_number=0,
+                    command=commands.CMD_SEND,
+                    session_id=host_session,
+                    sequence_number=7,
+                    acknowledge_number=0,
+                    payload=struct.pack('>H', 0x0658) + b'\x00\x00\x41\x91',
+                )
+            ),
+            endpoint_one,
+        )
+
+        leave_request = SnapMessage(
+            endpoint=endpoint_two,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_LEAVE,
+            session_id=guest_session,
+            sequence_number=7,
+            acknowledge_number=0,
+            payload=b'',
+        )
+        leave_result = engine.handle_datagram(_encode(leave_request), endpoint_two)
+        self.assertFalse(leave_result.errors)
+        self.assertEqual(len(leave_result.messages), 3)
+
+        result_wrapper = leave_result.messages[0]
+        leave_callback = leave_result.messages[1]
+        exit_completion = leave_result.messages[2]
+        self.assertEqual(result_wrapper.command, commands.CMD_RESULT_WRAPPER)
+        self.assertEqual(struct.unpack_from('>2L', result_wrapper.payload), (0x07, 0))
+
+        self.assertEqual(leave_callback.command, commands.CMD_LEAVE)
+        self.assertEqual(leave_callback.endpoint, endpoint_one)
+        self.assertEqual(struct.unpack('>L', leave_callback.payload)[0], guest_session)
+        self.assertEqual(leave_callback.type_flags & FLAG_RELIABLE, 0)
+
+        self.assertEqual(exit_completion.command, commands.CMD_SEND)
+        self.assertEqual(exit_completion.endpoint, endpoint_one)
+        self.assertEqual(exit_completion.session_id, host_session)
+        self.assertEqual(exit_completion.payload, struct.pack('>H', 0x8003))
+        self.assertEqual(
+            exit_completion.type_flags & (CHANNEL_ROOM | FLAG_RELIABLE),
+            CHANNEL_ROOM | FLAG_RELIABLE,
+        )
 
     def test_lobby_leave_notifies_remaining_room_members(self) -> None:
         config = self._config
@@ -770,7 +1112,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertTrue(all(message.payload == game_request.payload for message in relays))
         self.assertTrue(all((message.type_flags & FLAG_MULTI) == 0 for message in relays))
 
-    def test_send_subcommand_0658_broadcasts_to_all_room_members(self) -> None:
+    def test_send_subcommand_0658_relays_to_other_room_members_only(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint_one = Endpoint(host='127.0.0.1', port=50098)
@@ -796,17 +1138,205 @@ class EngineFlowTests(unittest.TestCase):
         )
         game_result = engine.handle_datagram(_encode(game_request), endpoint_one)
         self.assertFalse(game_result.errors)
-        self.assertEqual(len(game_result.messages), 3)
+        self.assertEqual(len(game_result.messages), 2)
 
         ack = game_result.messages[0]
-        relays = game_result.messages[1:]
+        relay = game_result.messages[1]
         self.assertEqual(ack.command, commands.CMD_ACK)
         self.assertEqual(ack.endpoint, endpoint_one)
+        self.assertEqual(relay.command, commands.CMD_SEND)
+        self.assertEqual(relay.endpoint, endpoint_two)
+        self.assertEqual(relay.session_id, receiver_session)
+        self.assertEqual(relay.payload, game_request.payload)
+        self.assertEqual(relay.type_flags & FLAG_MULTI, 0)
+
+    def test_end_of_game_reports_emit_room_transition_8009_once_all_members_finish(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint_one = Endpoint(host='127.0.0.1', port=50150)
+        endpoint_two = Endpoint(host='127.0.0.2', port=50151)
+
+        sender_session = _create_session_via_login(engine, endpoint_one, 'test')
+        receiver_session = _create_session_via_login(engine, endpoint_two, 'test')
+        _join_lobby(engine, endpoint_one, sender_session, lobby_id=1, sequence=3)
+        _join_lobby(engine, endpoint_two, receiver_session, lobby_id=1, sequence=3)
+
+        room_id = _create_room(engine, endpoint_one, sender_session, sequence=4, room_name='room-post-game')
+        _join_room(engine, endpoint_two, receiver_session, room_id=room_id, sequence=4)
+
+        engine.handle_datagram(
+            _encode(
+                SnapMessage(
+                    endpoint=endpoint_one,
+                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    packet_number=0,
+                    command=commands.CMD_SEND,
+                    session_id=sender_session,
+                    sequence_number=5,
+                    acknowledge_number=0,
+                    payload=struct.pack('>H', 0x8001),
+                )
+            ),
+            endpoint_one,
+        )
+
+        first_finish_detail = SnapMessage(
+            endpoint=endpoint_one,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=sender_session,
+            sequence_number=6,
+            acknowledge_number=0,
+            payload=struct.pack('>H', 0x1468) + b'\x00\x00\x17\x74\x01\x58\x82\x73\x01\x00\x82\x73\x01\x00\x97\x12\x4e\x43',
+        )
+        first_result = engine.handle_datagram(_encode(first_finish_detail), endpoint_one)
+        self.assertFalse(first_result.errors)
+        self.assertEqual(len(first_result.messages), 2)
+
+        second_finish_detail = SnapMessage(
+            endpoint=endpoint_two,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=receiver_session,
+            sequence_number=5,
+            acknowledge_number=0,
+            payload=struct.pack('>H', 0x1469) + b'\x00\x00\x17\x74\x01\x58\x82\x73\x01\x00\x82\x73\x01\x00\x97\x12\x4e\x43',
+        )
+        second_result = engine.handle_datagram(_encode(second_finish_detail), endpoint_two)
+        self.assertFalse(second_result.errors)
+        self.assertEqual(len(second_result.messages), 2)
+
+        first_finish = SnapMessage(
+            endpoint=endpoint_one,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=sender_session,
+            sequence_number=7,
+            acknowledge_number=0,
+            payload=struct.pack('>H', 0x0658) + b'\x00\x00\x41\x91',
+        )
+        third_result = engine.handle_datagram(_encode(first_finish), endpoint_one)
+        self.assertFalse(third_result.errors)
+        self.assertEqual(len(third_result.messages), 2)
+
+        second_finish = SnapMessage(
+            endpoint=endpoint_two,
+            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=receiver_session,
+            sequence_number=6,
+            acknowledge_number=0,
+            payload=struct.pack('>H', 0x0659) + b'\x00\x00\x26\x9a',
+        )
+        fourth_result = engine.handle_datagram(_encode(second_finish), endpoint_two)
+        second_result = fourth_result
+        self.assertFalse(second_result.errors)
+        self.assertEqual(len(second_result.messages), 4)
+
+        ack = second_result.messages[0]
+        relays = second_result.messages[1:2]
+        transitions = second_result.messages[2:]
+        self.assertEqual(ack.command, commands.CMD_ACK)
+        self.assertEqual(ack.endpoint, endpoint_two)
         self.assertTrue(all(message.command == commands.CMD_SEND for message in relays))
-        self.assertEqual({message.endpoint for message in relays}, {endpoint_one, endpoint_two})
-        self.assertEqual({message.session_id for message in relays}, {sender_session, receiver_session})
-        self.assertTrue(all(message.payload == game_request.payload for message in relays))
-        self.assertTrue(all((message.type_flags & FLAG_MULTI) == 0 for message in relays))
+        self.assertEqual({message.endpoint for message in relays}, {endpoint_one})
+        self.assertEqual(relays[0].session_id, sender_session)
+        self.assertTrue(all(message.payload == second_finish.payload for message in relays))
+
+        self.assertTrue(all(message.command == commands.CMD_SEND for message in transitions))
+        self.assertEqual({message.endpoint for message in transitions}, {endpoint_one, endpoint_two})
+        self.assertEqual({message.session_id for message in transitions}, {sender_session, receiver_session})
+        self.assertTrue(all(message.payload == struct.pack('>H', 0x8009) for message in transitions))
+        self.assertTrue(
+            all((message.type_flags & (CHANNEL_ROOM | FLAG_RELIABLE)) == (CHANNEL_ROOM | FLAG_RELIABLE)
+                for message in transitions)
+        )
+
+    def test_end_of_game_reports_do_not_emit_room_transition_before_game_start(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint_one = Endpoint(host='127.0.0.1', port=50152)
+        endpoint_two = Endpoint(host='127.0.0.2', port=50153)
+
+        sender_session = _create_session_via_login(engine, endpoint_one, 'test')
+        receiver_session = _create_session_via_login(engine, endpoint_two, 'test')
+        _join_lobby(engine, endpoint_one, sender_session, lobby_id=1, sequence=3)
+        _join_lobby(engine, endpoint_two, receiver_session, lobby_id=1, sequence=3)
+
+        room_id = _create_room(engine, endpoint_one, sender_session, sequence=4, room_name='room-post-game-no-start')
+        _join_room(engine, endpoint_two, receiver_session, room_id=room_id, sequence=4)
+
+        engine.handle_datagram(
+            _encode(
+                SnapMessage(
+                    endpoint=endpoint_one,
+                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    packet_number=0,
+                    command=commands.CMD_SEND,
+                    session_id=sender_session,
+                    sequence_number=5,
+                    acknowledge_number=0,
+                    payload=struct.pack('>H', 0x1468) + b'\x00\x00\x17\x74\x01\x58\x82\x73\x01\x00\x82\x73\x01\x00\x97\x12\x4e\x43',
+                )
+            ),
+            endpoint_one,
+        )
+        engine.handle_datagram(
+            _encode(
+                SnapMessage(
+                    endpoint=endpoint_two,
+                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    packet_number=0,
+                    command=commands.CMD_SEND,
+                    session_id=receiver_session,
+                    sequence_number=5,
+                    acknowledge_number=0,
+                    payload=struct.pack('>H', 0x1469) + b'\x00\x00\x17\x74\x01\x58\x82\x73\x01\x00\x82\x73\x01\x00\x97\x12\x4e\x43',
+                )
+            ),
+            endpoint_two,
+        )
+        engine.handle_datagram(
+            _encode(
+                SnapMessage(
+                    endpoint=endpoint_one,
+                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    packet_number=0,
+                    command=commands.CMD_SEND,
+                    session_id=sender_session,
+                    sequence_number=6,
+                    acknowledge_number=0,
+                    payload=struct.pack('>H', 0x0658) + b'\x00\x00\x41\x91',
+                )
+            ),
+            endpoint_one,
+        )
+        result = engine.handle_datagram(
+            _encode(
+                SnapMessage(
+                    endpoint=endpoint_two,
+                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    packet_number=0,
+                    command=commands.CMD_SEND,
+                    session_id=receiver_session,
+                    sequence_number=6,
+                    acknowledge_number=0,
+                    payload=struct.pack('>H', 0x0659) + b'\x00\x00\x26\x9a',
+                )
+            ),
+            endpoint_two,
+        )
+
+        self.assertFalse(result.errors)
+        self.assertEqual(len(result.messages), 2)
+        self.assertEqual(result.messages[0].command, commands.CMD_ACK)
+        self.assertEqual(result.messages[1].command, commands.CMD_SEND)
+        self.assertEqual(result.messages[1].endpoint, endpoint_one)
+        self.assertEqual(result.messages[1].payload, struct.pack('>H', 0x0659) + b'\x00\x00\x26\x9a')
 
     def test_send_unknown_subcommand_relays_to_other_room_members(self) -> None:
         config = self._config
@@ -933,7 +1463,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(change.acknowledge_number, 5)
         self.assertEqual(struct.unpack_from('>2L', change.payload), (0x08, 0))
 
-    def test_multi_send_subcommand_1468_broadcasts_to_all_room_members(self) -> None:
+    def test_multi_send_subcommand_1468_relays_to_other_room_members_only(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint_one = Endpoint(host='127.0.0.1', port=50100)
@@ -960,17 +1490,17 @@ class EngineFlowTests(unittest.TestCase):
         )
         result = engine.handle_datagram(_encode(request), endpoint_one)
         self.assertFalse(result.errors)
-        self.assertEqual(len(result.messages), 3)
+        self.assertEqual(len(result.messages), 2)
 
         ack = result.messages[0]
-        relays = result.messages[1:]
+        relay = result.messages[1]
         self.assertEqual(ack.command, commands.CMD_ACK)
         self.assertEqual(ack.endpoint, endpoint_one)
-        self.assertTrue(all(message.command == commands.CMD_SEND for message in relays))
-        self.assertEqual({message.endpoint for message in relays}, {endpoint_one, endpoint_two})
-        self.assertEqual({message.session_id for message in relays}, {sender_session, receiver_session})
-        self.assertTrue(all(message.payload == request.payload for message in relays))
-        self.assertTrue(all((message.type_flags & FLAG_MULTI) == 0 for message in relays))
+        self.assertEqual(relay.command, commands.CMD_SEND)
+        self.assertEqual(relay.endpoint, endpoint_two)
+        self.assertEqual(relay.session_id, receiver_session)
+        self.assertEqual(relay.payload, request.payload)
+        self.assertEqual(relay.type_flags & FLAG_MULTI, 0)
 
     def test_multi_send_unknown_subcommand_relays_to_other_room_members(self) -> None:
         config = self._config

@@ -204,6 +204,11 @@ class WebRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('This is test patch1.html file', response.get_data(as_text=True))
 
+    def test_patch_v2_alias_route_is_available(self) -> None:
+        response = self._client.get('/amusa/patch/2/am_patch1.html')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('This is test patch1.html file', response.get_data(as_text=True))
+
     def test_patch2_route_is_available(self) -> None:
         response = self._client.get('/amusa/patch2.html')
         self.assertEqual(response.status_code, 200)

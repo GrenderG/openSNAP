@@ -19,6 +19,7 @@ DEFAULT_DNS_TARGET_IP = '127.0.0.1'
 AUTO_MODELLISTA_DNS_ENTRIES: dict[str, str] = {
     'bootstrap.capcom-am.games.sega.net': '@default',
     'gameweb.capcom-am.games.sega.net': '@default',
+    'rankweb.capcom-am.games.sega.net': '@default',
     'regweb.capcom-am.games.sega.net': '@default',
 }
 

@@ -210,26 +210,31 @@ class AutoModellistaWebModule:
             return tools.html_response(AM_TABOO_PAGE)
 
         @app.get('/amusa/patch1.html')
+        @app.get('/amusa/patch/2/am_patch1.html')
         def amusa_patch1() -> Response:
             # This compatibility page is only used by the Auto Modellista beta1 web flow.
             return tools.html_response(AM_PATCH1_PAGE)
 
         @app.get('/amusa/patch2.html')
+        @app.get('/amusa/patch/2/am_patch2.html')
         def amusa_patch2() -> Response:
             # This compatibility page is only used by the Auto Modellista beta1 web flow.
             return tools.html_response(AM_PATCH2_PAGE)
 
         @app.get('/amusa/patch3.html')
+        @app.get('/amusa/patch/2/am_patch3.html')
         def amusa_patch3() -> Response:
             # This compatibility page is only used by the Auto Modellista beta1 web flow.
             return tools.html_response(AM_PATCH3_PAGE)
 
         @app.get('/amusa/patch4.html')
+        @app.get('/amusa/patch/2/am_patch4.html')
         def amusa_patch4() -> Response:
             # This compatibility page is only used by the Auto Modellista beta1 web flow.
             return tools.html_response(AM_PATCH4_PAGE)
 
         @app.get('/amusa/patch5.html')
+        @app.get('/amusa/patch/2/am_patch5.html')
         def amusa_patch5() -> Response:
             # This compatibility page is only used by the Auto Modellista beta1 web flow.
             return tools.html_response(AM_PATCH5_PAGE)
@@ -237,7 +242,10 @@ class AutoModellistaWebModule:
         @app.route('/amusa/am_up.php', methods=['GET', 'POST'])
         @app.route('/amusa/up.php', methods=['GET', 'POST'])
         def amusa_upload() -> Response:
-            tools.dump_request('Handled Auto Modellista upload request.')
+            # `nwPBRanking` uses the embedded `/amusa/am_up.php` path after the
+            # post-game room transition. Keep this stub endpoint available until
+            # the exact upload and response body are fully decoded.
+            tools.dump_request('Handled Auto Modellista ranking upload request.')
             return Response('', mimetype='text/plain')
 
 
