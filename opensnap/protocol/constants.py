@@ -5,7 +5,8 @@ import struct
 # Primary SNAP footer variant.
 FOOTER_MARKER = 0xBA476611
 FOOTER_BYTES = struct.pack('>L', FOOTER_MARKER)
-# Alternate SNAP footer variant.
+# Alternate SNAP footer variant. Some packets are more similar to KAGE structure,
+# so I named it accordingly.
 FOOTER_MARKER_KAGE = 0xBA476610
 FOOTER_BYTES_KAGE = struct.pack('>L', FOOTER_MARKER_KAGE)
 

@@ -212,31 +212,26 @@ class AutoModellistaWebModule:
         @app.get('/amusa/patch1.html')
         @app.get('/amusa/patch/2/am_patch1.html')
         def amusa_patch1() -> Response:
-            # This compatibility page is only used by the Auto Modellista beta1 web flow.
             return tools.html_response(AM_PATCH1_PAGE)
 
         @app.get('/amusa/patch2.html')
         @app.get('/amusa/patch/2/am_patch2.html')
         def amusa_patch2() -> Response:
-            # This compatibility page is only used by the Auto Modellista beta1 web flow.
             return tools.html_response(AM_PATCH2_PAGE)
 
         @app.get('/amusa/patch3.html')
         @app.get('/amusa/patch/2/am_patch3.html')
         def amusa_patch3() -> Response:
-            # This compatibility page is only used by the Auto Modellista beta1 web flow.
             return tools.html_response(AM_PATCH3_PAGE)
 
         @app.get('/amusa/patch4.html')
         @app.get('/amusa/patch/2/am_patch4.html')
         def amusa_patch4() -> Response:
-            # This compatibility page is only used by the Auto Modellista beta1 web flow.
             return tools.html_response(AM_PATCH4_PAGE)
 
         @app.get('/amusa/patch5.html')
         @app.get('/amusa/patch/2/am_patch5.html')
         def amusa_patch5() -> Response:
-            # This compatibility page is only used by the Auto Modellista beta1 web flow.
             return tools.html_response(AM_PATCH5_PAGE)
 
         @app.route('/amusa/am_up.php', methods=['GET', 'POST'])
