@@ -257,9 +257,14 @@ class SnapProtocolEngine:
             message.session_id = session.session_id
 
     def _handle_echo(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        """Respond to keepalive/echo packets by mirroring one payload word."""
+        """Respond to keepalive/echo packets by mirroring full payload bytes.
 
-        payload = message.payload[:4].ljust(4, b'\x00')
+        `SLUS_206.42` `kkSendEchoPacket` copies the caller-provided payload
+        length verbatim (observed 8-byte and 64-byte calls), and the echo
+        callback variants only clear local state flags.
+        """
+
+        payload = message.payload
         channel = message.type_flags & CHANNEL_MASK
         if channel == 0:
             channel = CHANNEL_ROOM
