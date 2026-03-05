@@ -362,13 +362,8 @@ Note: replay regression tests use optional local packet-capture logs. If those l
 - `opensnap_dns`: separate standalone DNS service package.
 - `tests`: unit and regression tests.
 
-## Troubleshooting
-
-- `python3: command not found`: install Python 3.11+ and reopen your shell.
-- `No module named 'opensnap'`: start services from the repository root using `python3 run.py game`, `python3 run.py bootstrap`, or `python3 run.py web`.
-- `Address already in use`: another process is using the configured bootstrap or game UDP port; stop that process or change server settings before starting openSNAP.
-
 ## Acknowledgements
 
 - This project has been possible thanks to No23 and his previous private work on `snapsi`.
 - flyinghead's `kage_server` repository was used as a reference while understanding parts of the protocol behavior.
+- LLMs were used to help reverse engineer binary ELF game files with the aid of `objdump`, `radare2`, `mips-linux-gnu-objdump`, and `readelf` CLI tools.
