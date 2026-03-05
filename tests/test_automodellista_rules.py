@@ -22,9 +22,9 @@ class AutoModellistaRuleSerializationTests(unittest.TestCase):
         self.assertEqual(
             build_am_rule_csv_rows(),
             (
-                '00000a00000800000100000000000000000000240000000000000000',
-                '00000a00000800000100000000000000000000240000000000000000',
-                '00000a00000800000100000000000000000000240000000000000000',
+                '00000a00000800000100000000000000000000280000000000000000',
+                '00000a00000800000100000000000000000000280000000000000000',
+                '00000a00000800000100000000000000000000280000000000000000',
                 '00000a00000800000100000000000000000000440000000000000100',
                 '00000000000000000000000000000000000000110000000000000000',
                 performance.hex(),
@@ -54,6 +54,20 @@ class AutoModellistaRuleSerializationTests(unittest.TestCase):
             field_overrides={'needed_players_default': 0x03, 'max_people_default': 0x06},
         )
         self.assertEqual(row[19], 0x36)
+
+    def test_serializer_packs_max_people_default_count_alias_into_byte_19(self) -> None:
+        row = serialize_am_rule_row(
+            template='normal',
+            field_overrides={'max_people_default_count': 0x08},
+        )
+        self.assertEqual(row[19], 0x28)
+
+    def test_serializer_rejects_out_of_range_max_people_default_count(self) -> None:
+        with self.assertRaises(ValueError):
+            serialize_am_rule_row(
+                template='normal',
+                field_overrides={'max_people_default_count': 0x09},
+            )
 
     def test_performance_serializer_supports_explicit_byte_overrides(self) -> None:
         row = serialize_am_performance_row(byte_overrides={0: 0x01, 63: 0xFF})

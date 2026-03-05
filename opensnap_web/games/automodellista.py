@@ -109,6 +109,8 @@ AM_RULE_SCALAR_FIELD_OFFSETS = {
 AM_RULE_PACKED_FIELD_PLAYERS = 'players_packed'
 AM_RULE_PACKED_FIELD_NEEDED_PLAYERS_DEFAULT = 'needed_players_default'
 AM_RULE_PACKED_FIELD_MAX_PEOPLE_DEFAULT = 'max_people_default'
+# Count-oriented alias that enforces an editable 2..8 people range.
+AM_RULE_PACKED_FIELD_MAX_PEOPLE_DEFAULT_COUNT = 'max_people_default_count'
 
 # Stock constants from observed AM-USA-GAME-RULE seed rows.
 AM_RULE_COURSE_MODE_SEED_STOCK = 0x0A
@@ -129,6 +131,14 @@ AM_RULE_DEFAULT_INDEX_CLUBMEETING_NEEDED_PLAYERS = 0x01
 AM_RULE_DEFAULT_INDEX_CLUBMEETING_MAX_PEOPLE = 0x01
 AM_RULE_DEFAULT_INDEX_PERFORMANCE_NEEDED_PLAYERS = 0x02
 AM_RULE_DEFAULT_INDEX_PERFORMANCE_MAX_PEOPLE = 0x02
+
+# Editable max-people range for standard race profiles.
+AM_RULE_STANDARD_MAX_PEOPLE_MIN = 0x02
+AM_RULE_STANDARD_MAX_PEOPLE_MAX = 0x08
+# Keep stock default at 4 (template-level baseline).
+AM_RULE_STANDARD_MAX_PEOPLE_DEFAULT = AM_RULE_DEFAULT_INDEX_STANDARD_MAX_PEOPLE
+# Explicit override used by openSNAP standard profiles to unlock 2..8 editing.
+AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE = AM_RULE_STANDARD_MAX_PEOPLE_MAX
 
 AM_RULE_TEMPLATE_NAME_NORMAL = 'normal'
 AM_RULE_TEMPLATE_NAME_BLANK = 'blank'
@@ -280,6 +290,8 @@ AM_RULE_PROFILE_INDEX_PERFORMANCE = 5
 # Config contract:
 # - `template`: named base row defaults (`normal` or `blank`).
 # - `field_overrides`: semantic field writes (preferred).
+#   - `max_people_default_count` is a convenience alias for standard profiles and
+#     is validated to `2..8` before packing into byte `+19` low nibble.
 # - `byte_overrides`: raw offset writes for fields not yet semantically mapped.
 AM_GAME_RULE_CONFIG = {
     'rule_profiles': (
@@ -287,24 +299,33 @@ AM_GAME_RULE_CONFIG = {
             'index': AM_RULE_PROFILE_INDEX_MOUNTAIN,
             'label': 'Mountain',
             'template': AM_RULE_TEMPLATE_NAME_NORMAL,
-            # Uses the `normal` template unchanged.
-            'field_overrides': {},
+            'field_overrides': {
+                # Preserve stock template default (4), then override to 8 to hit
+                # the broader editable path in `set_netrule_normal`.
+                'max_people_default_count': AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE,
+            },
             'byte_overrides': {},
         },
         {
             'index': AM_RULE_PROFILE_INDEX_CITY,
             'label': 'City',
             'template': AM_RULE_TEMPLATE_NAME_NORMAL,
-            # Uses the `normal` template unchanged.
-            'field_overrides': {},
+            'field_overrides': {
+                # Preserve stock template default (4), then override to 8 to hit
+                # the broader editable path in `set_netrule_normal`.
+                'max_people_default_count': AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE,
+            },
             'byte_overrides': {},
         },
         {
             'index': AM_RULE_PROFILE_INDEX_CIRCUIT,
             'label': 'Circuit',
             'template': AM_RULE_TEMPLATE_NAME_NORMAL,
-            # Uses the `normal` template unchanged.
-            'field_overrides': {},
+            'field_overrides': {
+                # Preserve stock template default (4), then override to 8 to hit
+                # the broader editable path in `set_netrule_normal`.
+                'max_people_default_count': AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE,
+            },
             'byte_overrides': {},
         },
         {
@@ -553,6 +574,18 @@ def _coerce_rule_nibble(value: int, *, label: str) -> int:
     return value
 
 
+def _coerce_max_people_default_count(value: int, *, label: str) -> int:
+    """Validate editable max-people default count for standard race profiles."""
+
+    nibble = _coerce_rule_nibble(value, label=label)
+    if nibble < AM_RULE_STANDARD_MAX_PEOPLE_MIN or nibble > AM_RULE_STANDARD_MAX_PEOPLE_MAX:
+        raise ValueError(
+            f'Rule {label} must be in range '
+            f'{AM_RULE_STANDARD_MAX_PEOPLE_MIN}..{AM_RULE_STANDARD_MAX_PEOPLE_MAX}, got {value!r}'
+        )
+    return nibble
+
+
 def _pack_players_packed(
     *,
     needed_players_default: int,
@@ -594,6 +627,9 @@ def _apply_semantic_rule_fields(
             continue
         if name == AM_RULE_PACKED_FIELD_MAX_PEOPLE_DEFAULT:
             max_people_default = _coerce_rule_nibble(value, label=f'{row_label} {name}')
+            continue
+        if name == AM_RULE_PACKED_FIELD_MAX_PEOPLE_DEFAULT_COUNT:
+            max_people_default = _coerce_max_people_default_count(value, label=f'{row_label} {name}')
             continue
         if name == 'event_flag' and not allow_event_flag:
             raise ValueError(f'{row_label} does not support event_flag')
