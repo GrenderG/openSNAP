@@ -2,7 +2,6 @@
 
 from opensnap.core.bootstrap.handlers import (
     _build_bootstrap_login_payload,
-    _build_kage_bootstrap_payload,
     _build_login_fail_payload,
     _build_login_success_payload,
     _decrypt_blowfish_ecb,
@@ -22,7 +21,6 @@ __all__ = [
     'handle_login_client',
     'handle_bootstrap_check',
     '_build_bootstrap_login_payload',
-    '_build_kage_bootstrap_payload',
     '_build_login_fail_payload',
     '_build_login_success_payload',
     '_decrypt_blowfish_ecb',

@@ -10,7 +10,13 @@ from cryptography.hazmat.primitives.ciphers import Cipher, modes
 
 from opensnap.core.context import HandlerContext
 from opensnap.protocol import commands
-from opensnap.protocol.constants import CHANNEL_LOBBY, FLAG_RESPONSE, FOOTER_BYTES_KAGE
+from opensnap.protocol.constants import (
+    BOOTSTRAP_LOGIN_FAIL_REASON_GENERIC,
+    BOOTSTRAP_LOGIN_FAIL_REASON_INVALID_PASSWORD,
+    CHANNEL_LOBBY,
+    FLAG_RESPONSE,
+    FOOTER_BYTES_KAGE,
+)
 from opensnap.protocol.fields import get_c_string
 from opensnap.protocol.models import SnapMessage
 
@@ -74,22 +80,38 @@ def handle_login_client(context: HandlerContext, message: SnapMessage) -> list[S
         game_identifier=game_identifier,
     )
 
-    # The bootstrap handshake must stay on the bootstrap endpoint until
-    # login success returns the final game target. `kkLoginClient` seeds
-    # the bootstrap socket address (`9090` in `SLUS_206.42`) before the
-    # later login-success packet switches the client to the game server.
-    bootstrap_host = _resolve_advertise_host(
-        configured_host=context.config.server.bootstrap.advertise_host,
-        bind_host=context.config.server.bootstrap.host,
-        client_host=message.endpoint.host,
-    )
     if _is_kage_bootstrap_variant(message):
-        challenge_payload = _build_kage_bootstrap_payload(
-            login_field=raw_login,
-            key_material=account.bootstrap_magic_key.hex().encode('ascii'),
-            server_host=bootstrap_host,
-            server_port=context.config.server.bootstrap.port,
+        kage_key = _resolve_kage_bootstrap_key(raw_login=raw_login, account=account)
+        if not kage_key:
+            return [
+                context.reply(
+                    message,
+                    type_flags=CHANNEL_LOBBY,
+                    command=commands.CMD_BOOTSTRAP_LOGIN_FAIL,
+                )
+            ]
+        advertised_game_host = _resolve_game_target_host(
+            context=context,
+            game_identifier=game_identifier,
+            target_host=game_target.host,
+            client_host=message.endpoint.host,
         )
+        success_payload = _build_kage_login_success_payload(
+            login_field=raw_login,
+            server_host=advertised_game_host,
+            server_port=game_target.port,
+            key_material=kage_key,
+        )
+        return [
+            context.reply(
+                message,
+                type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                command=commands.CMD_BOOTSTRAP_LOGIN_SUCCESS,
+                payload=success_payload,
+                session_id=session.session_id,
+            )
+        ]
+
     else:
         challenge_payload = _build_bootstrap_login_payload(
             magic_key=account.bootstrap_magic_key,
@@ -108,6 +130,37 @@ def handle_login_client(context: HandlerContext, message: SnapMessage) -> list[S
             session_id=session.session_id,
         )
     ]
+
+
+def _resolve_kage_bootstrap_key(*, raw_login: str, account) -> bytes:
+    """Resolve key material for `SLUS_204.98` bootstrap success payloads.
+
+    `kkLoginClient` stores runtime `login_password` at `app+0x47c`, and
+    `kkBootStrapLoginSuccess` decrypts `0x2d` with that exact byte string.
+    """
+
+    if account.bootstrap_login_key:
+        return account.bootstrap_login_key
+
+    login_fallback = _parse_login_client_name(raw_login).encode('utf-8')
+    if login_fallback:
+        LOGGER.debug(
+            (
+                'KAGE bootstrap key for account %r is unavailable as cleartext; '
+                'falling back to login-field key material.'
+            ),
+            account.username,
+        )
+        return login_fallback
+
+    LOGGER.error(
+        (
+            'KAGE bootstrap key for account %r is unavailable: both clear login '
+            'key and login-field key material are empty.'
+        ),
+        account.username,
+    )
+    return b''
 
 
 def handle_bootstrap_check(context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -130,7 +183,7 @@ def handle_bootstrap_check(context: HandlerContext, message: SnapMessage) -> lis
                 message,
                 type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
                 command=commands.CMD_BOOTSTRAP_LOGIN_FAIL,
-                payload=_build_login_fail_payload(),
+                payload=_build_login_fail_payload(reason_code=BOOTSTRAP_LOGIN_FAIL_REASON_INVALID_PASSWORD),
             )
         ]
 
@@ -292,59 +345,35 @@ def _build_bootstrap_login_payload(
     return _encrypt_blowfish_ecb(bootstrap_key, challenge)
 
 
-def _build_kage_bootstrap_payload(
+def _build_kage_login_success_payload(
     *,
     login_field: str,
     key_material: bytes,
     server_host: str,
     server_port: int,
 ) -> bytes:
-    """Build the KAGE-specific bootstrap challenge payload."""
+    """Build direct `0x2d` payload for `SLUS_204.98` bootstrap login success."""
 
     ip_int = int.from_bytes(socket.inet_aton(server_host), byteorder='big', signed=False)
-    login_bytes = login_field.encode('utf-8')
-    trailing_data = b'\x00' * (0x118 - struct.calcsize('>40s6L'))
     plaintext = struct.pack(
         '>40s6L',
-        login_bytes,
+        login_field.encode('utf-8'),
         ip_int,
         server_port,
         server_port,
         0,
         0,
-        len(trailing_data),
+        0,
     )
-    return _encrypt_blowfish_ecb(key_material, plaintext + trailing_data)
+    return _encrypt_blowfish_ecb(key_material, plaintext)
 
 
 def _verify_bootstrap_answer(*, payload: bytes, bootstrap_key: bytes, server_secret: str) -> bool:
-    """Check whether the bootstrap verifier matches one accepted release shape."""
+    """Check whether bootstrap verifier proves the expected server secret."""
 
     clear = _decrypt_blowfish_ecb(bootstrap_key, payload)
     extracted_secret = get_c_string(clear, 8)
-    if extracted_secret == server_secret:
-        return True
-    return _matches_wrapped_bootstrap_verifier(clear)
-
-
-def _matches_wrapped_bootstrap_verifier(clear: bytes) -> bool:
-    """Check the structured wrapped-verifier shape seen in release captures."""
-
-    if len(clear) < 136:
-        return False
-
-    declared_size, reserved = struct.unpack_from('>2L', clear, 0)
-    if declared_size != 0x80 or reserved != 0:
-        return False
-
-    wrapped = clear[8:136]
-    repeated_block = wrapped[32:40]
-    if len(repeated_block) != 8:
-        return False
-    if repeated_block == b'\x00' * 8:
-        return False
-
-    return wrapped[32:] == repeated_block * 12
+    return extracted_secret == server_secret
 
 
 def _build_login_success_payload(
@@ -438,7 +467,7 @@ def _resolve_local_host_for_client(client_host: str) -> str:
     return local_host
 
 
-def _build_login_fail_payload() -> bytes:
+def _build_login_fail_payload(*, reason_code: int = BOOTSTRAP_LOGIN_FAIL_REASON_GENERIC) -> bytes:
     """Build the fixed bootstrap login-failure payload."""
 
-    return struct.pack('>2L', 0, 0x01)
+    return struct.pack('>2L', 0, reason_code)

@@ -55,12 +55,25 @@ class BootstrapAuthHelpersTests(unittest.TestCase):
             )
         self.assertEqual(value, '127.0.0.1')
 
-    def test_verify_bootstrap_answer_accepts_wrapped_release_shape(self) -> None:
+    def test_verify_bootstrap_answer_accepts_plaintext_server_secret(self) -> None:
+        config = default_app_config()
+        clear = b'\x00' * 8 + config.server.server_secret.encode('utf-8')
+        payload = _encrypt_blowfish_ecb(config.server.bootstrap_key, clear)
+
+        self.assertTrue(
+            _verify_bootstrap_answer(
+                payload=payload,
+                bootstrap_key=config.server.bootstrap_key,
+                server_secret=config.server.server_secret,
+            )
+        )
+
+    def test_verify_bootstrap_answer_rejects_wrapped_release_shape_without_plain_secret(self) -> None:
         config = default_app_config()
         clear = struct.pack('>2L', 0x80, 0) + (bytes(range(32)) + (b'ABCDEFGH' * 12))
         payload = _encrypt_blowfish_ecb(config.server.bootstrap_key, clear)
 
-        self.assertTrue(
+        self.assertFalse(
             _verify_bootstrap_answer(
                 payload=payload,
                 bootstrap_key=config.server.bootstrap_key,
@@ -80,7 +93,6 @@ class BootstrapAuthHelpersTests(unittest.TestCase):
                 server_secret=config.server.server_secret,
             )
         )
-
 
 if __name__ == '__main__':
     unittest.main()

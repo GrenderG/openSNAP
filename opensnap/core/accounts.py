@@ -18,6 +18,7 @@ class Account:
     username: str
     password_verifier: str
     bootstrap_magic_key: bytes
+    bootstrap_login_key: bytes
     seed: str
     team: str
 
@@ -73,14 +74,17 @@ def build_account(
 ) -> Account:
     """Build account model from serialized storage fields."""
 
+    raw_password_record = password_record
     account_seed = normalize_seed(seed)
     encoded_record = normalize_password_record(password_record, account_seed)
     verifier, magic_key = parse_password_record(encoded_record, account_seed)
+    login_key = _derive_bootstrap_login_key(raw_password_record)
     return Account(
         user_id=user_id,
         username=username,
         password_verifier=verifier,
         bootstrap_magic_key=magic_key,
+        bootstrap_login_key=login_key,
         seed=account_seed,
         team=team,
     )
@@ -154,3 +158,15 @@ def _is_hex(value: str, expected_length: int) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _derive_bootstrap_login_key(password_record: str) -> bytes:
+    """Return the cleartext bootstrap login key when available.
+
+    `SLUS_204.98` loads the Blowfish login-success key from runtime
+    `login_password`; encoded password records do not retain that cleartext.
+    """
+
+    if is_encoded_password_record(password_record):
+        return b''
+    return password_record.encode('utf-8')

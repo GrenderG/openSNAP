@@ -15,6 +15,7 @@ from opensnap.core.engine import SnapProtocolEngine
 from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.protocol import commands
 from opensnap.protocol.constants import (
+    BOOTSTRAP_LOGIN_FAIL_REASON_INVALID_PASSWORD,
     CHANNEL_LOBBY,
     CHANNEL_ROOM,
     FLAG_LOBBY,
@@ -162,6 +163,45 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(kics_result.messages[0].command, commands.CMD_RESULT_LOGIN_TO_KICS)
         self.assertEqual(get_u32(kics_result.messages[0].payload, 8), session_id)
 
+    def test_bootstrap_check_rejects_wrapped_shape_without_server_secret(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50003)
+
+        login_request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY,
+            packet_number=0,
+            command=commands.CMD_LOGIN_CLIENT,
+            session_id=0,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=b'test\n\x00',
+        )
+        login_result = engine.handle_datagram(_encode(login_request), endpoint)
+        self.assertFalse(login_result.errors)
+        self.assertEqual(len(login_result.messages), 1)
+        session_id = login_result.messages[0].session_id
+
+        wrapped_shape = struct.pack('>2L', 0x80, 0) + (bytes(range(32)) + (b'ABCDEFGH' * 12))
+        check_request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY,
+            packet_number=0,
+            command=commands.CMD_BOOTSTRAP_LOGIN_SWAN_CHECK,
+            session_id=session_id,
+            sequence_number=1,
+            acknowledge_number=0,
+            payload=_encrypt_blowfish(config.server.bootstrap_key, wrapped_shape),
+        )
+        check_result = engine.handle_datagram(_encode(check_request), endpoint)
+
+        self.assertFalse(check_result.errors)
+        self.assertEqual(len(check_result.messages), 1)
+        self.assertEqual(check_result.messages[0].command, commands.CMD_BOOTSTRAP_LOGIN_FAIL)
+        self.assertEqual(get_u32(check_result.messages[0].payload, 0), 0)
+        self.assertEqual(get_u32(check_result.messages[0].payload, 4), BOOTSTRAP_LOGIN_FAIL_REASON_INVALID_PASSWORD)
+
     def test_login_client_accepts_repeated_login_payload(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
@@ -215,19 +255,20 @@ class EngineFlowTests(unittest.TestCase):
         self.assertFalse(login_result.errors)
         self.assertEqual(len(login_result.messages), 1)
         challenge = login_result.messages[0]
-        self.assertEqual(challenge.command, commands.CMD_BOOTSTRAP_LOGIN_SWAN)
-        self.assertEqual(len(challenge.payload), 0x118)
+        self.assertEqual(challenge.command, commands.CMD_BOOTSTRAP_LOGIN_SUCCESS)
+        self.assertTrue(challenge.type_flags & FLAG_RESPONSE)
 
         account = engine._accounts.get_by_name('test')
         assert account is not None
-        clear = _decrypt_blowfish(account.bootstrap_magic_key.hex().encode('ascii'), challenge.payload)
+        key_material = account.bootstrap_login_key or raw_login
+        clear = _decrypt_blowfish(key_material, challenge.payload)
         self.assertEqual(get_c_string(clear, 0), raw_login.decode('utf-8'))
         self.assertNotEqual(get_u32(clear, 40), 0)
-        self.assertEqual(get_u32(clear, 44), config.server.bootstrap.port)
-        self.assertEqual(get_u32(clear, 48), config.server.bootstrap.port)
+        self.assertEqual(get_u32(clear, 44), config.server.game.port)
+        self.assertEqual(get_u32(clear, 48), config.server.game.port)
         self.assertEqual(get_u32(clear, 52), 0)
         self.assertEqual(get_u32(clear, 56), 0)
-        self.assertEqual(get_u32(clear, 60), len(clear) - struct.calcsize('>40s6L'))
+        self.assertEqual(get_u32(clear, 60), 0)
 
     def test_login_client_with_primary_footer_and_single_string_uses_primary_bootstrap_variant(self) -> None:
         config = self._config
@@ -2470,6 +2511,14 @@ def _decrypt_blowfish(key: bytes, payload: bytes) -> bytes:
     cipher = Cipher(decrepit_algorithms.Blowfish(key), modes.ECB(), backend=default_backend())
     decryptor = cipher.decryptor()
     return decryptor.update(payload) + decryptor.finalize()
+
+
+def _encrypt_blowfish(key: bytes, payload: bytes) -> bytes:
+    """Encrypt test payload using Blowfish ECB."""
+
+    cipher = Cipher(decrepit_algorithms.Blowfish(key), modes.ECB(), backend=default_backend())
+    encryptor = cipher.encryptor()
+    return encryptor.update(payload) + encryptor.finalize()
 
 
 def _pad_block(payload: bytes, block_size: int) -> bytes:
