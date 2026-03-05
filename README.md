@@ -32,9 +32,9 @@ Current status:
 
 ## SNAP History (Brief)
 
-SN@P started as **SEGA Network Application Package**, created by Sega.com as middleware for online multiplayer game services.
+SN@P is the direct continuation of KAGE, an in-house online gaming middleware developed by SEGA primarily for Dreamcast titles. It later evolved into the **SEGA Network Application Package**.
 
-In the early 2000s, SEGA positioned SNAP as a cross-platform networking stack for game developers. In **December 2002**, Sega.com announced middleware agreements that made SNAP available to PlayStation 2 and GameCube developers.
+In the early 2000s, SEGA positioned SNAP as a cross-platform networking stack for game developers. In **December 2002**, SEGA announced middleware agreements that made SNAP available to PlayStation 2 and GameCube developers.
 
 On **August 19, 2003**, Nokia and SEGA announced an agreement for Nokia to acquire select Sega.com technology, including SNAP. Nokia stated that SNAP would become core technology for its online mobile gaming push (especially around N-Gage services).
 
