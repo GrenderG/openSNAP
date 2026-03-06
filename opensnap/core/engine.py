@@ -187,6 +187,7 @@ class SnapProtocolEngine:
                 )
                 errors.append(f'Handler error for command 0x{message.command:02x}: {exc}')
 
+        outbound = self._drop_redundant_bare_acks(outbound)
         self._logger.debug(
             'Datagram from %s:%d produced %d outbound message(s) and %d error(s).',
             endpoint.host,
@@ -329,3 +330,48 @@ class SnapProtocolEngine:
             command=commands.CMD_ACK,
             session_id=message.session_id,
         )
+
+    def _drop_redundant_bare_acks(self, outbound: list[SnapMessage]) -> list[SnapMessage]:
+        """Drop bare ACKs that are already covered by another response packet.
+
+        `SLUS_204.98` `kkDispatchingPacket` (`0x002e8480`) and
+        `SLUS_206.42` `kkDispatchingPacket` (`0x002ee720`) feed every
+        `FLAG_RESPONSE` packet through `kkSetRevAck` before command dispatch.
+        That makes a standalone `CMD_ACK` redundant whenever the same datagram
+        already returns another response packet to the sender with the same
+        reverse-ACK number.
+        """
+
+        response_keys = {
+            (message.endpoint, message.session_id, message.acknowledge_number)
+            for message in outbound
+            if message.command != commands.CMD_ACK
+            and (message.type_flags & FLAG_RESPONSE) != 0
+            and message.acknowledge_number > 0
+        }
+        if not response_keys:
+            return outbound
+
+        filtered: list[SnapMessage] = []
+        for message in outbound:
+            key = (message.endpoint, message.session_id, message.acknowledge_number)
+            if (
+                message.command == commands.CMD_ACK
+                and (message.type_flags & BARE_ACK_FLAGS) == BARE_ACK_FLAGS
+                and message.acknowledge_number > 0
+                and key in response_keys
+            ):
+                self._logger.debug(
+                    (
+                        'Dropping redundant bare ACK to %s:%d '
+                        '(sess=0x%08x ack=%d) because another response packet '
+                        'in the same datagram already carries the reverse ACK.'
+                    ),
+                    message.endpoint.host,
+                    message.endpoint.port,
+                    message.session_id,
+                    message.acknowledge_number,
+                )
+                continue
+            filtered.append(message)
+        return filtered

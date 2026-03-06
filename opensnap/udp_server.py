@@ -142,12 +142,7 @@ class SnapUdpServer:
         self._stopped = True
 
     def _send_messages(self, udp_socket: socket.socket, messages: list[SnapMessage]) -> None:
-        """Encode and send outbound messages.
-
-        Send each SNAP message as one UDP datagram. Some clients appear to parse only
-        one top-level SNAP entry per UDP packet for certain flows (notably room-exit),
-        so bundling multiple responses into one datagram can cause retries/timeouts.
-        """
+        """Encode and send outbound messages."""
 
         send_time = time.monotonic()
         for message in messages:

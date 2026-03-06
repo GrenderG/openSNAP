@@ -1604,14 +1604,10 @@ class EngineFlowTests(unittest.TestCase):
         )
         result = engine.handle_datagram(_encode_many([outer, embedded]), endpoint_one)
         self.assertFalse(result.errors)
-        self.assertEqual(len(result.messages), 4)
+        self.assertEqual(len(result.messages), 3)
 
-        ack = result.messages[0]
-        relays = result.messages[1:3]
-        change = result.messages[3]
-        self.assertEqual(ack.command, commands.CMD_ACK)
-        self.assertEqual(ack.endpoint, endpoint_one)
-        self.assertEqual(ack.acknowledge_number, 5)
+        relays = result.messages[:2]
+        change = result.messages[2]
         self.assertTrue(all(message.command == commands.CMD_SEND for message in relays))
         self.assertEqual({message.endpoint for message in relays}, {endpoint_one, endpoint_two})
         self.assertEqual({message.session_id for message in relays}, {sender_session, receiver_session})
@@ -1741,6 +1737,11 @@ class EngineFlowTests(unittest.TestCase):
 
         result = engine.handle_datagram(_encode_many([outer, embedded]), endpoint_one)
         self.assertFalse(result.errors)
+        sender_acks = [
+            message for message in result.messages
+            if message.command == commands.CMD_ACK and message.endpoint == endpoint_one
+        ]
+        self.assertEqual(len(sender_acks), 1)
 
         relays = [
             message for message in result.messages
@@ -1749,6 +1750,83 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(relays), 2)
         self.assertEqual(relays[0].payload, outer.payload)
         self.assertEqual(relays[1].payload, embedded.payload)
+
+    def test_multi_room_relay_follow_up_send_uses_leave_wrapper_as_reverse_ack(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint_one = Endpoint(host='127.0.0.1', port=50122)
+        endpoint_two = Endpoint(host='127.0.0.2', port=50123)
+
+        sender_session = _create_session_via_login(engine, endpoint_one, 'test')
+        receiver_session = _create_session_via_login(engine, endpoint_two, 'test')
+        _join_lobby(engine, endpoint_one, sender_session, lobby_id=1, sequence=3)
+        _join_lobby(engine, endpoint_two, receiver_session, lobby_id=1, sequence=3)
+
+        room_id = _create_room(engine, endpoint_one, sender_session, sequence=4, room_name='room-beta1-exit')
+        _join_room(engine, endpoint_two, receiver_session, room_id=room_id, sequence=4)
+
+        outer = SnapMessage(
+            endpoint=endpoint_one,
+            type_flags=FLAG_ROOM | FLAG_RELAY | FLAG_MULTI | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=sender_session,
+            sequence_number=11,
+            acknowledge_number=0,
+            payload=struct.pack('>2B5s4s3s', 5, 4, b'test\n', b'team', b'one'),
+        )
+        embedded_send = SnapMessage(
+            endpoint=endpoint_one,
+            type_flags=FLAG_ROOM | FLAG_RELAY | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=sender_session,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=struct.pack('>2B5s4s3s', 5, 4, b'test\n', b'team', b'two'),
+        )
+        embedded_leave = SnapMessage(
+            endpoint=endpoint_one,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_LEAVE,
+            session_id=sender_session,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=b'',
+        )
+
+        result = engine.handle_datagram(_encode_many([outer, embedded_send, embedded_leave]), endpoint_one)
+        self.assertFalse(result.errors)
+
+        sender_acks = [
+            message for message in result.messages
+            if message.command == commands.CMD_ACK and message.endpoint == endpoint_one
+        ]
+        self.assertEqual(sender_acks, [])
+
+        relays = [
+            message for message in result.messages
+            if message.command == commands.CMD_SEND and message.endpoint == endpoint_two
+        ]
+        self.assertEqual(len(relays), 2)
+        self.assertEqual(relays[0].payload, outer.payload)
+        self.assertEqual(relays[1].payload, embedded_send.payload)
+
+        leave_results = [
+            message for message in result.messages
+            if message.command == commands.CMD_RESULT_WRAPPER and message.endpoint == endpoint_one
+        ]
+        self.assertEqual(len(leave_results), 1)
+        self.assertEqual(leave_results[0].acknowledge_number, 11)
+        self.assertEqual(struct.unpack_from('>2L', leave_results[0].payload), (0x07, 0))
+
+        leave_callbacks = [
+            message for message in result.messages
+            if message.command == commands.CMD_LEAVE and message.endpoint == endpoint_two
+        ]
+        self.assertEqual(len(leave_callbacks), 1)
+        self.assertEqual(struct.unpack('>L', leave_callbacks[0].payload)[0], sender_session)
 
     def test_multi_send_subcommand_8002_leaves_room(self) -> None:
         config = self._config
@@ -1782,13 +1860,9 @@ class EngineFlowTests(unittest.TestCase):
         )
         result = engine.handle_datagram(_encode_many([outer, embedded_leave]), endpoint)
         self.assertFalse(result.errors)
-        self.assertEqual(len(result.messages), 2)
+        self.assertEqual(len(result.messages), 1)
 
-        ack = result.messages[0]
-        leave_result = result.messages[1]
-        self.assertEqual(ack.command, commands.CMD_ACK)
-        self.assertEqual(ack.endpoint, endpoint)
-        self.assertEqual(ack.session_id, session_id)
+        leave_result = result.messages[0]
         self.assertEqual(leave_result.command, commands.CMD_RESULT_WRAPPER)
         self.assertEqual(leave_result.endpoint, endpoint)
         self.assertEqual(leave_result.session_id, session_id)
@@ -1831,13 +1905,10 @@ class EngineFlowTests(unittest.TestCase):
         )
         result = engine.handle_datagram(_encode_many([outer, embedded]), endpoint)
         self.assertFalse(result.errors)
-        self.assertEqual(len(result.messages), 3)
+        self.assertEqual(len(result.messages), 2)
 
-        ack = result.messages[0]
-        relay = result.messages[1]
-        change = result.messages[2]
-        self.assertEqual(ack.command, commands.CMD_ACK)
-        self.assertEqual(ack.acknowledge_number, 5)
+        relay = result.messages[0]
+        change = result.messages[1]
         self.assertEqual(relay.command, commands.CMD_SEND)
         self.assertEqual(relay.endpoint, endpoint)
         self.assertEqual(relay.session_id, session_id)

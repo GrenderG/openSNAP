@@ -497,6 +497,25 @@ class AutoModellistaPlugin(GamePlugin):
         if session is None:
             return []
 
+        # `SLUS_204.98` `kkReceiveExtentCheck` (`0x002ebff0`) and
+        # `SLUS_206.42` `kkReceiveExtentCheck` (`0x002f4e9c`) assign transport
+        # ACK ownership to the outer reliable packet before they enter
+        # `kkRUDPTopMultiMessageHandle`.
+        #
+        # Beta1 host-exit uses that exact shape: one reliable multi `CMD_SEND`
+        # with additional seq=0 embedded `CMD_SEND` relays plus an embedded
+        # `CMD_LEAVE`. Sending separate bare ACKs for those embedded seq=0
+        # sends makes the client retry the whole bundle and stall in Exit.
+        #
+        # Keep dispatching the embedded relays, but suppress sender ACKs for
+        # those piggybacked seq=0 sends because the outer packet already owns
+        # the only transport ACK in the bundle.
+        suppress_sender_ack = (
+            message.embedded_in_multi
+            and message.sequence_number == 0
+            and (message.type_flags & FLAG_RELIABLE) != 0
+        )
+
         if message.type_flags & FLAG_MULTI:
             # Observed multi-packet room sends relay the embedded room payload
             # with the same sender/all-members policy as single CMD_SEND.
@@ -524,12 +543,6 @@ class AutoModellistaPlugin(GamePlugin):
 
         callback_flags = message.type_flags & RELAY_CONTEXT_MASK
         if callback_flags == TYPE_LOBBY_RELAY:
-            ack_to_sender = context.reply(
-                message,
-                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
-                command=commands.CMD_ACK,
-                session_id=session.session_id,
-            )
             chat_payload = _build_chat_echo_payload(message.payload)
             chats = _broadcast_lobby_chat(
                 context,
@@ -537,15 +550,17 @@ class AutoModellistaPlugin(GamePlugin):
                 chat_payload,
                 exclude_session_id=session.session_id,
             )
-            return [ack_to_sender] + chats
-
-        if callback_flags == TYPE_ROOM_RELAY:
+            if suppress_sender_ack:
+                return chats
             ack_to_sender = context.reply(
                 message,
-                type_flags=FLAG_ROOM | FLAG_RESPONSE,
+                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
                 command=commands.CMD_ACK,
                 session_id=session.session_id,
             )
+            return [ack_to_sender] + chats
+
+        if callback_flags == TYPE_ROOM_RELAY:
             chat_payload = _build_chat_echo_payload(message.payload)
             chats = _broadcast_room_chat(
                 context,
@@ -553,16 +568,17 @@ class AutoModellistaPlugin(GamePlugin):
                 chat_payload,
                 exclude_session_id=session.session_id,
             )
-            return [ack_to_sender] + chats
-
-        if message.type_flags & FLAG_ROOM:
+            if suppress_sender_ack:
+                return chats
             ack_to_sender = context.reply(
                 message,
                 type_flags=FLAG_ROOM | FLAG_RESPONSE,
                 command=commands.CMD_ACK,
                 session_id=session.session_id,
             )
+            return [ack_to_sender] + chats
 
+        if message.type_flags & FLAG_ROOM:
             if len(message.payload) < 2:
                 _LOGGER.warning(
                     (
@@ -574,13 +590,29 @@ class AutoModellistaPlugin(GamePlugin):
                     message.type_flags,
                     len(message.payload),
                 )
-                return [ack_to_sender]
+                if suppress_sender_ack:
+                    return []
+                return [context.reply(
+                    message,
+                    type_flags=FLAG_ROOM | FLAG_RESPONSE,
+                    command=commands.CMD_ACK,
+                    session_id=session.session_id,
+                )]
 
-            return [ack_to_sender] + self._handle_room_game_send(
+            relays = self._handle_room_game_send(
                 context=context,
                 session=session,
                 request=message,
             )
+            if suppress_sender_ack:
+                return relays
+            ack_to_sender = context.reply(
+                message,
+                type_flags=FLAG_ROOM | FLAG_RESPONSE,
+                command=commands.CMD_ACK,
+                session_id=session.session_id,
+            )
+            return [ack_to_sender] + relays
 
         _LOGGER.warning(
             'Rejecting send command from %s:%d: unsupported type=0x%04x.',
