@@ -254,12 +254,20 @@ Environment variables for the Flask service:
 - `OPENSNAP_WEB_HTTPS_PORT`: HTTPS bind port for `rankweb` (default: `443`).
 - `OPENSNAP_WEB_HTTPS_CERTFILE`: certificate path for the optional HTTPS listener.
 - `OPENSNAP_WEB_HTTPS_KEYFILE`: private key path for the optional HTTPS listener.
-- `OPENSNAP_WEB_GAME_PLUGIN`: web game module name (default: value of `OPENSNAP_GAME_PLUGIN`; bundled modules include `automodellista` and `monsterhunter`).
+- `OPENSNAP_WEB_GAME_PLUGIN`: web route mode/profile (default: `generic`).
+  - `generic`: one web server serves routes from all bundled web modules.
+  - explicit module name: register only that module (`automodellista`, `automodellista_beta1`, `monsterhunter`).
 
 Example:
 
 ```bash
 OPENSNAP_WEB_PORT=80 python3 run.py web
+```
+
+Override to a single explicit profile if needed:
+
+```bash
+python3 run.py web --web-plugin automodellista_beta1
 ```
 
 Games leave the SNAP UDP flow after post-game lobby leave and enters

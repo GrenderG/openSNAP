@@ -1,5 +1,6 @@
 """Launcher for openSNAP web bootstrap service."""
 
+from dataclasses import replace
 import logging
 import ssl
 import threading
@@ -11,13 +12,17 @@ from opensnap_web.config import WebServerConfig, default_web_server_config
 from werkzeug.serving import BaseWSGIServer, ThreadedWSGIServer, make_server
 
 
-def main() -> None:
+def main(*, web_plugin: str | None = None) -> None:
     """Run Flask web service."""
 
     load_env_file()
     configure_logging(service_name='web')
     logger = logging.getLogger('opensnap.web')
     config = default_web_server_config()
+    if web_plugin is not None:
+        normalized = web_plugin.strip().lower()
+        if normalized:
+            config = replace(config, game_plugin=normalized)
     app = create_web_app(config)
     _enable_web_reuse_address(logger)
     http_server = None

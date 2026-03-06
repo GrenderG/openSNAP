@@ -18,6 +18,15 @@ def main() -> None:
         default='game',
         help='Service to launch: game (default), bootstrap, web, or dns.',
     )
+    parser.add_argument(
+        '--web-plugin',
+        dest='web_plugin',
+        default=None,
+        help=(
+            'Optional web profile override when service=web '
+            '(for example: generic, automodellista, automodellista_beta1).'
+        ),
+    )
     args = parser.parse_args()
 
     if args.service == 'web':
@@ -30,7 +39,7 @@ def main() -> None:
                 ) from exc
             raise
 
-        run_web_server()
+        run_web_server(web_plugin=args.web_plugin)
         return
 
     if args.service == 'bootstrap':

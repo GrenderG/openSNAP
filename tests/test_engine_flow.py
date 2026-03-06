@@ -24,6 +24,7 @@ from opensnap.protocol.constants import (
     FLAG_RELIABLE,
     FLAG_RESPONSE,
     FOOTER_BYTES_KAGE,
+    RESULT_WRAPPER_STATUS_ERROR_DIALOG,
 )
 from opensnap.protocol.fields import get_c_string, get_u32
 from opensnap.protocol.models import Endpoint, SnapMessage
@@ -463,6 +464,38 @@ class EngineFlowTests(unittest.TestCase):
         payload = result.messages[0].payload
         lobby_count = struct.unpack_from('>L', payload, 8)[0]
         self.assertEqual(lobby_count, len(config.lobbies))
+
+    def test_join_lobby_rejects_lobby_id_above_configured_max(self) -> None:
+        config = replace(
+            self._config,
+            server=replace(self._config.server, max_lobbies=1),
+        )
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50009)
+        session_id = _create_session_via_login(engine, endpoint, 'test')
+
+        request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=CHANNEL_LOBBY,
+            packet_number=0,
+            command=commands.CMD_JOIN,
+            session_id=session_id,
+            sequence_number=1,
+            acknowledge_number=0,
+            payload=struct.pack('>L', 2),
+        )
+        result = engine.handle_datagram(_encode(request), endpoint)
+        self.assertFalse(result.errors)
+        self.assertEqual(len(result.messages), 1)
+        self.assertEqual(result.messages[0].command, commands.CMD_RESULT_WRAPPER)
+        self.assertEqual(
+            struct.unpack_from('>L', result.messages[0].payload, 4)[0],
+            RESULT_WRAPPER_STATUS_ERROR_DIALOG,
+        )
+
+        session = engine._sessions.get(session_id)  # noqa: SLF001
+        assert session is not None
+        self.assertEqual(session.lobby_id, 0)
 
     def test_multi_query_attribute_burst_is_handled_once(self) -> None:
         config = self._config
@@ -1962,29 +1995,108 @@ class EngineFlowTests(unittest.TestCase):
         expected_payload = request.payload[:4] + struct.pack('>L', 0) + request.payload[8:]
         self.assertEqual(relay.payload, expected_payload)
 
-    def test_create_room_rejects_when_lobby_has_50_rooms(self) -> None:
-        config = self._config
+    def test_create_room_rejects_when_lobby_reaches_configured_room_limit(self) -> None:
+        config = replace(
+            self._config,
+            server=replace(self._config.server, max_rooms_per_lobby=3),
+        )
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint = Endpoint(host='127.0.0.1', port=50040)
 
         session_id = _create_session_via_login(engine, endpoint, 'test')
         _join_lobby(engine, endpoint, session_id, lobby_id=1, sequence=3)
 
-        for index in range(50):
+        for index in range(config.server.max_rooms_per_lobby):
             room_id = _create_room(engine, endpoint, session_id, sequence=4 + index, room_name=f'r{index}')
             self.assertGreater(room_id, 0)
 
         overflow_request = _build_create_room_request(
             endpoint=endpoint,
             session_id=session_id,
-            sequence=54,
+            sequence=4 + config.server.max_rooms_per_lobby,
             room_name='overflow',
         )
         overflow_result = engine.handle_datagram(_encode(overflow_request), endpoint)
         self.assertFalse(overflow_result.errors)
         self.assertEqual(len(overflow_result.messages), 1)
         self.assertEqual(overflow_result.messages[0].command, commands.CMD_RESULT_WRAPPER)
-        self.assertEqual(struct.unpack_from('>2L', overflow_result.messages[0].payload), (0x04, 1))
+        self.assertEqual(
+            struct.unpack_from('>2L', overflow_result.messages[0].payload),
+            (0x04, RESULT_WRAPPER_STATUS_ERROR_DIALOG),
+        )
+
+    def test_room_join_rejects_when_global_player_cap_is_reached(self) -> None:
+        config = replace(
+            self._config,
+            server=replace(self._config.server, max_players_per_room=2),
+        )
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint_one = Endpoint(host='127.0.0.1', port=50043)
+        endpoint_two = Endpoint(host='127.0.0.2', port=50044)
+        endpoint_three = Endpoint(host='127.0.0.3', port=50045)
+
+        host_session = _create_session_via_login(engine, endpoint_one, 'test')
+        guest_session = _create_session_via_login(engine, endpoint_two, 'test')
+        overflow_session = _create_session_via_login(engine, endpoint_three, 'test')
+
+        _join_lobby(engine, endpoint_one, host_session, lobby_id=1, sequence=3)
+        _join_lobby(engine, endpoint_two, guest_session, lobby_id=1, sequence=3)
+        _join_lobby(engine, endpoint_three, overflow_session, lobby_id=1, sequence=3)
+
+        create_request = _build_create_room_request(
+            endpoint=endpoint_one,
+            session_id=host_session,
+            sequence=4,
+            room_name='cap-room',
+            max_players=8,
+        )
+        create_result = engine.handle_datagram(_encode(create_request), endpoint_one)
+        self.assertFalse(create_result.errors)
+        self.assertEqual(len(create_result.messages), 1)
+        _, room_id = struct.unpack_from('>2L', create_result.messages[0].payload)
+        self.assertGreater(room_id, 0)
+
+        query_request = SnapMessage(
+            endpoint=endpoint_one,
+            type_flags=CHANNEL_LOBBY | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_QUERY_GAME_ROOMS,
+            session_id=host_session,
+            sequence_number=5,
+            acknowledge_number=0,
+            payload=struct.pack('>L', 1),
+        )
+        query_result = engine.handle_datagram(_encode(query_request), endpoint_one)
+        self.assertFalse(query_result.errors)
+        self.assertEqual(len(query_result.messages), 1)
+        self.assertEqual(struct.unpack_from('>L', query_result.messages[0].payload, 8)[0], 1)
+        self.assertEqual(struct.unpack_from('>L', query_result.messages[0].payload, 40)[0], 2)
+
+        _join_room(engine, endpoint_two, guest_session, room_id=room_id, sequence=6)
+
+        overflow_join = SnapMessage(
+            endpoint=endpoint_three,
+            type_flags=CHANNEL_ROOM,
+            packet_number=0,
+            command=commands.CMD_JOIN,
+            session_id=overflow_session,
+            sequence_number=6,
+            acknowledge_number=0,
+            payload=struct.pack('>L', room_id),
+        )
+        overflow_result = engine.handle_datagram(_encode(overflow_join), endpoint_three)
+        self.assertFalse(overflow_result.errors)
+        self.assertEqual(len(overflow_result.messages), 1)
+        self.assertEqual(overflow_result.messages[0].command, commands.CMD_RESULT_WRAPPER)
+        self.assertEqual(
+            struct.unpack_from('>L', overflow_result.messages[0].payload, 4)[0],
+            RESULT_WRAPPER_STATUS_ERROR_DIALOG,
+        )
+
+        room = engine._rooms.get(room_id)  # noqa: SLF001
+        assert room is not None
+        self.assertEqual(room.max_players, 2)
+        self.assertEqual(room.members, {host_session, guest_session})
 
     def test_create_room_reliable_retransmit_reuses_previous_result(self) -> None:
         config = self._config
@@ -2011,6 +2123,31 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(second_result.messages), 1)
         _, second_room_id = struct.unpack_from('>2L', second_result.messages[0].payload)
         self.assertEqual(first_room_id, second_room_id)
+
+    def test_create_room_normalizes_event_no_password_sentinel(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50046)
+
+        session_id = _create_session_via_login(engine, endpoint, 'test')
+        _join_lobby(engine, endpoint, session_id, lobby_id=1, sequence=3)
+
+        request = _build_create_room_request(
+            endpoint=endpoint,
+            session_id=session_id,
+            sequence=4,
+            room_name='event-room',
+            room_password='No PW',
+        )
+        result = engine.handle_datagram(_encode(request), endpoint)
+        self.assertFalse(result.errors)
+        self.assertEqual(len(result.messages), 1)
+        _, room_id = struct.unpack_from('>2L', result.messages[0].payload)
+        self.assertGreater(room_id, 0)
+
+        room = engine._rooms.get(room_id)  # noqa: SLF001
+        assert room is not None
+        self.assertEqual(room.password, '')
 
     def test_query_game_rooms_prunes_members_without_matching_session_room(self) -> None:
         config = self._config
@@ -2473,13 +2610,15 @@ def _build_create_room_request(
     session_id: int,
     sequence: int,
     room_name: str,
+    max_players: int = 4,
+    room_password: str = 'pw',
 ) -> SnapMessage:
     """Build create-room request payload."""
 
     payload = bytearray(0x2C)
     payload[0:16] = room_name.encode('utf-8')[:16].ljust(16, b'\x00')
-    struct.pack_into('>L', payload, 0x10, 4)
-    payload[0x14:0x24] = b'pw'.ljust(16, b'\x00')
+    struct.pack_into('>L', payload, 0x10, max_players)
+    payload[0x14:0x24] = room_password.encode('utf-8')[:16].ljust(16, b'\x00')
     struct.pack_into('>L', payload, 0x28, 1)
     return SnapMessage(
         endpoint=endpoint,

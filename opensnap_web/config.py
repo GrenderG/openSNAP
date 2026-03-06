@@ -16,7 +16,7 @@ class WebServerConfig:
     https_port: int = 443
     https_certfile: str = ''
     https_keyfile: str = ''
-    game_plugin: str = 'automodellista'
+    game_plugin: str = 'generic'
 
     @property
     def https_enabled(self) -> bool:
@@ -35,10 +35,7 @@ def default_web_server_config() -> WebServerConfig:
     https_port_value = os.getenv('OPENSNAP_WEB_HTTPS_PORT', '443').strip()
     https_certfile = os.getenv('OPENSNAP_WEB_HTTPS_CERTFILE', '').strip()
     https_keyfile = os.getenv('OPENSNAP_WEB_HTTPS_KEYFILE', '').strip()
-    game_plugin = os.getenv(
-        'OPENSNAP_WEB_GAME_PLUGIN',
-        os.getenv('OPENSNAP_GAME_PLUGIN', 'automodellista'),
-    ).strip().lower()
+    game_plugin = os.getenv('OPENSNAP_WEB_GAME_PLUGIN', 'generic').strip().lower() or 'generic'
 
     try:
         port = int(port_value)

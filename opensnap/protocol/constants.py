@@ -45,3 +45,18 @@ TYPE_LOBBY_RELAY = FLAG_LOBBY | FLAG_RELAY
 BOOTSTRAP_LOGIN_FAIL_REASON_UNKNOWN = 0x00
 BOOTSTRAP_LOGIN_FAIL_REASON_GENERIC = 0x01
 BOOTSTRAP_LOGIN_FAIL_REASON_INVALID_PASSWORD = 0x13
+
+# `CMD_RESULT_WRAPPER (0x28)` status/result codes used by Auto Modellista
+# join/create/leave callbacks in `SLUS_206.42`:
+# - `ResultJoinLobbyCallBack` (`0x002864f0`) treats status byte `0` as success.
+# - `ResultJoinRoomCallBack` (`0x00287e40`) treats status byte `0` as success.
+# - `ResultCreateGameRoomCallBack` (`0x00288480`) treats status byte `0` as success.
+# - Wider callback scan (`Result*CallBack` family) uses the same split:
+#   `status == 0` success, explicit error branch on `status == 0x27`.
+# - `ResultLoginCallBack` (`0x00285570`) has a secondary reason word when
+#   `status == 0x27` (payload `lw 4(a1)`):
+#   - reason `0x13` -> `To_ErrorLogOut(5)`, internal error id `0x32c`
+#   - reason `< 0x19` and not `0x13` -> `To_ErrorLogOut(4)`, error id `0x334 + reason`
+#   - reason `>= 0x19` -> `To_ErrorLogOut(4)`, error id `0x332`
+RESULT_WRAPPER_STATUS_OK = 0x00
+RESULT_WRAPPER_STATUS_ERROR_DIALOG = 0x27

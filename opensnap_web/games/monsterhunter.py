@@ -13,7 +13,14 @@ class MonsterHunterWebModule:
 
     name = 'monsterhunter'
 
-    def register_routes(self, app: Flask, config: WebServerConfig, tools: WebRouteTools) -> None:
+    def register_routes(
+        self,
+        app: Flask,
+        config: WebServerConfig,
+        tools: WebRouteTools,
+        *,
+        host: str | None = None,
+    ) -> None:
         """Register Monster Hunter-specific web paths with shared signup logic."""
 
         del config
@@ -24,4 +31,6 @@ class MonsterHunterWebModule:
             signup_service=signup_service,
             route_prefixes=('mhweb', 'mheuweb', 'reweb'),
             include_root_aliases=False,
+            host=host,
+            endpoint_namespace=self.name,
         )

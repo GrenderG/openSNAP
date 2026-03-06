@@ -23,19 +23,23 @@ from opensnap.protocol.constants import (
     FLAG_RELIABLE,
     FLAG_RESPONSE,
     RELAY_CONTEXT_MASK,
+    RESULT_WRAPPER_STATUS_ERROR_DIALOG,
+    RESULT_WRAPPER_STATUS_OK,
     TYPE_LOBBY_RELAY,
     TYPE_ROOM_RELAY,
 )
 from opensnap.protocol.fields import get_c_string, get_u16, get_u32
 from opensnap.protocol.models import SnapMessage
 
-MAX_ROOMS_PER_LOBBY = 50
 _LOGGER = logging.getLogger('opensnap.plugins.automodellista')
 # Binary-verified attribute selector used by kkQueryLobbyAttribute/kkQueryGameRoomAttribute:
 # SLUS_206.42 cpnGetJoinUserLobby/cpnGetJoinUserRoom load 0x55534552 ("USER").
 USER_ATTRIBUTE_TOKEN = b'USER'
 PENDING_ROOM_JOIN_RETRY_TICKS = 3
 PENDING_ROOM_JOIN_MAX_RETRIES = 3
+# Event create-race uses this client-side sentinel when password is disabled.
+# Keep room creation semantics as "no password", not literal sentinel text.
+ROOM_PASSWORD_EMPTY_SENTINELS = frozenset({'No PW'})
 
 
 @dataclass(slots=True)
@@ -122,7 +126,7 @@ class AutoModellistaPlugin(GamePlugin):
 
     def _handle_query_lobbies(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         entries = []
-        for lobby in context.lobbies.list():
+        for lobby in context.lobbies.list()[: context.config.server.max_lobbies]:
             users_in = context.sessions.count_users_in_lobby(lobby.lobby_id)
             entries.append(struct.pack('>16s3L', _pack_fixed(lobby.name, 16), users_in, 0, lobby.lobby_id))
 
@@ -153,11 +157,14 @@ class AutoModellistaPlugin(GamePlugin):
             ]
 
         lobby_id = get_u32(message.payload, 0)
+        users_in_lobby = 0
+        if _is_allowed_lobby_id(context, lobby_id):
+            users_in_lobby = context.sessions.count_users_in_lobby(lobby_id)
         payload = struct.pack(
             '>L4sL',
             lobby_id,
             USER_ATTRIBUTE_TOKEN,
-            context.sessions.count_users_in_lobby(lobby_id),
+            users_in_lobby,
         )
         return [
             context.reply(
@@ -170,10 +177,13 @@ class AutoModellistaPlugin(GamePlugin):
 
     def _handle_query_game_rooms(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         lobby_id = get_u32(message.payload, 0)
-        _prune_stale_rooms_in_lobby(context, lobby_id)
-        rooms = context.rooms.list_for_lobby(lobby_id)
+        rooms = []
+        if _is_allowed_lobby_id(context, lobby_id):
+            _prune_stale_rooms_in_lobby(context, lobby_id)
+            rooms = context.rooms.list_for_lobby(lobby_id)
         entries = []
         for room in rooms:
+            advertised_max_players = min(room.max_players, context.config.server.max_players_per_room)
             entries.append(
                 struct.pack(
                     '>16s5L',
@@ -181,7 +191,7 @@ class AutoModellistaPlugin(GamePlugin):
                     len(room.members),
                     0,
                     room.rules,
-                    room.max_players,
+                    advertised_max_players,
                     room.room_id,
                 )
             )
@@ -250,21 +260,34 @@ class AutoModellistaPlugin(GamePlugin):
                 )
             ]
 
-        _prune_stale_rooms_in_lobby(context, session.lobby_id)
-        room_name = get_c_string(message.payload, 0)
-        room_password = get_c_string(message.payload, 0x14)
-        max_players = max(get_u32(message.payload, 0x10), 1)
-        rules = get_u32(message.payload, 0x28)
-
-        room_count = len(context.rooms.list_for_lobby(session.lobby_id))
-        if room_count >= MAX_ROOMS_PER_LOBBY:
-            self._create_room_results[cache_key] = 1
+        if not _is_allowed_lobby_id(context, session.lobby_id):
+            self._create_room_results[cache_key] = RESULT_WRAPPER_STATUS_ERROR_DIALOG
             return [
                 context.reply(
                     message,
                     type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
                     command=commands.CMD_RESULT_WRAPPER,
-                    payload=struct.pack('>2L', GameTags.START_OK, 1),
+                    payload=struct.pack('>2L', GameTags.START_OK, RESULT_WRAPPER_STATUS_ERROR_DIALOG),
+                    session_id=session.session_id,
+                )
+            ]
+
+        _prune_stale_rooms_in_lobby(context, session.lobby_id)
+        room_name = get_c_string(message.payload, 0)
+        room_password = _normalize_room_password(get_c_string(message.payload, 0x14))
+        requested_max_players = max(get_u32(message.payload, 0x10), 1)
+        max_players = min(requested_max_players, context.config.server.max_players_per_room)
+        rules = get_u32(message.payload, 0x28)
+
+        room_count = len(context.rooms.list_for_lobby(session.lobby_id))
+        if room_count >= context.config.server.max_rooms_per_lobby:
+            self._create_room_results[cache_key] = RESULT_WRAPPER_STATUS_ERROR_DIALOG
+            return [
+                context.reply(
+                    message,
+                    type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                    command=commands.CMD_RESULT_WRAPPER,
+                    payload=struct.pack('>2L', GameTags.START_OK, RESULT_WRAPPER_STATUS_ERROR_DIALOG),
                     session_id=session.session_id,
                 )
             ]
@@ -302,9 +325,20 @@ class AutoModellistaPlugin(GamePlugin):
                 context.rooms.leave(session.room_id, session.session_id)
                 context.sessions.set_room(session.session_id, 0)
             lobby_id = get_u32(message.payload, 0)
+            if not _is_allowed_lobby_id(context, lobby_id):
+                payload = struct.pack('>2L', GameTags.GAME_START, RESULT_WRAPPER_STATUS_ERROR_DIALOG)
+                return [
+                    context.reply(
+                        message,
+                        type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                        command=commands.CMD_RESULT_WRAPPER,
+                        payload=payload,
+                        session_id=session.session_id,
+                    )
+                ]
             context.sessions.set_lobby(session.session_id, lobby_id)
             context.sessions.set_room(session.session_id, 0)
-            payload = struct.pack('>2L', GameTags.GAME_START, 0)
+            payload = struct.pack('>2L', GameTags.GAME_START, RESULT_WRAPPER_STATUS_OK)
             return [
                 context.reply(
                     message,
@@ -324,7 +358,7 @@ class AutoModellistaPlugin(GamePlugin):
             # If the client is already in this room, keep the join idempotent and
             # let the periodic callback retry path recover any missed host callback.
             if room is not None and session.room_id == room_id and session.session_id in room.members:
-                payload = struct.pack('>2L', GameTags.GAME_START, 0)
+                payload = struct.pack('>2L', GameTags.GAME_START, RESULT_WRAPPER_STATUS_OK)
                 return [
                     context.reply(
                         message,
@@ -339,7 +373,11 @@ class AutoModellistaPlugin(GamePlugin):
                 member for member in context.sessions.list_room_members(room_id)
                 if member.session_id != session.session_id
             ]
-            success = context.rooms.join(room_id, session.session_id)
+            success = False
+            if room is not None:
+                effective_capacity = min(room.max_players, context.config.server.max_players_per_room)
+                if session.session_id in room.members or len(room.members) < effective_capacity:
+                    success = context.rooms.join(room_id, session.session_id)
             if success:
                 context.sessions.set_room(session.session_id, room_id)
                 self._reset_post_game_state(room_id)
@@ -352,11 +390,11 @@ class AutoModellistaPlugin(GamePlugin):
                     self._pending_room_joins[session.session_id] = _PendingRoomJoin(room_id=room_id)
                 else:
                     self._pending_room_joins.pop(session.session_id, None)
-                payload = struct.pack('>2L', GameTags.GAME_START, 0)
+                payload = struct.pack('>2L', GameTags.GAME_START, RESULT_WRAPPER_STATUS_OK)
             else:
                 callbacks = []
                 self._pending_room_joins.pop(session.session_id, None)
-                payload = struct.pack('>2L', GameTags.GAME_START, 1)
+                payload = struct.pack('>2L', GameTags.GAME_START, RESULT_WRAPPER_STATUS_ERROR_DIALOG)
 
             return [
                 context.reply(
@@ -403,7 +441,7 @@ class AutoModellistaPlugin(GamePlugin):
             # Even during the post-game return path, a real CMD_LEAVE must keep
             # the leave callback selector. Reusing the join selector here sends
             # the client down the join-room callback path ("Getting information").
-            payload = struct.pack('>2L', GameTags.GAME_OVER, 0)
+            payload = struct.pack('>2L', GameTags.GAME_OVER, RESULT_WRAPPER_STATUS_OK)
             return [
                 context.reply(
                     message,
@@ -435,7 +473,7 @@ class AutoModellistaPlugin(GamePlugin):
             # Room leave keeps the leave selector in both manual and post-game
             # flows. The post-game distinction is carried by the earlier room
             # transition packet (`0x8009`), not by changing the 0x28 selector.
-            payload = struct.pack('>2L', GameTags.GAME_OVER, 0)
+            payload = struct.pack('>2L', GameTags.GAME_OVER, RESULT_WRAPPER_STATUS_OK)
             return [
                 context.reply(
                     message,
@@ -758,7 +796,7 @@ class AutoModellistaPlugin(GamePlugin):
             return []
         acknowledge_number = _ack_for_request(message, session)
 
-        payload = struct.pack('>2L', callback_id, 0)
+        payload = struct.pack('>2L', callback_id, RESULT_WRAPPER_STATUS_OK)
         return [
             context.reply(
                 message,
@@ -782,7 +820,7 @@ class AutoModellistaPlugin(GamePlugin):
             self._pending_room_joins.pop(get_u32(payload, 10), None)
 
     def _build_multi_lobby_user_query_payload(self, context: HandlerContext, message: SnapMessage) -> bytes:
-        lobbies = context.lobbies.list()
+        lobbies = context.lobbies.list()[: context.config.server.max_lobbies]
         if not lobbies:
             return b''
 
@@ -813,6 +851,14 @@ class AutoModellistaPlugin(GamePlugin):
                 context.sessions.count_users_in_lobby(lobby_id),
             )
         return payload
+
+
+def _is_allowed_lobby_id(context: HandlerContext, lobby_id: int) -> bool:
+    """Check whether a lobby id is valid under global configured lobby limits."""
+
+    if lobby_id <= 0 or lobby_id > context.config.server.max_lobbies:
+        return False
+    return context.lobbies.get(lobby_id) is not None
 
 
 def _resolve_session(context: HandlerContext, message: SnapMessage) -> Session | None:
@@ -873,6 +919,14 @@ def _network_username(value: str) -> str:
     if value.endswith('\n'):
         return value
     return f'{value}\n'
+
+
+def _normalize_room_password(value: str) -> str:
+    """Map known client sentinel text to an empty room password."""
+
+    if value.casefold() in ROOM_PASSWORD_EMPTY_SENTINELS:
+        return ''
+    return value
 
 
 def _build_chat_echo_payload(payload: bytes) -> bytes:

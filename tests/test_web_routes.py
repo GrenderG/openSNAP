@@ -183,12 +183,12 @@ class WebRouteTests(unittest.TestCase):
         response = self._client.post('/amusa/am_up.php', data={'crs': 'D'})
         self.assertEqual(response.status_code, 200)
 
-    def test_beta_amusa_alias_routes_are_available(self) -> None:
+    def test_release_amusa_routes_are_available(self) -> None:
         page_expectations = {
-            '/amusa/info.html': 'AM-USA-INFORMATION',
-            '/amusa/rule.html': 'AM-USA-GAME-RULE',
-            '/amusa/rank.html': 'am_rank',
-            '/amusa/taboo.html': 'am_taboo',
+            '/amusa/am_info.html': 'AM-USA-INFORMATION',
+            '/amusa/am_rule.html': 'AM-USA-GAME-RULE',
+            '/amusa/am_rank.html': 'am_rank',
+            '/amusa/am_taboo.html': 'am_taboo',
         }
 
         for path, marker in page_expectations.items():
@@ -196,7 +196,7 @@ class WebRouteTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertIn(marker, response.get_data(as_text=True))
 
-        upload_response = self._client.post('/amusa/up.php', data={'crs': 'D'})
+        upload_response = self._client.post('/amusa/am_up.php', data={'crs': 'D'})
         self.assertEqual(upload_response.status_code, 200)
 
     def test_patch1_route_is_available(self) -> None:
@@ -239,6 +239,17 @@ class WebRouteTests(unittest.TestCase):
                 )
             )
 
+    def test_generic_aliases_are_rejected(self) -> None:
+        for alias in ('auto', 'all'):
+            with self.assertRaises(ValueError):
+                create_web_app(
+                    WebServerConfig(
+                        host='127.0.0.1',
+                        port=18080,
+                        game_plugin=alias,
+                    )
+                )
+
     def test_monsterhunter_web_plugin_registers_mh_specific_paths(self) -> None:
         app = create_web_app(
             WebServerConfig(
@@ -261,6 +272,73 @@ class WebRouteTests(unittest.TestCase):
 
         am_response = client.get('/amweb/index.jsp')
         self.assertEqual(am_response.status_code, 404)
+
+    def test_automodellista_beta1_web_plugin_serves_beta1_rule_payload(self) -> None:
+        app = create_web_app(
+            WebServerConfig(
+                host='127.0.0.1',
+                port=18080,
+                game_plugin='automodellista_beta1',
+            )
+        )
+        app.testing = True
+        client = app.test_client()
+
+        rule_response = client.get('/amusa/rule.html')
+        self.assertEqual(rule_response.status_code, 200)
+        rule_page = rule_response.get_data(as_text=True)
+        self.assertIn('AM-USA-GAME-RULE', rule_page)
+        self.assertIn('"00000a0000080000010000000000000000240000000000000000"', rule_page)
+
+        taboo_response = client.get('/amusa/taboo.html')
+        self.assertEqual(taboo_response.status_code, 404)
+
+    def test_generic_web_profile_routes_am_pages_from_all_modules(self) -> None:
+        app = create_web_app(
+            WebServerConfig(
+                host='127.0.0.1',
+                port=18080,
+                game_plugin='generic',
+            )
+        )
+        app.testing = True
+        client = app.test_client()
+
+        release_rule = client.get('/amusa/am_rule.html')
+        self.assertEqual(release_rule.status_code, 200)
+        self.assertIn('AM-USA-GAME-RULE', release_rule.get_data(as_text=True))
+        self.assertIn(
+            '"00000a00000800000100000000000000000000280000000000000000"',
+            release_rule.get_data(as_text=True),
+        )
+
+        beta_rule = client.get('/amusa/rule.html')
+        self.assertEqual(beta_rule.status_code, 200)
+        self.assertIn(
+            '"00000a0000080000010000000000000000240000000000000000"',
+            beta_rule.get_data(as_text=True),
+        )
+
+        release_rank = client.get('/amusa/am_rank.html')
+        self.assertEqual(release_rank.status_code, 200)
+
+        beta_rank = client.get('/amusa/rank.html')
+        self.assertEqual(beta_rank.status_code, 200)
+
+    def test_generic_web_profile_keeps_monsterhunter_routes_available(self) -> None:
+        app = create_web_app(
+            WebServerConfig(
+                host='127.0.0.1',
+                port=18080,
+                game_plugin='generic',
+            )
+        )
+        app.testing = True
+        client = app.test_client()
+
+        response = client.get('/mhweb/index.jsp')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('openSNAP signup service', response.get_data(as_text=True))
 
     def test_existing_user_with_wrong_password_returns_error(self) -> None:
         response = self._client.post('/amweb/create_id.html', data={'username': 'test', 'password': 'wrong'})

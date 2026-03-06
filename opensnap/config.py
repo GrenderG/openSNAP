@@ -18,6 +18,9 @@ DEFAULT_GAME_PLUGIN = 'automodellista'
 DEFAULT_SERVER_SECRET = 'Totally secret server secret!'
 DEFAULT_BOOTSTRAP_KEY = 'SNAP-SWAN'
 DEFAULT_TICK_INTERVAL_SECONDS = 10.0
+DEFAULT_MAX_LOBBIES = 20
+DEFAULT_MAX_ROOMS_PER_LOBBY = 50
+DEFAULT_MAX_PLAYERS_PER_ROOM = 8
 DEFAULT_STORAGE_BACKEND = 'sqlite'
 DEFAULT_SQLITE_PATH = 'opensnap.db'
 DEFAULT_SQLITE_USERS = 'test:1111'
@@ -97,6 +100,9 @@ class ServerConfig:
     server_secret: str = DEFAULT_SERVER_SECRET
     bootstrap_key: bytes = DEFAULT_BOOTSTRAP_KEY.encode('utf-8')
     tick_interval_seconds: float = DEFAULT_TICK_INTERVAL_SECONDS
+    max_lobbies: int = DEFAULT_MAX_LOBBIES
+    max_rooms_per_lobby: int = DEFAULT_MAX_ROOMS_PER_LOBBY
+    max_players_per_room: int = DEFAULT_MAX_PLAYERS_PER_ROOM
 
     @property
     def host(self) -> str:
@@ -188,6 +194,18 @@ def default_app_config() -> AppConfig:
         os.getenv('OPENSNAP_BOOTSTRAP_KEY', DEFAULT_BOOTSTRAP_KEY).strip() or DEFAULT_BOOTSTRAP_KEY
     ).encode('utf-8')
     tick_interval_seconds = _read_float_env('OPENSNAP_TICK_INTERVAL_SECONDS', DEFAULT_TICK_INTERVAL_SECONDS)
+    max_lobbies = _read_positive_int_env(
+        ('OPENSNAP_MAX_LOBBIES',),
+        DEFAULT_MAX_LOBBIES,
+    )
+    max_rooms_per_lobby = _read_positive_int_env(
+        ('OPENSNAP_MAX_ROOMS_PER_LOBBY',),
+        DEFAULT_MAX_ROOMS_PER_LOBBY,
+    )
+    max_players_per_room = _read_positive_int_env(
+        ('OPENSNAP_MAX_PLAYERS_PER_ROOM',),
+        DEFAULT_MAX_PLAYERS_PER_ROOM,
+    )
     storage_backend = DEFAULT_STORAGE_BACKEND
     sqlite_path = os.getenv('OPENSNAP_SQLITE_PATH', DEFAULT_SQLITE_PATH).strip() or DEFAULT_SQLITE_PATH
     reset_runtime_on_startup = _read_bool_env(
@@ -221,6 +239,9 @@ def default_app_config() -> AppConfig:
             server_secret=server_secret,
             bootstrap_key=bootstrap_key,
             tick_interval_seconds=tick_interval_seconds,
+            max_lobbies=max_lobbies,
+            max_rooms_per_lobby=max_rooms_per_lobby,
+            max_players_per_room=max_players_per_room,
         ),
         storage=StorageConfig(
             backend=storage_backend,
@@ -230,28 +251,34 @@ def default_app_config() -> AppConfig:
         users=_read_default_users(),
         # Lobby naming keeps three game groups plus event and club-meeting groups.
         # m-* is mountain, c-* is city, s-* is circuit, plus event and cm.
-        lobbies=(
-            LobbyConfig(lobby_id=1, name='m-0'),
-            LobbyConfig(lobby_id=2, name='m-1'),
-            LobbyConfig(lobby_id=3, name='m-2'),
-            LobbyConfig(lobby_id=4, name='m-3'),
-            LobbyConfig(lobby_id=5, name='m-4'),
-            LobbyConfig(lobby_id=6, name='m-5'),
-            LobbyConfig(lobby_id=7, name='c-0'),
-            LobbyConfig(lobby_id=8, name='c-1'),
-            LobbyConfig(lobby_id=9, name='c-2'),
-            LobbyConfig(lobby_id=10, name='c-3'),
-            LobbyConfig(lobby_id=11, name='c-4'),
-            LobbyConfig(lobby_id=12, name='c-5'),
-            LobbyConfig(lobby_id=13, name='s-0'),
-            LobbyConfig(lobby_id=14, name='s-1'),
-            LobbyConfig(lobby_id=15, name='s-2'),
-            LobbyConfig(lobby_id=16, name='s-3'),
-            LobbyConfig(lobby_id=17, name='s-4'),
-            LobbyConfig(lobby_id=18, name='s-5'),
-            LobbyConfig(lobby_id=19, name='event'),
-            LobbyConfig(lobby_id=20, name='cm'),
-        ),
+        lobbies=_default_lobbies()[:max_lobbies],
+    )
+
+
+def _default_lobbies() -> tuple[LobbyConfig, ...]:
+    """Build bundled lobby list in stable order."""
+
+    return (
+        LobbyConfig(lobby_id=1, name='m-0'),
+        LobbyConfig(lobby_id=2, name='m-1'),
+        LobbyConfig(lobby_id=3, name='m-2'),
+        LobbyConfig(lobby_id=4, name='m-3'),
+        LobbyConfig(lobby_id=5, name='m-4'),
+        LobbyConfig(lobby_id=6, name='m-5'),
+        LobbyConfig(lobby_id=7, name='c-0'),
+        LobbyConfig(lobby_id=8, name='c-1'),
+        LobbyConfig(lobby_id=9, name='c-2'),
+        LobbyConfig(lobby_id=10, name='c-3'),
+        LobbyConfig(lobby_id=11, name='c-4'),
+        LobbyConfig(lobby_id=12, name='c-5'),
+        LobbyConfig(lobby_id=13, name='s-0'),
+        LobbyConfig(lobby_id=14, name='s-1'),
+        LobbyConfig(lobby_id=15, name='s-2'),
+        LobbyConfig(lobby_id=16, name='s-3'),
+        LobbyConfig(lobby_id=17, name='s-4'),
+        LobbyConfig(lobby_id=18, name='s-5'),
+        LobbyConfig(lobby_id=19, name='event'),
+        LobbyConfig(lobby_id=20, name='cm'),
     )
 
 
@@ -467,6 +494,15 @@ def _read_int_env(keys: tuple[str, ...], default: int) -> int:
             continue
 
     return default
+
+
+def _read_positive_int_env(keys: tuple[str, ...], default: int) -> int:
+    """Read positive integer environment value with fallback."""
+
+    value = _read_int_env(keys, default)
+    if value <= 0:
+        return default
+    return value
 
 
 def _read_float_env(key: str, default: float) -> float:

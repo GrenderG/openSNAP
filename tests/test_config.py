@@ -4,7 +4,12 @@ import os
 import unittest
 from unittest.mock import patch
 
-from opensnap.config import default_app_config
+from opensnap.config import (
+    DEFAULT_MAX_LOBBIES,
+    DEFAULT_MAX_PLAYERS_PER_ROOM,
+    DEFAULT_MAX_ROOMS_PER_LOBBY,
+    default_app_config,
+)
 
 
 class AppConfigTests(unittest.TestCase):
@@ -149,6 +154,49 @@ class AppConfigTests(unittest.TestCase):
         self.assertEqual(automodellista_target.port, 9091)
         self.assertEqual(monsterhunter_target.host, '192.168.1.152')
         self.assertEqual(monsterhunter_target.port, 10070)
+
+    def test_server_limit_defaults_are_used_when_env_is_unset(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = default_app_config()
+
+        self.assertEqual(config.server.max_lobbies, DEFAULT_MAX_LOBBIES)
+        self.assertEqual(config.server.max_rooms_per_lobby, DEFAULT_MAX_ROOMS_PER_LOBBY)
+        self.assertEqual(config.server.max_players_per_room, DEFAULT_MAX_PLAYERS_PER_ROOM)
+        self.assertEqual(len(config.lobbies), DEFAULT_MAX_LOBBIES)
+
+    def test_server_limits_can_be_overridden_from_env(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                'OPENSNAP_MAX_LOBBIES': '6',
+                'OPENSNAP_MAX_ROOMS_PER_LOBBY': '12',
+                'OPENSNAP_MAX_PLAYERS_PER_ROOM': '7',
+            },
+            clear=True,
+        ):
+            config = default_app_config()
+
+        self.assertEqual(config.server.max_lobbies, 6)
+        self.assertEqual(config.server.max_rooms_per_lobby, 12)
+        self.assertEqual(config.server.max_players_per_room, 7)
+        self.assertEqual(len(config.lobbies), 6)
+
+    def test_non_positive_server_limits_fall_back_to_defaults(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                'OPENSNAP_MAX_LOBBIES': '0',
+                'OPENSNAP_MAX_ROOMS_PER_LOBBY': '-5',
+                'OPENSNAP_MAX_PLAYERS_PER_ROOM': '0',
+            },
+            clear=True,
+        ):
+            config = default_app_config()
+
+        self.assertEqual(config.server.max_lobbies, DEFAULT_MAX_LOBBIES)
+        self.assertEqual(config.server.max_rooms_per_lobby, DEFAULT_MAX_ROOMS_PER_LOBBY)
+        self.assertEqual(config.server.max_players_per_room, DEFAULT_MAX_PLAYERS_PER_ROOM)
+        self.assertEqual(len(config.lobbies), DEFAULT_MAX_LOBBIES)
 
 
 if __name__ == '__main__':

@@ -29,6 +29,13 @@ class WebConfigTests(unittest.TestCase):
 
         self.assertEqual(config.port, 8081)
 
+    def test_default_web_profile_is_generic(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('OPENSNAP_WEB_GAME_PLUGIN', None)
+            config = default_web_server_config()
+
+        self.assertEqual(config.game_plugin, 'generic')
+
     def test_default_https_settings_follow_web_defaults(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop('OPENSNAP_WEB_HTTPS_HOST', None)

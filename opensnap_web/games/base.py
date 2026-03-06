@@ -21,5 +21,12 @@ class GameWebModule(Protocol):
 
     name: str
 
-    def register_routes(self, app: Flask, config: WebServerConfig, tools: WebRouteTools) -> None:
+    def register_routes(
+        self,
+        app: Flask,
+        config: WebServerConfig,
+        tools: WebRouteTools,
+        *,
+        host: str | None = None,
+    ) -> None:
         """Register game-specific HTTP routes."""

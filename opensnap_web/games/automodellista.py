@@ -32,6 +32,31 @@ AM_RULE_ROW_SIZE = 28
 AM_PERFORMANCE_ROW_SIZE = 64
 AM_RULE_CSV_TERMINATOR = '00'
 
+# `Performance` (the 64-byte row parsed into `BsPerformanceTbl`) is not a
+# race-rule menu profile.
+#
+# Runtime consumers in `SLUS_206.42`:
+# - `check_performance` (`0x00284200`), called from `lbc_prelogin_00`, uses
+#   this row during pre-login network diagnostics (DNS/ping retry flow,
+#   thresholds, and score lookup).
+# - `bro_mask_mv02` (`0x002a4840`) reads the first 16 bytes as eight halfwords
+#   for browser-mask warning UI parameters.
+# - `lbc_prelogin_02` (`0x00284d80`) reads `BsPerformanceTbl+0x28` as a gate
+#   when packing/sending pre-login result fields.
+#
+# Confirmed `check_performance` offsets:
+# - +0..+5, +0x26, +0x27, +0x29: control values used in the DNS/ping state flow.
+# - +0x16/+0x17: 16-bit lookup-table entries used to build `MyPerformance`
+#   from measured ping buckets.
+#
+# Important boundary note:
+# - `check_performance` also reads `0x4b5d64..0x4b5d67`, which are NOT inside
+#   this 64-byte row. They overlap `BsGameRule` row0 (`+0x14..+0x17`) and are
+#   used as a fallback `MyPerformance` value.
+#
+# Parser side (`amus_bin/browser.bin`, mode 9) still only fills exactly these
+# 64 bytes at `0x4b5d10`.
+
 # Byte-level legend for known `BsGameRule` fields (the 28-byte rows in AM-USA-GAME-RULE).
 #
 # This is intentionally explicit so future RE passes can extend it instead of adding
@@ -115,6 +140,12 @@ AM_RULE_PACKED_FIELD_MAX_PEOPLE_DEFAULT_COUNT = 'max_people_default_count'
 # Stock constants from observed AM-USA-GAME-RULE seed rows.
 AM_RULE_COURSE_MODE_SEED_STOCK = 0x0A
 AM_RULE_LAP_SEED_STOCK = 0x08
+# Event profile uses a separate lap branch in `set_netrule_normal`:
+# - reads `BsGameRule[row3].byte+5`
+# - subtracts 1
+# - writes that value as both lap min/max (locked)
+# To lock Event lap to displayed value "3", byte +5 must be `0x03`.
+AM_RULE_LAP_SEED_EVENT_LOCKED_THREE = 0x03
 AM_RULE_EDIT_MASK_STOCK_EDITABLE = 0x01
 AM_RULE_EVENT_FLAG_NORMAL = 0x00
 AM_RULE_EVENT_FLAG_EVENT = 0x01
@@ -127,6 +158,10 @@ AM_RULE_DEFAULT_INDEX_STANDARD_NEEDED_PLAYERS = 0x02
 AM_RULE_DEFAULT_INDEX_STANDARD_MAX_PEOPLE = 0x04
 AM_RULE_DEFAULT_INDEX_EVENT_NEEDED_PLAYERS = 0x04
 AM_RULE_DEFAULT_INDEX_EVENT_MAX_PEOPLE = 0x04
+# Clubmeeting defaults below come from the stock AM-USA-GAME-RULE payload
+# observed for release servers (packed byte +19 = 0x11), not from a hardcoded
+# SLUS fallback constant. The ELF unpacks whatever nibble values are present in
+# `BsGameRule[row=Clubmeeting].byte19`.
 AM_RULE_DEFAULT_INDEX_CLUBMEETING_NEEDED_PLAYERS = 0x01
 AM_RULE_DEFAULT_INDEX_CLUBMEETING_MAX_PEOPLE = 0x01
 AM_RULE_DEFAULT_INDEX_PERFORMANCE_NEEDED_PLAYERS = 0x02
@@ -139,6 +174,12 @@ AM_RULE_STANDARD_MAX_PEOPLE_MAX = 0x08
 AM_RULE_STANDARD_MAX_PEOPLE_DEFAULT = AM_RULE_DEFAULT_INDEX_STANDARD_MAX_PEOPLE
 # Explicit override used by openSNAP standard profiles to unlock 2..8 editing.
 AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE = AM_RULE_STANDARD_MAX_PEOPLE_MAX
+# Clubmeeting runtime override:
+# - keep "Needed players" locked to 2 (same locked baseline as standard profiles),
+# - force "No. of People" max nibble to 8 so `set_netrule_clubmeeting` follows
+#   the editable 2..8 branch (`rule_join_min == 2 && rule_join_max == 8`).
+AM_RULE_CLUBMEETING_NEEDED_PLAYERS_LOCKED_OVERRIDE = AM_RULE_DEFAULT_INDEX_STANDARD_NEEDED_PLAYERS
+AM_RULE_CLUBMEETING_MAX_PEOPLE_EDITABLE_OVERRIDE = AM_RULE_STANDARD_MAX_PEOPLE_MAX
 
 AM_RULE_TEMPLATE_NAME_NORMAL = 'normal'
 AM_RULE_TEMPLATE_NAME_BLANK = 'blank'
@@ -171,6 +212,7 @@ AM_RULE_ROW_TEMPLATES = {
 # `SLUS_206.42` tables:
 # - rule_title_tbl @ 0x370da0
 # - rule_choice_suu_tbl @ 0x3b34c0
+# - rule_default_tbl @ 0x3b34d0
 # - stage_name_tbl/course_title_tbl_* @ 0x3b3500/0x370dc0+
 AM_RULE_TITLES = (
     'Course Settings',
@@ -178,6 +220,29 @@ AM_RULE_TITLES = (
     'No. of People',
     'Lap',
     'Boost',
+)
+
+AM_RULE_COURSE_TYPES = ('mountain', 'city', 'circuit')
+AM_RULE_NAMES = ('course_settings', 'needed_players', 'no_of_people', 'lap', 'boost')
+
+# `rule_choice_suu_tbl` raw bytes at `0x003b34c0` (5 rules x 3 course types):
+# 04 08 05  01 01 01  03 07 07  01 04 04  02 02 02
+AM_RULE_CHOICE_COUNT_MATRIX = (
+    (4, 8, 5),
+    (1, 1, 1),
+    (3, 7, 7),
+    (1, 4, 4),
+    (2, 2, 2),
+)
+
+# `rule_default_tbl` raw bytes at `0x003b34d0` (5 rules x 3 course types):
+# 00 00 00  00 00 00  00 00 00  00 01 01  00 00 00
+AM_RULE_DEFAULT_INDEX_MATRIX = (
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 1, 1),
+    (0, 0, 0),
 )
 
 AM_COURSES_MOUNTAIN = (
@@ -216,6 +281,8 @@ AM_COURSES_BY_TYPE = {
 # For several non-course rules, this RE pass confirmed exact counts but not all
 # text labels. Those are tracked as stable index placeholders (`choice_idx_N`) so
 # the config remains explicit and count-safe.
+# These tuples are symbolic option-slot ids only (not on-wire values); they preserve
+# menu cardinality and stable ordering for unresolved label tables.
 AM_RULE_OPTION_INDEXES_SINGLE = ('choice_idx_0',)
 AM_RULE_OPTION_INDEXES_TRIPLE = ('choice_idx_0', 'choice_idx_1', 'choice_idx_2')
 AM_RULE_OPTION_INDEXES_QUAD = ('choice_idx_0', 'choice_idx_1', 'choice_idx_2', 'choice_idx_3')
@@ -257,18 +324,53 @@ AM_RULE_CHOICE_OPTIONS_BY_COURSE_TYPE = {
     },
 }
 
-AM_RULE_CHOICE_COUNTS_BY_COURSE_TYPE = {
-    course_type: {
-        rule_name: len(options)
-        for rule_name, options in rule_options.items()
+AM_RULE_CHOICE_COUNTS = {
+    rule_name: {
+        course_type: AM_RULE_CHOICE_COUNT_MATRIX[rule_index][course_type_index]
+        for course_type_index, course_type in enumerate(AM_RULE_COURSE_TYPES)
     }
-    for course_type, rule_options in AM_RULE_CHOICE_OPTIONS_BY_COURSE_TYPE.items()
+    for rule_index, rule_name in enumerate(AM_RULE_NAMES)
+}
+
+AM_RULE_CHOICE_COUNTS_BY_COURSE_TYPE = {
+    course_type: {rule_name: AM_RULE_CHOICE_COUNTS[rule_name][course_type] for rule_name in AM_RULE_NAMES}
+    for course_type in AM_RULE_COURSE_TYPES
+}
+
+# Validate that human-readable option catalogs keep matching the binary row counts.
+for _course_type, _rule_options in AM_RULE_CHOICE_OPTIONS_BY_COURSE_TYPE.items():
+    for _rule_name, _options in _rule_options.items():
+        if len(_options) != AM_RULE_CHOICE_COUNTS_BY_COURSE_TYPE[_course_type][_rule_name]:
+            raise ValueError(
+                f'AM rule choice option length mismatch: '
+                f'{_course_type}.{_rule_name} has {len(_options)} options, '
+                f'expected {AM_RULE_CHOICE_COUNTS_BY_COURSE_TYPE[_course_type][_rule_name]}'
+            )
+
+AM_RULE_DEFAULT_INDEXES = {
+    rule_name: {
+        course_type: AM_RULE_DEFAULT_INDEX_MATRIX[rule_index][course_type_index]
+        for course_type_index, course_type in enumerate(AM_RULE_COURSE_TYPES)
+    }
+    for rule_index, rule_name in enumerate(AM_RULE_NAMES)
+}
+
+AM_RULE_DEFAULT_INDEXES_BY_COURSE_TYPE = {
+    course_type: {rule_name: AM_RULE_DEFAULT_INDEXES[rule_name][course_type] for rule_name in AM_RULE_NAMES}
+    for course_type in AM_RULE_COURSE_TYPES
 }
 
 AM_RULE_MENU_METADATA = {
     'rule_titles': AM_RULE_TITLES,
+    'rule_names': AM_RULE_NAMES,
+    'course_types': AM_RULE_COURSE_TYPES,
+    'choice_count_matrix': AM_RULE_CHOICE_COUNT_MATRIX,
+    'default_index_matrix': AM_RULE_DEFAULT_INDEX_MATRIX,
+    'choice_counts': AM_RULE_CHOICE_COUNTS,
     'choice_options_by_course_type': AM_RULE_CHOICE_OPTIONS_BY_COURSE_TYPE,
     'choice_counts_by_course_type': AM_RULE_CHOICE_COUNTS_BY_COURSE_TYPE,
+    'default_indexes': AM_RULE_DEFAULT_INDEXES,
+    'default_indexes_by_course_type': AM_RULE_DEFAULT_INDEXES_BY_COURSE_TYPE,
     'courses_by_type': AM_COURSES_BY_TYPE,
 }
 
@@ -283,8 +385,12 @@ AM_RULE_PROFILE_INDEX_PERFORMANCE = 5
 #
 # Human-readable profile rules:
 # - Mountain/City/Circuit use stock `normal` template.
-# - Event keeps stock template but sets packed defaults to 0x44 and event flag to 1.
-# - Clubmeeting starts blank and only sets packed defaults to 0x11.
+# - Index 3 is consumed by both Event signaling and Clubmeeting runtime rule-init
+#   (`To_EnterClubMeeting` sets lobby id 0x14 -> `lbc_in_lobby_00` selects row 3).
+#   We keep event flag byte +26 set to 1, but force packed defaults to 0x28 so
+#   Clubmeeting follows the editable 2..8 branch in `set_netrule_clubmeeting`.
+# - Index 4 keeps the stock Clubmeeting payload defaults (0x11) as a compatibility
+#   reference row.
 # - Performance row is separate (64 bytes) and currently seeds only known fields.
 #
 # Config contract:
@@ -330,14 +436,23 @@ AM_GAME_RULE_CONFIG = {
         },
         {
             'index': AM_RULE_PROFILE_INDEX_EVENT,
-            'label': 'Event',
+            'label': 'Event / Clubmeeting runtime',
             'template': AM_RULE_TEMPLATE_NAME_NORMAL,
             'field_overrides': {
+                # Event password row/value ("No PW") is not driven by this
+                # AM-USA-GAME-RULE row. `set_netrule_normal` hard-sets room
+                # title/password control bytes (`0x551630/0x551631`) and keeps
+                # that menu behavior client-side for this path.
+                # Event branch (`set_netrule_normal`, row index 3) consumes
+                # byte +5 as a 1-based lap seed and then locks lap to that
+                # resulting min/max value. `0x03` yields locked lap=3.
+                'lap_seed': AM_RULE_LAP_SEED_EVENT_LOCKED_THREE,
                 # Byte +19 high nibble -> Needed players default index.
                 # Byte +19 low nibble -> No. of People default index.
-                # Event stock row uses 0x44 (both defaults = 4).
-                'needed_players_default': AM_RULE_DEFAULT_INDEX_EVENT_NEEDED_PLAYERS,
-                'max_people_default': AM_RULE_DEFAULT_INDEX_EVENT_MAX_PEOPLE,
+                # Stock event row is 0x44, but Clubmeeting runtime consumes this
+                # index and requires 0x28 for editable No. of People (2..8).
+                'needed_players_default': AM_RULE_CLUBMEETING_NEEDED_PLAYERS_LOCKED_OVERRIDE,
+                'max_people_default_count': AM_RULE_CLUBMEETING_MAX_PEOPLE_EDITABLE_OVERRIDE,
                 # Byte +26 marks this profile as Event in stock data.
                 'event_flag': AM_RULE_EVENT_FLAG_EVENT,
             },
@@ -345,10 +460,10 @@ AM_GAME_RULE_CONFIG = {
         },
         {
             'index': AM_RULE_PROFILE_INDEX_CLUBMEETING,
-            'label': 'Clubmeeting',
+            'label': 'Clubmeeting (stock reference)',
             'template': AM_RULE_TEMPLATE_NAME_BLANK,
             'field_overrides': {
-                # Clubmeeting stock row uses packed defaults 0x11.
+                # Stock AM-USA-GAME-RULE payload uses packed defaults 0x11.
                 'needed_players_default': AM_RULE_DEFAULT_INDEX_CLUBMEETING_NEEDED_PLAYERS,
                 'max_people_default': AM_RULE_DEFAULT_INDEX_CLUBMEETING_MAX_PEOPLE,
             },
@@ -358,15 +473,20 @@ AM_GAME_RULE_CONFIG = {
     'performance_profile': {
         'index': AM_RULE_PROFILE_INDEX_PERFORMANCE,
         'label': 'Performance',
-        # Performance row is 64 bytes.
+        # Performance row is 64 bytes and is consumed by pre-login connectivity
+        # logic (`check_performance`) plus browser-mask UI logic (`bro_mask_mv02`).
         #
-        # Confirmed mapped bytes in this pass:
-        # - +2  course seed
-        # - +5  lap seed
-        # - +8  edit mask
-        # - +19 packed defaults (0x22 in stock performance row)
+        # Field keys below are serializer aliases for specific byte positions.
+        # They are retained to avoid duplicating row-writer code, but these names
+        # do not describe gameplay-rule semantics in this row.
         #
-        # All unmapped bytes remain zero unless overridden.
+        # Stock/default seeded bytes in openSNAP:
+        # - +2  -> 0x0A
+        # - +5  -> 0x08
+        # - +8  -> 0x01
+        # - +19 -> packed 0x22
+        #
+        # Unmapped bytes stay zero unless explicitly overridden.
         'field_overrides': {
             'course_mode_seed': AM_RULE_COURSE_MODE_SEED_STOCK,
             'lap_seed': AM_RULE_LAP_SEED_STOCK,
@@ -459,8 +579,14 @@ def serialize_am_performance_row(
 ) -> bytes:
     """Serialize the 64-byte AM-USA-GAME-RULE performance row.
 
-    Only known semantic fields are mapped in this pass; remaining bytes stay
-    zero unless overridden explicitly via `byte_overrides`.
+    This row feeds pre-login network diagnostics (`check_performance`) and
+    browser warning UI behavior, not the race-rule menu itself.
+
+    For serializer reuse we apply the same field keys used by rule rows for
+    byte placement (`+2`, `+5`, `+8`, packed `+19`), but those names do not
+    imply the same gameplay semantics inside the performance row.
+
+    Remaining bytes stay zero unless overridden explicitly via `byte_overrides`.
     """
 
     row = bytearray(AM_PERFORMANCE_ROW_SIZE)
@@ -730,59 +856,68 @@ def register_signup_routes(
     signup_service: SqliteSignupService,
     route_prefixes: tuple[str, ...],
     include_root_aliases: bool,
+    host: str | None = None,
+    endpoint_namespace: str = '',
 ) -> None:
     """Register SNAP signup/create-id routes for one or more path prefixes."""
 
     normalized_prefixes = tuple(prefix.strip('/') for prefix in route_prefixes if prefix.strip('/'))
     if not normalized_prefixes:
         return
+    endpoint_prefix = f'{endpoint_namespace}_' if endpoint_namespace else ''
 
     if include_root_aliases:
         app.add_url_rule(
             '/',
-            endpoint='signup_root_index',
+            endpoint=f'{endpoint_prefix}signup_root_index',
             methods=['GET'],
             view_func=_make_signup_index_view(tools),
+            host=host,
         )
         app.add_url_rule(
             '/login.php',
-            endpoint='signup_login_index',
+            endpoint=f'{endpoint_prefix}signup_login_index',
             methods=['GET'],
             view_func=_make_signup_index_view(tools),
+            host=host,
         )
 
     for prefix in normalized_prefixes:
-        endpoint_prefix = prefix.replace('/', '_')
+        path_prefix = prefix.replace('/', '_')
         app.add_url_rule(
             f'/{prefix}/',
-            endpoint=f'signup_{endpoint_prefix}_index_root',
+            endpoint=f'{endpoint_prefix}signup_{path_prefix}_index_root',
             methods=['GET'],
             view_func=_make_signup_index_view(tools),
+            host=host,
         )
         app.add_url_rule(
             f'/{prefix}/index.jsp',
-            endpoint=f'signup_{endpoint_prefix}_index',
+            endpoint=f'{endpoint_prefix}signup_{path_prefix}_index',
             methods=['GET'],
             view_func=_make_signup_index_view(tools),
+            host=host,
         )
         app.add_url_rule(
             f'/{prefix}/create_id.html',
-            endpoint=f'signup_{endpoint_prefix}_create_id_query',
+            endpoint=f'{endpoint_prefix}signup_{path_prefix}_create_id_query',
             methods=['GET', 'POST'],
             view_func=_make_signup_query_view(signup_service),
+            host=host,
         )
         app.add_url_rule(
             f'/{prefix}/create_id_<username>.html',
-            endpoint=f'signup_{endpoint_prefix}_create_id_dynamic',
+            endpoint=f'{endpoint_prefix}signup_{path_prefix}_create_id_dynamic',
             methods=['GET'],
             view_func=_make_signup_dynamic_view(signup_service),
+            host=host,
         )
 
 
 def _make_signup_index_view(tools: WebRouteTools) -> Callable[[], Response]:
     """Build one index handler for the original signup pages."""
 
-    def _signup_index() -> Response:
+    def _signup_index(**_kwargs: str) -> Response:
         return tools.html_response(SIGNUP_INDEX_PAGE)
 
     return _signup_index
@@ -791,7 +926,7 @@ def _make_signup_index_view(tools: WebRouteTools) -> Callable[[], Response]:
 def _make_signup_query_view(signup_service: SqliteSignupService) -> Callable[[], Response]:
     """Build query/create-id handler using username from request values."""
 
-    def _signup_query() -> Response:
+    def _signup_query(**_kwargs: str) -> Response:
         username = (request.values.get('username') or '').strip()
         password = (request.values.get('password') or '').strip()
         return _build_signup_response(
@@ -806,7 +941,7 @@ def _make_signup_query_view(signup_service: SqliteSignupService) -> Callable[[],
 def _make_signup_dynamic_view(signup_service: SqliteSignupService) -> Callable[[str], Response]:
     """Build dynamic create-id handler using username from route path."""
 
-    def _signup_dynamic(username: str) -> Response:
+    def _signup_dynamic(username: str, **_kwargs: str) -> Response:
         password = (request.values.get('password') or '').strip()
         return _build_signup_response(
             username=username.strip(),
@@ -817,12 +952,72 @@ def _make_signup_dynamic_view(signup_service: SqliteSignupService) -> Callable[[
     return _signup_dynamic
 
 
+def _make_static_page_view(tools: WebRouteTools, page: str) -> Callable[[], Response]:
+    """Build a static HTML response view for a pre-rendered page payload."""
+
+    def _static_page(**_kwargs: str) -> Response:
+        return tools.html_response(page)
+
+    return _static_page
+
+
+def _make_upload_view(tools: WebRouteTools) -> Callable[[], Response]:
+    """Build the ranking upload stub handler used by AM clients."""
+
+    def _upload(**_kwargs: str) -> Response:
+        # `nwPBRanking` uses the embedded `/amusa/am_up.php` path after the
+        # post-game room transition. Keep this stub endpoint available until
+        # the exact upload and response body are fully decoded.
+        tools.dump_request('Handled Auto Modellista ranking upload request.')
+        return Response('', mimetype='text/plain')
+
+    return _upload
+
+
 class AutoModellistaWebModule:
     """Web endpoints used by Auto Modellista clients."""
 
     name = 'automodellista'
+    signup_route_prefixes = ('amweb', 'ftpublicbeta/reg')
+    include_signup_root_aliases = True
+    # Release/Beta2 canonical AM-USA paths.
+    info_path = '/amusa/am_info.html'
+    rule_path = '/amusa/am_rule.html'
+    rank_path = '/amusa/am_rank.html'
+    taboo_path = '/amusa/am_taboo.html'
+    upload_path = '/amusa/am_up.php'
+    info_page = AM_INFO_PAGE
+    rule_page = AM_RULE_PAGE
+    rank_page = AM_RANK_PAGE
+    taboo_page = AM_TABOO_PAGE
+    patch_pages = {
+        1: AM_PATCH1_PAGE,
+        2: AM_PATCH2_PAGE,
+        3: AM_PATCH3_PAGE,
+        4: AM_PATCH4_PAGE,
+        5: AM_PATCH5_PAGE,
+    }
 
-    def register_routes(self, app: Flask, config: WebServerConfig, tools: WebRouteTools) -> None:
+    def _static_page_specs(self) -> tuple[tuple[str, str, str], ...]:
+        """Return core static endpoint/page route specs with singular paths."""
+
+        specs: list[tuple[str, str, str]] = [
+            ('info', self.info_path, self.info_page),
+            ('rule', self.rule_path, self.rule_page),
+            ('rank', self.rank_path, self.rank_page),
+        ]
+        if self.taboo_page:
+            specs.append(('taboo', self.taboo_path, self.taboo_page))
+        return tuple(specs)
+
+    def register_routes(
+        self,
+        app: Flask,
+        config: WebServerConfig,
+        tools: WebRouteTools,
+        *,
+        host: str | None = None,
+    ) -> None:
         """Register Auto Modellista-specific web endpoints."""
 
         del config
@@ -831,63 +1026,45 @@ class AutoModellistaWebModule:
             app,
             tools=tools,
             signup_service=signup_service,
-            route_prefixes=('amweb', 'ftpublicbeta/reg'),
-            include_root_aliases=True,
+            route_prefixes=self.signup_route_prefixes,
+            include_root_aliases=self.include_signup_root_aliases,
+            host=host,
+            endpoint_namespace=self.name,
         )
+        for spec_index, (slug, path, page) in enumerate(self._static_page_specs()):
+            view = _make_static_page_view(tools, page)
+            app.add_url_rule(
+                path,
+                endpoint=f'{self.name}_{slug}_{spec_index}',
+                methods=['GET'],
+                view_func=view,
+                host=host,
+            )
 
-        @app.get('/amusa/am_info.html')
-        @app.get('/amusa/info.html')
-        def amusa_info() -> Response:
-            return tools.html_response(AM_INFO_PAGE)
+        for patch_index in sorted(self.patch_pages):
+            page = self.patch_pages[patch_index]
+            view = _make_static_page_view(tools, page)
+            patch_paths = (
+                f'/amusa/patch{patch_index}.html',
+                f'/amusa/patch/2/am_patch{patch_index}.html',
+            )
+            for alias_index, patch_path in enumerate(patch_paths):
+                app.add_url_rule(
+                    patch_path,
+                    endpoint=f'{self.name}_patch{patch_index}_{alias_index}',
+                    methods=['GET'],
+                    view_func=view,
+                    host=host,
+                )
 
-        @app.get('/amusa/am_rule.html')
-        @app.get('/amusa/rule.html')
-        def amusa_rule() -> Response:
-            return tools.html_response(AM_RULE_PAGE)
-
-        @app.get('/amusa/am_rank.html')
-        @app.get('/amusa/rank.html')
-        def amusa_rank() -> Response:
-            return tools.html_response(AM_RANK_PAGE)
-
-        @app.get('/amusa/am_taboo.html')
-        @app.get('/amusa/taboo.html')
-        def amusa_taboo() -> Response:
-            return tools.html_response(AM_TABOO_PAGE)
-
-        @app.get('/amusa/patch1.html')
-        @app.get('/amusa/patch/2/am_patch1.html')
-        def amusa_patch1() -> Response:
-            return tools.html_response(AM_PATCH1_PAGE)
-
-        @app.get('/amusa/patch2.html')
-        @app.get('/amusa/patch/2/am_patch2.html')
-        def amusa_patch2() -> Response:
-            return tools.html_response(AM_PATCH2_PAGE)
-
-        @app.get('/amusa/patch3.html')
-        @app.get('/amusa/patch/2/am_patch3.html')
-        def amusa_patch3() -> Response:
-            return tools.html_response(AM_PATCH3_PAGE)
-
-        @app.get('/amusa/patch4.html')
-        @app.get('/amusa/patch/2/am_patch4.html')
-        def amusa_patch4() -> Response:
-            return tools.html_response(AM_PATCH4_PAGE)
-
-        @app.get('/amusa/patch5.html')
-        @app.get('/amusa/patch/2/am_patch5.html')
-        def amusa_patch5() -> Response:
-            return tools.html_response(AM_PATCH5_PAGE)
-
-        @app.route('/amusa/am_up.php', methods=['GET', 'POST'])
-        @app.route('/amusa/up.php', methods=['GET', 'POST'])
-        def amusa_upload() -> Response:
-            # `nwPBRanking` uses the embedded `/amusa/am_up.php` path after the
-            # post-game room transition. Keep this stub endpoint available until
-            # the exact upload and response body are fully decoded.
-            tools.dump_request('Handled Auto Modellista ranking upload request.')
-            return Response('', mimetype='text/plain')
+        upload_view = _make_upload_view(tools)
+        app.add_url_rule(
+            self.upload_path,
+            endpoint=f'{self.name}_upload',
+            methods=['GET', 'POST'],
+            view_func=upload_view,
+            host=host,
+        )
 
 
 def _build_signup_response(

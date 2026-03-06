@@ -5,24 +5,37 @@ import logging
 from flask import Flask, Response, request
 
 from opensnap_web.config import WebServerConfig, default_web_server_config
+from opensnap_web.games.base import GameWebModule
 from opensnap_web.games.base import WebRouteTools
 from opensnap_web.games.registry import create_game_web_module
 
 LOGGER = logging.getLogger('opensnap.web')
+
+# Canonical selector for all-modules web mode.
+GENERIC_NAME = 'generic'
+
+# Generic module registration order used when `OPENSNAP_WEB_GAME_PLUGIN=generic`.
+# Keep Beta1 before release so non-`am_*` AM-USA routes stay deterministic.
+WEB_PLUGIN_NAMES = (
+    'automodellista_beta1',
+    'automodellista',
+    'monsterhunter',
+)
 
 
 def create_web_app(config: WebServerConfig | None = None) -> Flask:
     """Create configured Flask application."""
 
     web_config = config or default_web_server_config()
+    modules = _resolve_game_modules(web_config.game_plugin)
     app = Flask(__name__)
-
-    game_module = create_game_web_module(web_config.game_plugin)
     tools = WebRouteTools(
         dump_request=_dump_request,
         html_response=_html_response,
     )
-    game_module.register_routes(app, web_config, tools)
+
+    for game_module in modules:
+        game_module.register_routes(app, web_config, tools)
 
     @app.errorhandler(404)
     def unknown_route(_error: Exception) -> Response:
@@ -30,6 +43,16 @@ def create_web_app(config: WebServerConfig | None = None) -> Flask:
         return Response('Not Found\n', status=404, mimetype='text/plain')
 
     return app
+
+
+def _resolve_game_modules(plugin_name: str) -> tuple[GameWebModule, ...]:
+    """Resolve one explicit web profile or the generic all-module set."""
+
+    normalized = plugin_name.strip().lower()
+    if normalized == GENERIC_NAME:
+        return tuple(create_game_web_module(module_name) for module_name in WEB_PLUGIN_NAMES)
+    # Explicit plugin selection: register only that module (child+parent routes).
+    return (create_game_web_module(normalized),)
 
 
 def _html_response(content: str) -> Response:
