@@ -10,7 +10,7 @@ from opensnap.core.engine import SnapProtocolEngine
 from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.protocol import commands
 from opensnap.protocol.codec import encode_messages
-from opensnap.protocol.constants import CHANNEL_LOBBY
+from opensnap.protocol.constants import FLAG_CHANNEL_BITS
 from opensnap.protocol.fields import get_u32
 from opensnap.protocol.models import Endpoint, SnapMessage
 
@@ -35,7 +35,7 @@ class ServerRoleTests(unittest.TestCase):
 
         login_request = SnapMessage(
             endpoint=bootstrap_endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_LOGIN_CLIENT,
             session_id=0,
@@ -50,7 +50,7 @@ class ServerRoleTests(unittest.TestCase):
         session_id = login_result.messages[0].session_id
         check_request = SnapMessage(
             endpoint=bootstrap_endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_BOOTSTRAP_LOGIN_SWAN_CHECK,
             session_id=session_id,
@@ -75,7 +75,7 @@ class ServerRoleTests(unittest.TestCase):
         team_payload[0x128:0x12F] = b'team-a\x00'
         kics_request = SnapMessage(
             endpoint=game_endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_LOGIN_TO_KICS,
             session_id=session_id,
@@ -97,7 +97,7 @@ class ServerRoleTests(unittest.TestCase):
         endpoint = Endpoint(host='127.0.0.1', port=50012)
         request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_LOGIN_TO_KICS,
             session_id=0x11223344,
@@ -121,7 +121,7 @@ class ServerRoleTests(unittest.TestCase):
         endpoint = Endpoint(host='127.0.0.1', port=50013)
         request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_LOGIN_CLIENT,
             session_id=0,
@@ -156,7 +156,7 @@ class ServerRoleTests(unittest.TestCase):
 
         login_request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_LOGIN_CLIENT,
             session_id=0,
@@ -170,7 +170,7 @@ class ServerRoleTests(unittest.TestCase):
 
         check_request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_BOOTSTRAP_LOGIN_SWAN_CHECK,
             session_id=session_id,
@@ -208,7 +208,7 @@ class ServerRoleTests(unittest.TestCase):
         endpoint = Endpoint(host='127.0.0.1', port=50015)
         request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_LOGIN_CLIENT,
             session_id=0,

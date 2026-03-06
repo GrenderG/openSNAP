@@ -10,7 +10,7 @@ from opensnap.core.engine import SnapProtocolEngine
 from opensnap.logging_utils import format_hexdump
 from opensnap.protocol import commands
 from opensnap.protocol.codec import PacketDecodeError, decode_datagram, detect_footer_bytes, encode_messages
-from opensnap.protocol.constants import FLAG_RELIABLE, FOOTER_BYTES
+from opensnap.protocol.constants import BARE_ACK_FLAGS, FLAG_RELIABLE, FOOTER_BYTES
 from opensnap.protocol.models import Endpoint, SnapMessage
 
 
@@ -215,7 +215,7 @@ class SnapUdpServer:
         for message in messages:
             is_bare_ack = (
                 message.command == commands.CMD_ACK
-                and (message.type_flags & 0x6000) == 0x6000
+                and (message.type_flags & BARE_ACK_FLAGS) == BARE_ACK_FLAGS
             )
             is_reliable_with_piggyback_ack = (message.type_flags & FLAG_RELIABLE) != 0
 

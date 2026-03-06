@@ -6,7 +6,7 @@ import unittest
 from opensnap.config import ServerConfig
 from opensnap.protocol import commands
 from opensnap.protocol.codec import encode_messages
-from opensnap.protocol.constants import CHANNEL_ROOM, FLAG_RELIABLE, FOOTER_BYTES_KAGE
+from opensnap.protocol.constants import FLAG_ROOM, FLAG_RELIABLE, FOOTER_BYTES_KAGE
 from opensnap.protocol.models import Endpoint, SnapMessage
 from opensnap.udp_server import SnapUdpServer
 
@@ -27,7 +27,7 @@ class UdpReliabilityTests(unittest.TestCase):
     def _reliable_message(self, *, endpoint: Endpoint, session_id: int, sequence_number: int) -> SnapMessage:
         return SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=session_id,
@@ -52,7 +52,7 @@ class UdpReliabilityTests(unittest.TestCase):
 
         incoming = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=session_id,
@@ -80,7 +80,7 @@ class UdpReliabilityTests(unittest.TestCase):
 
         incoming = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=session_id,
@@ -109,7 +109,7 @@ class UdpReliabilityTests(unittest.TestCase):
         # 0xE6010000 byte-swaps to 0x000001E6 (486), which is plausible.
         incoming = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=session_id,

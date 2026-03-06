@@ -17,20 +17,31 @@ FOOTER_SIZE = 4
 TYPE_MASK = 0xFC00
 LENGTH_MASK = 0x03FF
 
-# Transport flags from `kkSetMessage`/`kkSend*` builders and live traces.
+# Header context bits from `kkSetMessage`/`kkSend*` builders and live traces.
+# `SLUS_206.42` proof:
+# - `kkSendGamePacket` (`0x002f2034`), `kkSendTargetGamePacket` (`0x002f22d0`),
+#   `kkSendGamePacketToGameServer` (`0x002f2980`), and `kkSendEchoPacket`
+#   (`0x002f2ae4`) all OR outgoing type flags with `0x2000`.
+# - `kkDispatchingOperation` tests `0x1000` (`0x002ed114`) and `0x2000`
+#   (`0x002ed144`) independently.
 FLAG_RELAY = 0x0400
 FLAG_MULTI = 0x0800
 FLAG_LOBBY = 0x1000
+FLAG_ROOM = 0x2000
 FLAG_RESPONSE = 0x4000
 FLAG_RELIABLE = 0x8000
 
-# Channel selectors derived from transport flags.
-CHANNEL_ROOM = 0x2000
-CHANNEL_MASK = CHANNEL_ROOM | FLAG_LOBBY
-CHANNEL_LOBBY = CHANNEL_ROOM | FLAG_LOBBY
-RELAY_CONTEXT_MASK = CHANNEL_MASK | FLAG_RELAY
-TYPE_ROOM_RELAY = CHANNEL_ROOM | FLAG_RELAY
+# Channel context bits (`0x3000`).
+# - mask use: `type_flags & FLAG_CHANNEL_BITS`
+# - lobby context value: `FLAG_CHANNEL_BITS` (both bits set)
+# - room context value: `FLAG_ROOM` (only room bit set)
+FLAG_CHANNEL_BITS = FLAG_ROOM | FLAG_LOBBY
+RELAY_CONTEXT_MASK = FLAG_CHANNEL_BITS | FLAG_RELAY
+TYPE_ROOM_RELAY = FLAG_ROOM | FLAG_RELAY
 TYPE_LOBBY_RELAY = FLAG_LOBBY | FLAG_RELAY
+# Bare transport ACK frames from Auto Modellista clients use command `CMD_ACK`
+# with these response-channel flags (`0x6000` in captures / stock client flow).
+BARE_ACK_FLAGS = FLAG_ROOM | FLAG_RESPONSE
 
 # Bootstrap login-failure reason codes for `CMD_BOOTSTRAP_LOGIN_FAIL (0x2e)`.
 # `SLUS_206.42` client behavior in `ResultLoginCallBack`:

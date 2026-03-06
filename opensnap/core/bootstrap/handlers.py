@@ -13,7 +13,7 @@ from opensnap.protocol import commands
 from opensnap.protocol.constants import (
     BOOTSTRAP_LOGIN_FAIL_REASON_GENERIC,
     BOOTSTRAP_LOGIN_FAIL_REASON_INVALID_PASSWORD,
-    CHANNEL_LOBBY,
+    FLAG_CHANNEL_BITS,
     FLAG_RESPONSE,
     FOOTER_BYTES_KAGE,
 )
@@ -50,7 +50,7 @@ def handle_login_client(context: HandlerContext, message: SnapMessage) -> list[S
         return [
             context.reply(
                 message,
-                type_flags=CHANNEL_LOBBY,
+                type_flags=FLAG_CHANNEL_BITS,
                 command=commands.CMD_BOOTSTRAP_LOGIN_FAIL,
             )
         ]
@@ -69,7 +69,7 @@ def handle_login_client(context: HandlerContext, message: SnapMessage) -> list[S
         return [
             context.reply(
                 message,
-                type_flags=CHANNEL_LOBBY,
+                type_flags=FLAG_CHANNEL_BITS,
                 command=commands.CMD_BOOTSTRAP_LOGIN_FAIL,
             )
         ]
@@ -86,7 +86,7 @@ def handle_login_client(context: HandlerContext, message: SnapMessage) -> list[S
             return [
                 context.reply(
                     message,
-                    type_flags=CHANNEL_LOBBY,
+                    type_flags=FLAG_CHANNEL_BITS,
                     command=commands.CMD_BOOTSTRAP_LOGIN_FAIL,
                 )
             ]
@@ -105,7 +105,7 @@ def handle_login_client(context: HandlerContext, message: SnapMessage) -> list[S
         return [
             context.reply(
                 message,
-                type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
                 command=commands.CMD_BOOTSTRAP_LOGIN_SUCCESS,
                 payload=success_payload,
                 session_id=session.session_id,
@@ -124,7 +124,7 @@ def handle_login_client(context: HandlerContext, message: SnapMessage) -> list[S
     return [
         context.reply(
             message,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             command=commands.CMD_BOOTSTRAP_LOGIN_SWAN,
             payload=challenge_payload,
             session_id=session.session_id,
@@ -181,7 +181,7 @@ def handle_bootstrap_check(context: HandlerContext, message: SnapMessage) -> lis
         return [
             context.reply(
                 message,
-                type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
                 command=commands.CMD_BOOTSTRAP_LOGIN_FAIL,
                 payload=_build_login_fail_payload(reason_code=BOOTSTRAP_LOGIN_FAIL_REASON_INVALID_PASSWORD),
             )
@@ -197,7 +197,7 @@ def handle_bootstrap_check(context: HandlerContext, message: SnapMessage) -> lis
         return [
             context.reply(
                 message,
-                type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
                 command=commands.CMD_BOOTSTRAP_LOGIN_FAIL,
                 payload=_build_login_fail_payload(),
             )
@@ -217,7 +217,7 @@ def handle_bootstrap_check(context: HandlerContext, message: SnapMessage) -> lis
         return [
             context.reply(
                 message,
-                type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
                 command=commands.CMD_BOOTSTRAP_LOGIN_FAIL,
                 payload=_build_login_fail_payload(),
             )
@@ -238,7 +238,7 @@ def handle_bootstrap_check(context: HandlerContext, message: SnapMessage) -> lis
     return [
         context.reply(
             message,
-            type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+            type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
             command=commands.CMD_BOOTSTRAP_LOGIN_SUCCESS,
             payload=success_payload,
             session_id=session.session_id,

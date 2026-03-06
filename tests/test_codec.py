@@ -5,8 +5,8 @@ import unittest
 
 from opensnap.protocol.codec import PacketDecodeError, decode_datagram, detect_footer_bytes, encode_messages
 from opensnap.protocol.constants import (
-    CHANNEL_LOBBY,
-    CHANNEL_ROOM,
+    FLAG_CHANNEL_BITS,
+    FLAG_ROOM,
     FLAG_MULTI,
     FLAG_RESPONSE,
     FOOTER_BYTES_KAGE,
@@ -22,7 +22,7 @@ class CodecTests(unittest.TestCase):
         endpoint = Endpoint(host='127.0.0.1', port=12345)
         message = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+            type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
             packet_number=1,
             command=0x0E,
             session_id=0x11223344,
@@ -52,7 +52,7 @@ class CodecTests(unittest.TestCase):
     def test_decode_accepts_kage_footer_marker(self) -> None:
         endpoint = Endpoint(host='127.0.0.1', port=1112)
         payload = b'payload-data'
-        size_word = (CHANNEL_LOBBY | FLAG_RESPONSE) | (len(payload) + 16)
+        size_word = (FLAG_CHANNEL_BITS | FLAG_RESPONSE) | (len(payload) + 16)
         datagram = (
             struct.pack('>2H3L', size_word, (1 << 8) | 0x0E, 0x11223344, 9, 3)
             + payload
@@ -70,7 +70,7 @@ class CodecTests(unittest.TestCase):
         endpoint = Endpoint(host='127.0.0.1', port=1113)
         message = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+            type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
             packet_number=1,
             command=0x0E,
             session_id=0x11223344,
@@ -88,18 +88,18 @@ class CodecTests(unittest.TestCase):
         endpoint = Endpoint(host='127.0.0.1', port=2222)
         first = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_ROOM | FLAG_MULTI,
+            type_flags=FLAG_ROOM | FLAG_MULTI,
             packet_number=0,
             command=0x09,
             session_id=0x12345678,
             sequence_number=7,
             acknowledge_number=0,
             payload=b'\x80\x02',
-            size_word_override=(CHANNEL_ROOM | FLAG_MULTI) | 0x0012,
+            size_word_override=(FLAG_ROOM | FLAG_MULTI) | 0x0012,
         )
         second = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_ROOM,
+            type_flags=FLAG_ROOM,
             packet_number=0,
             command=0x07,
             session_id=0x12345678,
@@ -119,18 +119,18 @@ class CodecTests(unittest.TestCase):
         endpoint = Endpoint(host='127.0.0.1', port=2223)
         first = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_ROOM | FLAG_MULTI,
+            type_flags=FLAG_ROOM | FLAG_MULTI,
             packet_number=0,
             command=0x0F,
             session_id=0x12345678,
             sequence_number=7,
             acknowledge_number=0,
             payload=b'\x80\x02',
-            size_word_override=(CHANNEL_ROOM | FLAG_MULTI) | 0x0012,
+            size_word_override=(FLAG_ROOM | FLAG_MULTI) | 0x0012,
         )
         second = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_ROOM,
+            type_flags=FLAG_ROOM,
             packet_number=0,
             command=0x07,
             session_id=0x12345678,

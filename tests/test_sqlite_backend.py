@@ -13,7 +13,7 @@ from opensnap.config import StorageConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.protocol import commands
-from opensnap.protocol.constants import CHANNEL_LOBBY
+from opensnap.protocol.constants import FLAG_CHANNEL_BITS
 from opensnap.protocol.models import Endpoint, SnapMessage
 
 
@@ -34,7 +34,7 @@ class SqliteBackendTests(unittest.TestCase):
                 _encode(
                     SnapMessage(
                         endpoint=endpoint,
-                        type_flags=CHANNEL_LOBBY,
+                        type_flags=FLAG_CHANNEL_BITS,
                         packet_number=0,
                         command=commands.CMD_LOGIN_CLIENT,
                         session_id=0,
@@ -53,7 +53,7 @@ class SqliteBackendTests(unittest.TestCase):
                 _encode(
                     SnapMessage(
                         endpoint=endpoint,
-                        type_flags=CHANNEL_LOBBY,
+                        type_flags=FLAG_CHANNEL_BITS,
                         packet_number=0,
                         command=commands.CMD_BOOTSTRAP_LOGIN_SWAN_CHECK,
                         session_id=session_id,
@@ -76,7 +76,7 @@ class SqliteBackendTests(unittest.TestCase):
                 _encode(
                     SnapMessage(
                         endpoint=endpoint,
-                        type_flags=CHANNEL_LOBBY,
+                        type_flags=FLAG_CHANNEL_BITS,
                         packet_number=0,
                         command=commands.CMD_LOGIN_TO_KICS,
                         session_id=session_id,

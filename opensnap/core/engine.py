@@ -13,9 +13,9 @@ from opensnap.plugins.base import GamePlugin
 from opensnap.protocol import commands
 from opensnap.protocol.codec import PacketDecodeError, decode_datagram
 from opensnap.protocol.constants import (
-    CHANNEL_LOBBY,
-    CHANNEL_MASK,
-    CHANNEL_ROOM,
+    BARE_ACK_FLAGS,
+    FLAG_CHANNEL_BITS,
+    FLAG_ROOM,
     FLAG_RESPONSE,
     FLAG_RELIABLE,
     RELAY_CONTEXT_MASK,
@@ -118,7 +118,7 @@ class SnapProtocolEngine:
                 len(message.payload),
             )
             # Ignore bare ACK frames that do not carry command payload.
-            if message.command == commands.CMD_ACK and (message.type_flags & 0x6000) == 0x6000:
+            if message.command == commands.CMD_ACK and (message.type_flags & BARE_ACK_FLAGS) == BARE_ACK_FLAGS:
                 self._logger.debug(
                     'Ignoring bare ACK frame from %s:%d.',
                     message.endpoint.host,
@@ -265,9 +265,9 @@ class SnapProtocolEngine:
         """
 
         payload = message.payload
-        channel = message.type_flags & CHANNEL_MASK
+        channel = message.type_flags & FLAG_CHANNEL_BITS
         if channel == 0:
-            channel = CHANNEL_ROOM
+            channel = FLAG_ROOM
 
         return [
             context.reply(
@@ -301,24 +301,24 @@ class SnapProtocolEngine:
         """Build a transport ACK for a duplicate reliable command."""
 
         if message.command == commands.CMD_SEND_TARGET:
-            ack_type_flags = CHANNEL_ROOM | FLAG_RESPONSE
+            ack_type_flags = FLAG_ROOM | FLAG_RESPONSE
         elif message.command == commands.CMD_SEND:
             callback_flags = message.type_flags & RELAY_CONTEXT_MASK
             if callback_flags == TYPE_LOBBY_RELAY:
-                ack_type_flags = CHANNEL_LOBBY | FLAG_RESPONSE
+                ack_type_flags = FLAG_CHANNEL_BITS | FLAG_RESPONSE
             elif callback_flags == TYPE_ROOM_RELAY:
-                ack_type_flags = CHANNEL_ROOM | FLAG_RESPONSE
-            elif message.type_flags & CHANNEL_ROOM:
-                ack_type_flags = CHANNEL_ROOM | FLAG_RESPONSE
+                ack_type_flags = FLAG_ROOM | FLAG_RESPONSE
+            elif message.type_flags & FLAG_ROOM:
+                ack_type_flags = FLAG_ROOM | FLAG_RESPONSE
             else:
-                channel = message.type_flags & CHANNEL_MASK
+                channel = message.type_flags & FLAG_CHANNEL_BITS
                 if channel == 0:
-                    channel = CHANNEL_ROOM
+                    channel = FLAG_ROOM
                 ack_type_flags = channel | FLAG_RESPONSE
         elif message.command == commands.CMD_LEAVE:
-            channel = message.type_flags & CHANNEL_MASK
+            channel = message.type_flags & FLAG_CHANNEL_BITS
             if channel == 0:
-                channel = CHANNEL_ROOM
+                channel = FLAG_ROOM
             ack_type_flags = channel | FLAG_RESPONSE
         else:
             return None

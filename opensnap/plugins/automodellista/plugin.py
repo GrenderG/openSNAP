@@ -16,9 +16,8 @@ from opensnap.protocol import (
     commands,
 )
 from opensnap.protocol.constants import (
-    CHANNEL_MASK,
-    CHANNEL_LOBBY,
-    CHANNEL_ROOM,
+    FLAG_CHANNEL_BITS,
+    FLAG_ROOM,
     FLAG_MULTI,
     FLAG_RELIABLE,
     FLAG_RESPONSE,
@@ -39,7 +38,7 @@ PENDING_ROOM_JOIN_RETRY_TICKS = 3
 PENDING_ROOM_JOIN_MAX_RETRIES = 3
 # Event create-race uses this client-side sentinel when password is disabled.
 # Keep room creation semantics as "no password", not literal sentinel text.
-ROOM_PASSWORD_EMPTY_SENTINELS = frozenset({'No PW'})
+ROOM_PASSWORD_EMPTY_SENTINELS = frozenset({'no pw'})
 
 
 @dataclass(slots=True)
@@ -134,7 +133,7 @@ class AutoModellistaPlugin(GamePlugin):
         return [
             context.reply(
                 message,
-                type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
                 command=commands.CMD_QUERY_LOBBIES,
                 payload=payload,
             )
@@ -144,7 +143,7 @@ class AutoModellistaPlugin(GamePlugin):
         if message.type_flags & FLAG_MULTI:
             # Keep behavior where one multi-packet contains lobby USER counts.
             payload = self._build_multi_lobby_user_query_payload(context, message)
-            type_flags = CHANNEL_LOBBY | FLAG_RESPONSE | FLAG_MULTI
+            type_flags = FLAG_CHANNEL_BITS | FLAG_RESPONSE | FLAG_MULTI
             size_word_override = type_flags | 0x001C
             return [
                 context.reply(
@@ -169,7 +168,7 @@ class AutoModellistaPlugin(GamePlugin):
         return [
             context.reply(
                 message,
-                type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
                 command=commands.CMD_QUERY_ATTRIBUTE,
                 payload=payload,
             )
@@ -200,14 +199,14 @@ class AutoModellistaPlugin(GamePlugin):
         return [
             context.reply(
                 message,
-                type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
                 command=commands.CMD_QUERY_GAME_ROOMS,
                 payload=payload,
             )
         ]
 
     def _handle_query_user(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        if (message.type_flags & CHANNEL_MASK) != CHANNEL_ROOM:
+        if (message.type_flags & FLAG_CHANNEL_BITS) != FLAG_ROOM:
             _LOGGER.warning(
                 'Rejecting query-user command from %s:%d: unsupported channel type=0x%04x.',
                 message.endpoint.host,
@@ -236,7 +235,7 @@ class AutoModellistaPlugin(GamePlugin):
         return [
             context.reply(
                 message,
-                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                type_flags=FLAG_ROOM | FLAG_RESPONSE,
                 command=commands.CMD_QUERY_USER,
                 payload=payload,
             )
@@ -253,7 +252,7 @@ class AutoModellistaPlugin(GamePlugin):
             return [
                 context.reply(
                     message,
-                    type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                    type_flags=FLAG_ROOM | FLAG_RESPONSE,
                     command=commands.CMD_RESULT_WRAPPER,
                     payload=struct.pack('>2L', GameTags.START_OK, cached_result),
                     session_id=session.session_id,
@@ -265,7 +264,7 @@ class AutoModellistaPlugin(GamePlugin):
             return [
                 context.reply(
                     message,
-                    type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                    type_flags=FLAG_ROOM | FLAG_RESPONSE,
                     command=commands.CMD_RESULT_WRAPPER,
                     payload=struct.pack('>2L', GameTags.START_OK, RESULT_WRAPPER_STATUS_ERROR_DIALOG),
                     session_id=session.session_id,
@@ -285,7 +284,7 @@ class AutoModellistaPlugin(GamePlugin):
             return [
                 context.reply(
                     message,
-                    type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                    type_flags=FLAG_ROOM | FLAG_RESPONSE,
                     command=commands.CMD_RESULT_WRAPPER,
                     payload=struct.pack('>2L', GameTags.START_OK, RESULT_WRAPPER_STATUS_ERROR_DIALOG),
                     session_id=session.session_id,
@@ -308,7 +307,7 @@ class AutoModellistaPlugin(GamePlugin):
         return [
             context.reply(
                 message,
-                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                type_flags=FLAG_ROOM | FLAG_RESPONSE,
                 command=commands.CMD_RESULT_WRAPPER,
                 payload=payload,
                 session_id=session.session_id,
@@ -320,7 +319,7 @@ class AutoModellistaPlugin(GamePlugin):
         if session is None:
             return []
 
-        if (message.type_flags & CHANNEL_MASK) == CHANNEL_LOBBY:
+        if (message.type_flags & FLAG_CHANNEL_BITS) == FLAG_CHANNEL_BITS:
             if session.room_id > 0:
                 context.rooms.leave(session.room_id, session.session_id)
                 context.sessions.set_room(session.session_id, 0)
@@ -330,7 +329,7 @@ class AutoModellistaPlugin(GamePlugin):
                 return [
                     context.reply(
                         message,
-                        type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                        type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
                         command=commands.CMD_RESULT_WRAPPER,
                         payload=payload,
                         session_id=session.session_id,
@@ -342,14 +341,14 @@ class AutoModellistaPlugin(GamePlugin):
             return [
                 context.reply(
                     message,
-                    type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                    type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
                     command=commands.CMD_RESULT_WRAPPER,
                     payload=payload,
                     session_id=session.session_id,
                 )
             ]
 
-        if (message.type_flags & CHANNEL_MASK) == CHANNEL_ROOM:
+        if (message.type_flags & FLAG_CHANNEL_BITS) == FLAG_ROOM:
             room_id = get_u32(message.payload, 0)
             _prune_stale_room_members(context, room_id)
             room = context.rooms.get(room_id)
@@ -362,7 +361,7 @@ class AutoModellistaPlugin(GamePlugin):
                 return [
                     context.reply(
                         message,
-                        type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                        type_flags=FLAG_ROOM | FLAG_RESPONSE,
                         command=commands.CMD_RESULT_WRAPPER,
                         payload=payload,
                         session_id=session.session_id,
@@ -399,7 +398,7 @@ class AutoModellistaPlugin(GamePlugin):
             return [
                 context.reply(
                     message,
-                    type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                    type_flags=FLAG_ROOM | FLAG_RESPONSE,
                     command=commands.CMD_RESULT_WRAPPER,
                     payload=payload,
                     session_id=session.session_id,
@@ -420,7 +419,7 @@ class AutoModellistaPlugin(GamePlugin):
             return []
         acknowledge_number = _ack_for_request(message, session)
 
-        if (message.type_flags & CHANNEL_MASK) == CHANNEL_LOBBY:
+        if (message.type_flags & FLAG_CHANNEL_BITS) == FLAG_CHANNEL_BITS:
             self._pending_room_joins.pop(session.session_id, None)
             callbacks: list[SnapMessage] = []
             if session.room_id > 0:
@@ -445,7 +444,7 @@ class AutoModellistaPlugin(GamePlugin):
             return [
                 context.reply(
                     message,
-                    type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                    type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
                     command=commands.CMD_RESULT_WRAPPER,
                     payload=payload,
                     session_id=session.session_id,
@@ -453,7 +452,7 @@ class AutoModellistaPlugin(GamePlugin):
                 )
             ] + callbacks
 
-        if (message.type_flags & CHANNEL_MASK) == CHANNEL_ROOM:
+        if (message.type_flags & FLAG_CHANNEL_BITS) == FLAG_ROOM:
             self._pending_room_joins.pop(session.session_id, None)
             callbacks: list[SnapMessage] = []
             room_id = session.room_id
@@ -477,7 +476,7 @@ class AutoModellistaPlugin(GamePlugin):
             return [
                 context.reply(
                     message,
-                    type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                    type_flags=FLAG_ROOM | FLAG_RESPONSE,
                     command=commands.CMD_RESULT_WRAPPER,
                     payload=payload,
                     session_id=session.session_id,
@@ -501,9 +500,9 @@ class AutoModellistaPlugin(GamePlugin):
         if message.type_flags & FLAG_MULTI:
             # Observed multi-packet room sends relay the embedded room payload
             # with the same sender/all-members policy as single CMD_SEND.
-            channel = message.type_flags & CHANNEL_MASK
+            channel = message.type_flags & FLAG_CHANNEL_BITS
             if channel == 0:
-                channel = CHANNEL_ROOM
+                channel = FLAG_ROOM
             responses = [context.reply(
                 message,
                 type_flags=channel | FLAG_RESPONSE,
@@ -511,7 +510,7 @@ class AutoModellistaPlugin(GamePlugin):
                 session_id=session.session_id,
             )]
 
-            if channel == CHANNEL_ROOM and len(message.payload) >= 2:
+            if channel == FLAG_ROOM and len(message.payload) >= 2:
                 responses.extend(
                     self._handle_room_game_send(
                         context=context,
@@ -527,7 +526,7 @@ class AutoModellistaPlugin(GamePlugin):
         if callback_flags == TYPE_LOBBY_RELAY:
             ack_to_sender = context.reply(
                 message,
-                type_flags=CHANNEL_LOBBY | FLAG_RESPONSE,
+                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
                 command=commands.CMD_ACK,
                 session_id=session.session_id,
             )
@@ -543,7 +542,7 @@ class AutoModellistaPlugin(GamePlugin):
         if callback_flags == TYPE_ROOM_RELAY:
             ack_to_sender = context.reply(
                 message,
-                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                type_flags=FLAG_ROOM | FLAG_RESPONSE,
                 command=commands.CMD_ACK,
                 session_id=session.session_id,
             )
@@ -556,10 +555,10 @@ class AutoModellistaPlugin(GamePlugin):
             )
             return [ack_to_sender] + chats
 
-        if message.type_flags & CHANNEL_ROOM:
+        if message.type_flags & FLAG_ROOM:
             ack_to_sender = context.reply(
                 message,
-                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                type_flags=FLAG_ROOM | FLAG_RESPONSE,
                 command=commands.CMD_ACK,
                 session_id=session.session_id,
             )
@@ -700,7 +699,7 @@ class AutoModellistaPlugin(GamePlugin):
                 context.direct(
                     endpoint=member.endpoint,
                     session_id=member.session_id,
-                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    type_flags=FLAG_ROOM | FLAG_RELIABLE,
                     command=commands.CMD_SEND,
                     payload=transition_payload,
                     acknowledge_number=_ack_for_session(member),
@@ -722,7 +721,7 @@ class AutoModellistaPlugin(GamePlugin):
         response = [
             context.reply(
                 message,
-                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                type_flags=FLAG_ROOM | FLAG_RESPONSE,
                 command=commands.CMD_ACK,
                 session_id=session.session_id,
             )
@@ -768,7 +767,7 @@ class AutoModellistaPlugin(GamePlugin):
             context.direct(
                 endpoint=target.endpoint,
                 session_id=target.session_id,
-                type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                type_flags=FLAG_ROOM | FLAG_RELIABLE,
                 command=commands.CMD_SEND_TARGET,
                 payload=relay_payload,
                 acknowledge_number=_ack_for_session(target),
@@ -800,7 +799,7 @@ class AutoModellistaPlugin(GamePlugin):
         return [
             context.reply(
                 message,
-                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                type_flags=FLAG_ROOM | FLAG_RESPONSE,
                 command=commands.CMD_RESULT_WRAPPER,
                 payload=payload,
                 session_id=session.session_id,
@@ -1076,7 +1075,7 @@ def _build_room_join_callbacks(
                 session_id=member.session_id,
                 # The host does not ACK this callback family, so keep it on
                 # the response channel without transport reliability.
-                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                type_flags=FLAG_ROOM | FLAG_RESPONSE,
                 command=commands.CMD_JOIN,
                 payload=payload,
                 acknowledge_number=_ack_for_session(member),
@@ -1102,7 +1101,7 @@ def _build_room_leave_callbacks(
             context.direct(
                 endpoint=member.endpoint,
                 session_id=member.session_id,
-                type_flags=CHANNEL_ROOM | FLAG_RESPONSE,
+                type_flags=FLAG_ROOM | FLAG_RESPONSE,
                 command=commands.CMD_LEAVE,
                 payload=payload,
                 acknowledge_number=_ack_for_session(member),

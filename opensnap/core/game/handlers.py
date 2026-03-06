@@ -7,7 +7,7 @@ import struct
 
 from opensnap.core.context import HandlerContext
 from opensnap.protocol import commands
-from opensnap.protocol.constants import CHANNEL_LOBBY
+from opensnap.protocol.constants import FLAG_CHANNEL_BITS
 from opensnap.protocol.fields import get_c_string
 from opensnap.protocol.models import SnapMessage
 
@@ -64,7 +64,7 @@ def handle_login_to_kics(context: HandlerContext, message: SnapMessage) -> list[
     return [
         context.reply(
             message,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             command=commands.CMD_RESULT_LOGIN_TO_KICS,
             payload=payload,
             session_id=session.session_id,

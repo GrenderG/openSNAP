@@ -3,7 +3,7 @@
 import unittest
 
 from opensnap.core.bootstrap import detect_game_identifier
-from opensnap.protocol.constants import CHANNEL_LOBBY, FOOTER_BYTES, FOOTER_BYTES_KAGE
+from opensnap.protocol.constants import FLAG_CHANNEL_BITS, FOOTER_BYTES, FOOTER_BYTES_KAGE
 from opensnap.protocol.models import Endpoint, SnapMessage
 
 
@@ -36,7 +36,7 @@ def _message(*, footer_bytes: bytes) -> SnapMessage:
 
     return SnapMessage(
         endpoint=Endpoint(host='127.0.0.1', port=50000),
-        type_flags=CHANNEL_LOBBY,
+        type_flags=FLAG_CHANNEL_BITS,
         packet_number=0,
         command=0x2C,
         session_id=0,

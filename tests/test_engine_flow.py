@@ -16,8 +16,8 @@ from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.protocol import commands
 from opensnap.protocol.constants import (
     BOOTSTRAP_LOGIN_FAIL_REASON_INVALID_PASSWORD,
-    CHANNEL_LOBBY,
-    CHANNEL_ROOM,
+    FLAG_CHANNEL_BITS,
+    FLAG_ROOM,
     FLAG_LOBBY,
     FLAG_MULTI,
     FLAG_RELAY,
@@ -51,7 +51,7 @@ class EngineFlowTests(unittest.TestCase):
 
         login_request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_LOGIN_CLIENT,
             session_id=0,
@@ -67,7 +67,7 @@ class EngineFlowTests(unittest.TestCase):
         session_id = login_result.messages[0].session_id
         check_request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_BOOTSTRAP_LOGIN_SWAN_CHECK,
             session_id=session_id,
@@ -92,7 +92,7 @@ class EngineFlowTests(unittest.TestCase):
         team_payload[0x128:0x12F] = b'team-a\x00'
         kics_request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_LOGIN_TO_KICS,
             session_id=session_id,
@@ -115,7 +115,7 @@ class EngineFlowTests(unittest.TestCase):
 
         login_request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_LOGIN_CLIENT,
             session_id=0,
@@ -131,7 +131,7 @@ class EngineFlowTests(unittest.TestCase):
         session_id = login_result.messages[0].session_id
         check_request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_BOOTSTRAP_LOGIN_SWAN_CHECK,
             session_id=session_id,
@@ -150,7 +150,7 @@ class EngineFlowTests(unittest.TestCase):
         team_payload[0x128:0x12F] = b'team-a\x00'
         kics_request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_LOGIN_TO_KICS,
             session_id=session_id,
@@ -171,7 +171,7 @@ class EngineFlowTests(unittest.TestCase):
 
         login_request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_LOGIN_CLIENT,
             session_id=0,
@@ -187,7 +187,7 @@ class EngineFlowTests(unittest.TestCase):
         wrapped_shape = struct.pack('>2L', 0x80, 0) + (bytes(range(32)) + (b'ABCDEFGH' * 12))
         check_request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_BOOTSTRAP_LOGIN_SWAN_CHECK,
             session_id=session_id,
@@ -211,7 +211,7 @@ class EngineFlowTests(unittest.TestCase):
         duplicated_login = b'test\ntest\n'
         login_request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_LOGIN_CLIENT,
             session_id=0,
@@ -233,7 +233,7 @@ class EngineFlowTests(unittest.TestCase):
         raw_login = b'test'
         login_request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_LOGIN_CLIENT,
             session_id=0,
@@ -278,7 +278,7 @@ class EngineFlowTests(unittest.TestCase):
 
         login_request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_LOGIN_CLIENT,
             session_id=0,
@@ -307,7 +307,7 @@ class EngineFlowTests(unittest.TestCase):
         endpoint = Endpoint(host='127.0.0.1', port=50016)
         request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_SEND_ECHO,
             session_id=0x12345678,
@@ -322,7 +322,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(result.messages), 1)
         response = result.messages[0]
         self.assertEqual(response.command, commands.CMD_SEND_ECHO)
-        self.assertEqual(response.type_flags, CHANNEL_LOBBY | FLAG_RESPONSE)
+        self.assertEqual(response.type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE)
         self.assertEqual(response.acknowledge_number, request.sequence_number)
         self.assertEqual(response.payload, struct.pack('>I', 0xDEADBEEF) + b'extra')
 
@@ -332,7 +332,7 @@ class EngineFlowTests(unittest.TestCase):
         payload = bytes([0x01]) * 64
         request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND_ECHO,
             session_id=0x12345678,
@@ -347,7 +347,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(result.messages), 1)
         response = result.messages[0]
         self.assertEqual(response.command, commands.CMD_SEND_ECHO)
-        self.assertEqual(response.type_flags, CHANNEL_ROOM | FLAG_RESPONSE)
+        self.assertEqual(response.type_flags, FLAG_ROOM | FLAG_RESPONSE)
         self.assertEqual(response.acknowledge_number, request.sequence_number)
         self.assertEqual(response.payload, payload)
 
@@ -356,7 +356,7 @@ class EngineFlowTests(unittest.TestCase):
         endpoint = Endpoint(host='127.0.0.1', port=50006)
         login_request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_LOGIN_CLIENT,
             session_id=0,
@@ -378,7 +378,7 @@ class EngineFlowTests(unittest.TestCase):
         endpoint = Endpoint(host='127.0.0.1', port=50005)
         request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=0x99,
             session_id=0x12345678,
@@ -402,7 +402,7 @@ class EngineFlowTests(unittest.TestCase):
         endpoint = Endpoint(host='127.0.0.1', port=50007)
         request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_JOIN,
             session_id=0xDEADBEEF,
@@ -425,7 +425,7 @@ class EngineFlowTests(unittest.TestCase):
 
         request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND_TARGET,
             session_id=session_id,
@@ -449,7 +449,7 @@ class EngineFlowTests(unittest.TestCase):
 
         request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_QUERY_LOBBIES,
             session_id=0,
@@ -476,7 +476,7 @@ class EngineFlowTests(unittest.TestCase):
 
         request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_JOIN,
             session_id=session_id,
@@ -505,18 +505,18 @@ class EngineFlowTests(unittest.TestCase):
 
         first = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY | FLAG_MULTI,
+            type_flags=FLAG_CHANNEL_BITS | FLAG_MULTI,
             packet_number=0,
             command=commands.CMD_QUERY_ATTRIBUTE,
             session_id=session_id,
             sequence_number=2,
             acknowledge_number=0,
             payload=struct.pack('>L4s', 1, b'USER'),
-            size_word_override=(CHANNEL_LOBBY | FLAG_MULTI) | 0x0018,
+            size_word_override=(FLAG_CHANNEL_BITS | FLAG_MULTI) | 0x0018,
         )
         second = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=1,
             command=commands.CMD_QUERY_ATTRIBUTE,
             session_id=session_id,
@@ -599,7 +599,7 @@ class EngineFlowTests(unittest.TestCase):
 
         chat_request = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=FLAG_RELAY | CHANNEL_ROOM,
+            type_flags=FLAG_RELAY | FLAG_ROOM,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
@@ -637,7 +637,7 @@ class EngineFlowTests(unittest.TestCase):
         room_id = _create_room(engine, endpoint_one, host_session, sequence=4, room_name='join-callback')
         join_request = SnapMessage(
             endpoint=endpoint_two,
-            type_flags=CHANNEL_ROOM,
+            type_flags=FLAG_ROOM,
             packet_number=0,
             command=commands.CMD_JOIN,
             session_id=joiner_session,
@@ -679,7 +679,7 @@ class EngineFlowTests(unittest.TestCase):
         session_id = _create_session_via_login(engine, endpoint, 'test')
         request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY | FLAG_RELIABLE,
+            type_flags=FLAG_CHANNEL_BITS | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_JOIN,
             session_id=session_id,
@@ -708,7 +708,7 @@ class EngineFlowTests(unittest.TestCase):
         room_id = _create_room(engine, endpoint_one, host_session, sequence=4, room_name='dup-join-room')
         join_request = SnapMessage(
             endpoint=endpoint_two,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_JOIN,
             session_id=joiner_session,
@@ -742,7 +742,7 @@ class EngineFlowTests(unittest.TestCase):
         room_id = _create_room(engine, endpoint_one, host_session, sequence=4, room_name='join-retry-room')
         join_request = SnapMessage(
             endpoint=endpoint_two,
-            type_flags=CHANNEL_ROOM,
+            type_flags=FLAG_ROOM,
             packet_number=0,
             command=commands.CMD_JOIN,
             session_id=joiner_session,
@@ -778,7 +778,7 @@ class EngineFlowTests(unittest.TestCase):
         room_id = _create_room(engine, endpoint_one, host_session, sequence=4, room_name='join-stop-retry-room')
         join_request = SnapMessage(
             endpoint=endpoint_two,
-            type_flags=CHANNEL_ROOM,
+            type_flags=FLAG_ROOM,
             packet_number=0,
             command=commands.CMD_JOIN,
             session_id=joiner_session,
@@ -792,7 +792,7 @@ class EngineFlowTests(unittest.TestCase):
 
         host_sync_request = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND_TARGET,
             session_id=host_session,
@@ -827,7 +827,7 @@ class EngineFlowTests(unittest.TestCase):
         room_id = _create_room(engine, endpoint_one, host_session, sequence=4, room_name='join-stop-on-guest-sync')
         join_request = SnapMessage(
             endpoint=endpoint_two,
-            type_flags=CHANNEL_ROOM,
+            type_flags=FLAG_ROOM,
             packet_number=0,
             command=commands.CMD_JOIN,
             session_id=joiner_session,
@@ -841,7 +841,7 @@ class EngineFlowTests(unittest.TestCase):
 
         host_sync_request = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND_TARGET,
             session_id=host_session,
@@ -855,7 +855,7 @@ class EngineFlowTests(unittest.TestCase):
 
         guest_sync_request = SnapMessage(
             endpoint=endpoint_two,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND_TARGET,
             session_id=joiner_session,
@@ -886,7 +886,7 @@ class EngineFlowTests(unittest.TestCase):
 
         leave_request = SnapMessage(
             endpoint=endpoint_two,
-            type_flags=CHANNEL_ROOM,
+            type_flags=FLAG_ROOM,
             packet_number=0,
             command=commands.CMD_LEAVE,
             session_id=leaver_session,
@@ -929,7 +929,7 @@ class EngineFlowTests(unittest.TestCase):
             _encode(
                 SnapMessage(
                     endpoint=endpoint_one,
-                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    type_flags=FLAG_ROOM | FLAG_RELIABLE,
                     packet_number=0,
                     command=commands.CMD_SEND,
                     session_id=host_session,
@@ -944,7 +944,7 @@ class EngineFlowTests(unittest.TestCase):
         guest_finish_payload = struct.pack('>H', 0x1469) + b'\x00\x00\x17\x74\x01\x58\x82\x73\x01\x00\x82\x73\x01\x00\x97\x12\x4e\x43'
         guest_finish_detail = SnapMessage(
             endpoint=endpoint_two,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=guest_session,
@@ -957,7 +957,7 @@ class EngineFlowTests(unittest.TestCase):
         host_finish_payload = struct.pack('>H', 0x1468) + b'\x00\x00\x17\x74\x01\x58\x82\x73\x01\x00\x82\x73\x01\x00\x97\x12\x4e\x43'
         host_finish_detail = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=host_session,
@@ -969,7 +969,7 @@ class EngineFlowTests(unittest.TestCase):
 
         guest_finish = SnapMessage(
             endpoint=endpoint_two,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=guest_session,
@@ -981,7 +981,7 @@ class EngineFlowTests(unittest.TestCase):
 
         host_finish = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=host_session,
@@ -993,7 +993,7 @@ class EngineFlowTests(unittest.TestCase):
 
         leave_request = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_LEAVE,
             session_id=host_session,
@@ -1020,7 +1020,7 @@ class EngineFlowTests(unittest.TestCase):
         # join-game-room callback path ("Getting information").
         guest_leave_request = SnapMessage(
             endpoint=endpoint_two,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_LEAVE,
             session_id=guest_session,
@@ -1055,7 +1055,7 @@ class EngineFlowTests(unittest.TestCase):
             _encode(
                 SnapMessage(
                     endpoint=endpoint_one,
-                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    type_flags=FLAG_ROOM | FLAG_RELIABLE,
                     packet_number=0,
                     command=commands.CMD_SEND,
                     session_id=host_session,
@@ -1073,7 +1073,7 @@ class EngineFlowTests(unittest.TestCase):
             _encode(
                 SnapMessage(
                     endpoint=endpoint_two,
-                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    type_flags=FLAG_ROOM | FLAG_RELIABLE,
                     packet_number=0,
                     command=commands.CMD_SEND,
                     session_id=guest_session,
@@ -1088,7 +1088,7 @@ class EngineFlowTests(unittest.TestCase):
             _encode(
                 SnapMessage(
                     endpoint=endpoint_one,
-                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    type_flags=FLAG_ROOM | FLAG_RELIABLE,
                     packet_number=0,
                     command=commands.CMD_SEND,
                     session_id=host_session,
@@ -1103,7 +1103,7 @@ class EngineFlowTests(unittest.TestCase):
             _encode(
                 SnapMessage(
                     endpoint=endpoint_two,
-                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    type_flags=FLAG_ROOM | FLAG_RELIABLE,
                     packet_number=0,
                     command=commands.CMD_SEND,
                     session_id=guest_session,
@@ -1118,7 +1118,7 @@ class EngineFlowTests(unittest.TestCase):
             _encode(
                 SnapMessage(
                     endpoint=endpoint_one,
-                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    type_flags=FLAG_ROOM | FLAG_RELIABLE,
                     packet_number=0,
                     command=commands.CMD_SEND,
                     session_id=host_session,
@@ -1132,7 +1132,7 @@ class EngineFlowTests(unittest.TestCase):
 
         leave_request = SnapMessage(
             endpoint=endpoint_two,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_LEAVE,
             session_id=guest_session,
@@ -1170,7 +1170,7 @@ class EngineFlowTests(unittest.TestCase):
 
         leave_request = SnapMessage(
             endpoint=endpoint_two,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_LEAVE,
             session_id=leaver_session,
@@ -1211,7 +1211,7 @@ class EngineFlowTests(unittest.TestCase):
 
         game_request = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
@@ -1248,7 +1248,7 @@ class EngineFlowTests(unittest.TestCase):
 
         game_request = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
@@ -1286,7 +1286,7 @@ class EngineFlowTests(unittest.TestCase):
 
         game_request = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
@@ -1326,7 +1326,7 @@ class EngineFlowTests(unittest.TestCase):
             _encode(
                 SnapMessage(
                     endpoint=endpoint_one,
-                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    type_flags=FLAG_ROOM | FLAG_RELIABLE,
                     packet_number=0,
                     command=commands.CMD_SEND,
                     session_id=sender_session,
@@ -1340,7 +1340,7 @@ class EngineFlowTests(unittest.TestCase):
 
         first_finish_detail = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
@@ -1354,7 +1354,7 @@ class EngineFlowTests(unittest.TestCase):
 
         second_finish_detail = SnapMessage(
             endpoint=endpoint_two,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=receiver_session,
@@ -1368,7 +1368,7 @@ class EngineFlowTests(unittest.TestCase):
 
         first_finish = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
@@ -1382,7 +1382,7 @@ class EngineFlowTests(unittest.TestCase):
 
         second_finish = SnapMessage(
             endpoint=endpoint_two,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=receiver_session,
@@ -1410,7 +1410,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual({message.session_id for message in transitions}, {sender_session, receiver_session})
         self.assertTrue(all(message.payload == struct.pack('>H', 0x8009) for message in transitions))
         self.assertTrue(
-            all((message.type_flags & (CHANNEL_ROOM | FLAG_RELIABLE)) == (CHANNEL_ROOM | FLAG_RELIABLE)
+            all((message.type_flags & (FLAG_ROOM | FLAG_RELIABLE)) == (FLAG_ROOM | FLAG_RELIABLE)
                 for message in transitions)
         )
 
@@ -1432,7 +1432,7 @@ class EngineFlowTests(unittest.TestCase):
             _encode(
                 SnapMessage(
                     endpoint=endpoint_one,
-                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    type_flags=FLAG_ROOM | FLAG_RELIABLE,
                     packet_number=0,
                     command=commands.CMD_SEND,
                     session_id=sender_session,
@@ -1447,7 +1447,7 @@ class EngineFlowTests(unittest.TestCase):
             _encode(
                 SnapMessage(
                     endpoint=endpoint_two,
-                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    type_flags=FLAG_ROOM | FLAG_RELIABLE,
                     packet_number=0,
                     command=commands.CMD_SEND,
                     session_id=receiver_session,
@@ -1462,7 +1462,7 @@ class EngineFlowTests(unittest.TestCase):
             _encode(
                 SnapMessage(
                     endpoint=endpoint_one,
-                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    type_flags=FLAG_ROOM | FLAG_RELIABLE,
                     packet_number=0,
                     command=commands.CMD_SEND,
                     session_id=sender_session,
@@ -1477,7 +1477,7 @@ class EngineFlowTests(unittest.TestCase):
             _encode(
                 SnapMessage(
                     endpoint=endpoint_two,
-                    type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+                    type_flags=FLAG_ROOM | FLAG_RELIABLE,
                     packet_number=0,
                     command=commands.CMD_SEND,
                     session_id=receiver_session,
@@ -1512,7 +1512,7 @@ class EngineFlowTests(unittest.TestCase):
 
         game_request = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
@@ -1544,7 +1544,7 @@ class EngineFlowTests(unittest.TestCase):
 
         request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_MULTI | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=session_id,
@@ -1583,18 +1583,18 @@ class EngineFlowTests(unittest.TestCase):
 
         outer = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_MULTI | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
             sequence_number=5,
             acknowledge_number=0,
             payload=b'\x80\x01',
-            size_word_override=(CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE) | 0x0012,
+            size_word_override=(FLAG_ROOM | FLAG_MULTI | FLAG_RELIABLE) | 0x0012,
         )
         embedded = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_CHANGE_ATTRIBUTE,
             session_id=sender_session,
@@ -1637,14 +1637,14 @@ class EngineFlowTests(unittest.TestCase):
 
         request = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_MULTI | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
             sequence_number=5,
             acknowledge_number=0,
             payload=struct.pack('>H', 0x1468) + b'\x00\x00\x41\x84',
-            size_word_override=(CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE) | 0x0016,
+            size_word_override=(FLAG_ROOM | FLAG_MULTI | FLAG_RELIABLE) | 0x0016,
         )
         result = engine.handle_datagram(_encode(request), endpoint_one)
         self.assertFalse(result.errors)
@@ -1676,14 +1676,14 @@ class EngineFlowTests(unittest.TestCase):
 
         request = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_MULTI | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
             sequence_number=5,
             acknowledge_number=0,
             payload=struct.pack('>H', 0x0648) + b'\x00\x00\x00@',
-            size_word_override=(CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE) | 0x0016,
+            size_word_override=(FLAG_ROOM | FLAG_MULTI | FLAG_RELIABLE) | 0x0016,
         )
         result = engine.handle_datagram(_encode(request), endpoint_one)
         self.assertFalse(result.errors)
@@ -1715,18 +1715,18 @@ class EngineFlowTests(unittest.TestCase):
 
         outer = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_MULTI | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
             sequence_number=11,
             acknowledge_number=0,
             payload=bytes.fromhex('064900000880'),
-            size_word_override=(CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE) | 0x0016,
+            size_word_override=(FLAG_ROOM | FLAG_MULTI | FLAG_RELIABLE) | 0x0016,
         )
         embedded = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
@@ -1761,18 +1761,18 @@ class EngineFlowTests(unittest.TestCase):
 
         outer = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_MULTI | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=session_id,
             sequence_number=5,
             acknowledge_number=0,
             payload=b'\x80\x02',
-            size_word_override=(CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE) | 0x0012,
+            size_word_override=(FLAG_ROOM | FLAG_MULTI | FLAG_RELIABLE) | 0x0012,
         )
         embedded_leave = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_LEAVE,
             session_id=session_id,
@@ -1810,18 +1810,18 @@ class EngineFlowTests(unittest.TestCase):
 
         outer = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_MULTI | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=session_id,
             sequence_number=5,
             acknowledge_number=0,
             payload=b'\x80\x01',
-            size_word_override=(CHANNEL_ROOM | FLAG_MULTI | FLAG_RELIABLE) | 0x0012,
+            size_word_override=(FLAG_ROOM | FLAG_MULTI | FLAG_RELIABLE) | 0x0012,
         )
         embedded = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_CHANGE_ATTRIBUTE,
             session_id=session_id,
@@ -1863,7 +1863,7 @@ class EngineFlowTests(unittest.TestCase):
 
         request = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND_TARGET,
             session_id=sender_session,
@@ -1901,7 +1901,7 @@ class EngineFlowTests(unittest.TestCase):
 
         request = SnapMessage(
             endpoint=endpoint_two,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND_TARGET,
             session_id=receiver_session,
@@ -1933,7 +1933,7 @@ class EngineFlowTests(unittest.TestCase):
 
         request = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND_TARGET,
             session_id=sender_session,
@@ -1973,7 +1973,7 @@ class EngineFlowTests(unittest.TestCase):
 
         request = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND_TARGET,
             session_id=sender_session,
@@ -2058,7 +2058,7 @@ class EngineFlowTests(unittest.TestCase):
 
         query_request = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_LOBBY | FLAG_RELIABLE,
+            type_flags=FLAG_CHANNEL_BITS | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_QUERY_GAME_ROOMS,
             session_id=host_session,
@@ -2076,7 +2076,7 @@ class EngineFlowTests(unittest.TestCase):
 
         overflow_join = SnapMessage(
             endpoint=endpoint_three,
-            type_flags=CHANNEL_ROOM,
+            type_flags=FLAG_ROOM,
             packet_number=0,
             command=commands.CMD_JOIN,
             session_id=overflow_session,
@@ -2164,7 +2164,7 @@ class EngineFlowTests(unittest.TestCase):
 
         request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY | FLAG_RELIABLE,
+            type_flags=FLAG_CHANNEL_BITS | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_QUERY_GAME_ROOMS,
             session_id=session_id,
@@ -2187,7 +2187,7 @@ class EngineFlowTests(unittest.TestCase):
         session_id = _create_session_via_login(engine, endpoint, 'test')
         request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_JOIN,
             session_id=session_id,
@@ -2201,7 +2201,7 @@ class EngineFlowTests(unittest.TestCase):
 
         duplicate = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_JOIN,
             session_id=session_id,
@@ -2215,7 +2215,7 @@ class EngineFlowTests(unittest.TestCase):
 
         older = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY,
+            type_flags=FLAG_CHANNEL_BITS,
             packet_number=0,
             command=commands.CMD_JOIN,
             session_id=session_id,
@@ -2278,7 +2278,7 @@ class EngineFlowTests(unittest.TestCase):
 
         request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_LEAVE,
             session_id=session_id,
@@ -2309,7 +2309,7 @@ class EngineFlowTests(unittest.TestCase):
 
         request = SnapMessage(
             endpoint=endpoint,
-            type_flags=CHANNEL_LOBBY | FLAG_RELIABLE,
+            type_flags=FLAG_CHANNEL_BITS | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_LEAVE,
             session_id=session_id,
@@ -2346,7 +2346,7 @@ class EngineFlowTests(unittest.TestCase):
 
         request = SnapMessage(
             endpoint=endpoint_one,
-            type_flags=CHANNEL_ROOM | FLAG_RELIABLE,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND_TARGET,
             session_id=sender_session,
@@ -2514,7 +2514,7 @@ def _create_session_via_login(engine: SnapProtocolEngine, endpoint: Endpoint, us
 
     login_request = SnapMessage(
         endpoint=endpoint,
-        type_flags=CHANNEL_LOBBY,
+        type_flags=FLAG_CHANNEL_BITS,
         packet_number=0,
         command=commands.CMD_LOGIN_CLIENT,
         session_id=0,
@@ -2540,7 +2540,7 @@ def _join_lobby(
 
     request = SnapMessage(
         endpoint=endpoint,
-        type_flags=CHANNEL_LOBBY,
+        type_flags=FLAG_CHANNEL_BITS,
         packet_number=0,
         command=commands.CMD_JOIN,
         session_id=session_id,
@@ -2564,7 +2564,7 @@ def _join_room(
 
     request = SnapMessage(
         endpoint=endpoint,
-        type_flags=CHANNEL_ROOM,
+        type_flags=FLAG_ROOM,
         packet_number=0,
         command=commands.CMD_JOIN,
         session_id=session_id,
