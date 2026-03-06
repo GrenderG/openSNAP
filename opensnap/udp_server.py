@@ -142,7 +142,22 @@ class SnapUdpServer:
         self._stopped = True
 
     def _send_messages(self, udp_socket: socket.socket, messages: list[SnapMessage]) -> None:
-        """Encode and send outbound messages."""
+        """Encode and send outbound messages.
+
+        Keep one SNAP message per UDP datagram.
+
+        This is the generic transport default. Each reply is encoded and sent
+        on its own, so the transport layer does not silently combine separate
+        SNAP messages into one UDP payload unless a specific protocol flow
+        proves that a different layout is required.
+
+        We intentionally do not batch unrelated replies here by default because
+        doing so makes transport behavior harder to reason about: one outbound
+        UDP payload can then carry multiple command callbacks, multiple reverse
+        ACK opportunities, and multiple sequence side effects. Keeping the send
+        path one-message-per-datagram makes those interactions explicit at the
+        handler level instead of hiding them inside the generic UDP server.
+        """
 
         send_time = time.monotonic()
         for message in messages:
