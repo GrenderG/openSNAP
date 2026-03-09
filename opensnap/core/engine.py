@@ -1,6 +1,7 @@
 """Protocol engine orchestrating decode, dispatch, and tick."""
 
 from dataclasses import dataclass
+from enum import IntEnum
 import logging
 from typing import Literal
 
@@ -15,6 +16,7 @@ from opensnap.protocol.codec import PacketDecodeError, decode_datagram
 from opensnap.protocol.constants import (
     BARE_ACK_FLAGS,
     FLAG_CHANNEL_BITS,
+    FLAG_MULTI,
     FLAG_ROOM,
     FLAG_RESPONSE,
     FLAG_RELIABLE,
@@ -22,7 +24,7 @@ from opensnap.protocol.constants import (
     TYPE_LOBBY_RELAY,
     TYPE_ROOM_RELAY,
 )
-from opensnap.protocol.models import Endpoint, SnapMessage
+from opensnap.protocol.models import Endpoint, SnapMessage, WIRE_FORMAT_SNAP
 from opensnap.storage.factory import create_storage
 
 
@@ -32,6 +34,14 @@ class EngineResult:
 
     messages: list[SnapMessage]
     errors: list[str]
+
+
+class DuplicateAckPolicy(IntEnum):
+    """Duplicate reliability policy for inbound SNAP messages."""
+
+    NONE = 0
+    DUPLICATE_RELIABLE = 1
+    STALE_DUPLICATE_LEAVE = 2
 
 
 class SnapProtocolEngine:
@@ -84,7 +94,7 @@ class SnapProtocolEngine:
         """Process one datagram and return outbound messages."""
 
         try:
-            messages = decode_datagram(payload, endpoint)
+            messages = self._decode_datagram(payload, endpoint)
         except PacketDecodeError as exc:
             self._logger.warning(
                 'Decode error from %s:%d: %s',
@@ -102,6 +112,7 @@ class SnapProtocolEngine:
         )
         outbound: list[SnapMessage] = []
         errors: list[str] = []
+        duplicate_reliable_multi_parent = False
         for message in messages:
             self._logger.debug(
                 (
@@ -117,35 +128,73 @@ class SnapProtocolEngine:
                 message.acknowledge_number,
                 len(message.payload),
             )
-            # Ignore bare ACK frames that do not carry command payload.
-            if message.command == commands.CMD_ACK and (message.type_flags & BARE_ACK_FLAGS) == BARE_ACK_FLAGS:
-                self._logger.debug(
-                    'Ignoring bare ACK frame from %s:%d.',
-                    message.endpoint.host,
-                    message.endpoint.port,
-                )
-                continue
+            if message.wire_format == WIRE_FORMAT_SNAP:
+                # Ignore bare ACK frames that do not carry command payload.
+                if message.command == commands.CMD_ACK and (message.type_flags & BARE_ACK_FLAGS) == BARE_ACK_FLAGS:
+                    self._logger.debug(
+                        'Ignoring bare ACK frame from %s:%d.',
+                        message.endpoint.host,
+                        message.endpoint.port,
+                    )
+                    continue
 
-            self._normalize_session_for_message(message)
-            # Track highest inbound sequence per session so direct fanout ACKs can
-            # mirror client-side flow control state.
-            accepted = self._sessions.accept_incoming(message.session_id, message.sequence_number)
-            if not accepted and self._should_ack_duplicate_only(message):
-                ack = self._build_duplicate_reliable_ack(message)
-                if ack is not None:
-                    outbound.append(ack)
-                self._logger.debug(
-                    (
-                        'Suppressing duplicate reliable command 0x%02x from %s:%d '
-                        '(sess=0x%08x seq=%d); returning ACK only.'
-                    ),
-                    message.command,
-                    message.endpoint.host,
-                    message.endpoint.port,
-                    message.session_id,
-                    message.sequence_number,
-                )
-                continue
+                self._normalize_session_for_message(message)
+                # Track highest inbound sequence per session so direct fanout ACKs can
+                # mirror client-side flow control state.
+                accepted = self._sessions.accept_incoming(message.session_id, message.sequence_number)
+                duplicate_reason = self._duplicate_ack_only_reason(message, accepted)
+                if duplicate_reason is not DuplicateAckPolicy.NONE:
+                    if (
+                        duplicate_reason is DuplicateAckPolicy.DUPLICATE_RELIABLE
+                        and self._is_duplicate_reliable_multi_parent(message)
+                    ):
+                        duplicate_reliable_multi_parent = True
+                    ack = self._build_duplicate_reliable_ack(message)
+                    if ack is not None:
+                        outbound.append(ack)
+                    if duplicate_reason is DuplicateAckPolicy.STALE_DUPLICATE_LEAVE:
+                        session = self._sessions.get(message.session_id)
+                        last_sequence = -1 if session is None else session.last_incoming_sequence
+                        self._logger.debug(
+                            (
+                                'Suppressing stale duplicate reliable leave command from %s:%d '
+                                '(sess=0x%08x seq=%d last=%d); returning ACK only.'
+                            ),
+                            message.endpoint.host,
+                            message.endpoint.port,
+                            message.session_id,
+                            message.sequence_number,
+                            last_sequence,
+                        )
+                    else:
+                        self._logger.debug(
+                            (
+                                'Suppressing duplicate reliable command 0x%02x from %s:%d '
+                                '(sess=0x%08x seq=%d); returning ACK only.'
+                            ),
+                            message.command,
+                            message.endpoint.host,
+                            message.endpoint.port,
+                            message.session_id,
+                            message.sequence_number,
+                        )
+                    continue
+                if (
+                    duplicate_reliable_multi_parent
+                    and self._should_suppress_embedded_send_after_duplicate_multi(message)
+                ):
+                    self._logger.debug(
+                        (
+                            'Suppressing embedded duplicate reliable send command 0x%02x '
+                            'from %s:%d (sess=0x%08x seq=%d) after duplicate multi parent.'
+                        ),
+                        message.command,
+                        message.endpoint.host,
+                        message.endpoint.port,
+                        message.session_id,
+                        message.sequence_number,
+                    )
+                    continue
 
             if not self._router.has_handler(message.command):
                 payload_preview = message.payload[:32].hex(' ')
@@ -197,6 +246,20 @@ class SnapProtocolEngine:
         )
         return EngineResult(messages=outbound, errors=errors)
 
+    def decode_datagram(self, payload: bytes, endpoint: Endpoint) -> list[SnapMessage]:
+        """Decode one inbound datagram using the configured game plugin when applicable."""
+
+        return self._decode_datagram(payload, endpoint)
+
+    def encode_messages(self, messages: list[SnapMessage], *, footer_bytes: bytes | None = None) -> bytes:
+        """Encode outbound datagrams using the configured game plugin when applicable."""
+
+        if self._role in {'combined', 'game'} and self._plugin is not None:
+            return self._plugin.encode_messages(messages, footer_bytes=footer_bytes)
+        from opensnap.protocol.codec import encode_messages
+
+        return encode_messages(messages, footer_bytes=footer_bytes)
+
     def tick(self) -> list[SnapMessage]:
         """Run periodic plugin tasks."""
 
@@ -233,6 +296,13 @@ class SnapProtocolEngine:
         if self._role in {'combined', 'game'}:
             self._router.register(commands.CMD_LOGIN_TO_KICS, game_handlers.handle_login_to_kics)
             self._router.register(commands.CMD_LOGOUT_CLIENT, self._handle_logout)
+
+    def _decode_datagram(self, payload: bytes, endpoint: Endpoint) -> list[SnapMessage]:
+        """Decode inbound datagrams with the configured game plugin if present."""
+
+        if self._role in {'combined', 'game'} and self._plugin is not None:
+            return self._plugin.decode_datagram(payload, endpoint)
+        return decode_datagram(payload, endpoint)
 
     def _normalize_session_for_message(self, message: SnapMessage) -> None:
         """Resolve a session by endpoint when incoming headers use stale session ids."""
@@ -296,7 +366,74 @@ class SnapProtocolEngine:
         # Treating those as duplicates drops valid relays in game-loading flow.
         if message.embedded_in_multi and message.sequence_number == 0:
             return False
-        return message.command in {commands.CMD_SEND, commands.CMD_SEND_TARGET, commands.CMD_LEAVE}
+        return message.command in {commands.CMD_SEND, commands.CMD_SEND_TARGET}
+
+    def _duplicate_ack_only_reason(self, message: SnapMessage, accepted: bool) -> DuplicateAckPolicy:
+        """Return duplicate ACK-only decision reason for one inbound message."""
+
+        if accepted:
+            return DuplicateAckPolicy.NONE
+        if self._should_ack_duplicate_only(message):
+            return DuplicateAckPolicy.DUPLICATE_RELIABLE
+        if self._should_ack_stale_duplicate_leave_only(message):
+            return DuplicateAckPolicy.STALE_DUPLICATE_LEAVE
+        return DuplicateAckPolicy.NONE
+
+    @staticmethod
+    def _is_duplicate_reliable_multi_parent(message: SnapMessage) -> bool:
+        """Check whether this message is the outer reliable multi duplicate."""
+
+        return (
+            not message.embedded_in_multi
+            and message.command == commands.CMD_SEND
+            and (message.type_flags & FLAG_RELIABLE) != 0
+            and (message.type_flags & FLAG_MULTI) != 0
+        )
+
+    @staticmethod
+    def _should_suppress_embedded_send_after_duplicate_multi(message: SnapMessage) -> bool:
+        """Suppress duplicate multi embedded room relays that piggyback sequence 0.
+
+        Duplicate outer reliable multi retransmits can replay embedded `CMD_SEND`
+        sequence-zero entries that are semantically tied to the outer transport
+        sequence. Re-broadcasting those embedded room relays to peers can
+        perturb race-start synchronization. Keep replay behavior for other
+        embedded command families (`CMD_SEND_TARGET`, `CMD_CHANGE_ATTRIBUTE`)
+        unchanged.
+        """
+
+        if not message.embedded_in_multi:
+            return False
+        if message.command != commands.CMD_SEND:
+            return False
+        if (message.type_flags & FLAG_RELIABLE) == 0:
+            return False
+        return message.sequence_number == 0
+
+    def _should_ack_stale_duplicate_leave_only(self, message: SnapMessage) -> bool:
+        """ACK-only stale duplicate leave requests once a newer request is accepted.
+
+        Release and Beta1 leave callbacks (`ResultLeaveRoomCallBack*`,
+        `ResultLeaveLobbyCallBack*`) run immediate UI state transitions and are
+        not keyed by transport sequence. Replaying wrappers for old leave
+        sequence numbers after a newer request has already progressed can drive
+        redundant callback transitions.
+        """
+
+        if message.command != commands.CMD_LEAVE:
+            return False
+        if (message.type_flags & FLAG_RELIABLE) == 0:
+            return False
+        # Embedded leave commands inside reliable multi datagrams can legally
+        # carry sequence 0 while the outer packet owns transport sequencing.
+        if message.embedded_in_multi and message.sequence_number == 0:
+            return False
+
+        session = self._sessions.get(message.session_id)
+        if session is None:
+            return False
+
+        return session.last_incoming_sequence > message.sequence_number
 
     def _build_duplicate_reliable_ack(self, message: SnapMessage) -> SnapMessage | None:
         """Build a transport ACK for a duplicate reliable command."""

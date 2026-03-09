@@ -3,12 +3,14 @@
 from collections.abc import Callable
 
 from opensnap.plugins.automodellista import AutoModellistaPlugin
+from opensnap.plugins.automodellista_beta1 import AutoModellistaBeta1Plugin
 from opensnap.plugins.base import GamePlugin
 
 PluginFactory = Callable[[], GamePlugin]
 
 PLUGIN_FACTORIES: dict[str, PluginFactory] = {
     'automodellista': AutoModellistaPlugin,
+    'automodellista_beta1': AutoModellistaBeta1Plugin,
 }
 
 

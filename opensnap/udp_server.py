@@ -9,8 +9,12 @@ from opensnap.config import DEFAULT_TICK_INTERVAL_SECONDS, ServiceEndpointConfig
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.logging_utils import format_hexdump
 from opensnap.protocol import commands
-from opensnap.protocol.codec import PacketDecodeError, decode_datagram, detect_footer_bytes, encode_messages
-from opensnap.protocol.constants import BARE_ACK_FLAGS, FLAG_RELIABLE, FOOTER_BYTES
+from opensnap.protocol.codec import PacketDecodeError, detect_footer_bytes
+from opensnap.protocol.constants import (
+    BARE_ACK_FLAGS,
+    FLAG_RELIABLE,
+    FOOTER_BYTES,
+)
 from opensnap.protocol.models import Endpoint, SnapMessage
 
 
@@ -144,25 +148,14 @@ class SnapUdpServer:
     def _send_messages(self, udp_socket: socket.socket, messages: list[SnapMessage]) -> None:
         """Encode and send outbound messages.
 
-        Keep one SNAP message per UDP datagram.
-
-        This is the generic transport default. Each reply is encoded and sent
-        on its own, so the transport layer does not silently combine separate
-        SNAP messages into one UDP payload unless a specific protocol flow
-        proves that a different layout is required.
-
-        We intentionally do not batch unrelated replies here by default because
-        doing so makes transport behavior harder to reason about: one outbound
-        UDP payload can then carry multiple command callbacks, multiple reverse
-        ACK opportunities, and multiple sequence side effects. Keeping the send
-        path one-message-per-datagram makes those interactions explicit at the
-        handler level instead of hiding them inside the generic UDP server.
+        Keep one outbound message per UDP datagram unless the protocol handler
+        already built a synthetic multi-message SNAP payload itself.
         """
 
         send_time = time.monotonic()
         for message in messages:
             endpoint = message.endpoint
-            datagram = encode_messages(
+            datagram = self._engine.encode_messages(
                 [message],
                 footer_bytes=self._footer_bytes_by_endpoint.get((endpoint.host, endpoint.port), FOOTER_BYTES),
             )
@@ -215,10 +208,10 @@ class SnapUdpServer:
             self._logger.error('Engine error from %s:%d: %s', endpoint.host, endpoint.port, error)
 
     def _process_transport_acks(self, payload: bytes, endpoint: Endpoint) -> None:
-        """Track bare ACK frames and clear pending reliable packets."""
+        """Track transport ACK sources and clear pending reliable packets."""
 
         try:
-            messages = decode_datagram(payload, endpoint)
+            messages = self._engine.decode_datagram(payload, endpoint)
         except PacketDecodeError:
             return
 
@@ -227,9 +220,15 @@ class SnapUdpServer:
                 message.command == commands.CMD_ACK
                 and (message.type_flags & BARE_ACK_FLAGS) == BARE_ACK_FLAGS
             )
-            is_reliable_with_piggyback_ack = (message.type_flags & FLAG_RELIABLE) != 0
+            is_reliable_payload = (message.type_flags & FLAG_RELIABLE) != 0
 
-            if not is_bare_ack and not is_reliable_with_piggyback_ack:
+            # During active gameplay, both beta1 and release piggyback exact
+            # rUDP ACK numbers on ordinary reliable room/game packets (for
+            # example `0xa000 0x0f`), while still using bare ACKs as needed.
+            # `FLAG_RESPONSE` controls the explicit reverse-ACK bookkeeping
+            # path (`kkSetRevAck`), but the header acknowledge field remains a
+            # valid transport ACK source on any plausible reliable packet.
+            if not is_bare_ack and not is_reliable_payload:
                 continue
 
             acknowledge_number = self._normalize_transport_ack(
@@ -333,7 +332,7 @@ class SnapUdpServer:
         return None
 
     def _clear_reliable_pending(self, endpoint: Endpoint, session_id: int, acknowledge_number: int) -> None:
-        """Clear all reliable packets cumulatively acknowledged by one peer."""
+        """Clear one exactly acknowledged reliable packet for one peer/session."""
 
         keys_to_remove = [
             key
@@ -341,7 +340,7 @@ class SnapUdpServer:
             if key[0] == endpoint.host
             and key[1] == endpoint.port
             and key[2] == session_id
-            and key[3] <= acknowledge_number
+            and key[3] == acknowledge_number
         ]
         for key in keys_to_remove:
             self._reliable_pending.pop(key, None)

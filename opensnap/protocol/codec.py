@@ -12,7 +12,7 @@ from opensnap.protocol.constants import (
     LENGTH_MASK,
     TYPE_MASK,
 )
-from opensnap.protocol.models import Endpoint, SnapMessage
+from opensnap.protocol.models import Endpoint, SnapMessage, WIRE_FORMAT_SNAP
 
 
 class PacketDecodeError(ValueError):
@@ -76,20 +76,14 @@ def decode_datagram(data: bytes, endpoint: Endpoint) -> list[SnapMessage]:
             size_word_override=size_word if type_flags & FLAG_MULTI else None,
             embedded_in_multi=multi_command_seen,
             footer_bytes=footer_bytes,
+            wire_format=WIRE_FORMAT_SNAP,
         )
         messages.append(message)
 
         offset = next_offset
 
-        # Incoming multi datagrams are command-dependent:
-        # - 0x0f (kkSend) may embed a follow-up command (for example room leave 0x07)
-        #   that must be dispatched.
-        # - other observed multi commands should keep the current "first entry only"
-        #   behavior to avoid over-dispatching embedded query entries.
         if type_flags & FLAG_MULTI:
             multi_command_seen = True
-        if (type_flags & FLAG_MULTI) and command != 0x0F:
-            break
 
     return messages
 
@@ -102,6 +96,8 @@ def encode_messages(messages: Sequence[SnapMessage], *, footer_bytes: bytes | No
 
     encoded = bytearray()
     for message in messages:
+        if message.wire_format != WIRE_FORMAT_SNAP:
+            raise ValueError(f'Unsupported wire format for SNAP codec: {message.wire_format}.')
         if message.size_word_override is None:
             # For regular packets, length is header plus payload length.
             size_word = message.type_flags | (len(message.payload) + HEADER_SIZE)

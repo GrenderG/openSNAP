@@ -2,8 +2,9 @@
 
 from opensnap.core.context import HandlerContext
 from opensnap.core.router import CommandRouter
+from opensnap.protocol.codec import decode_datagram as decode_snap_datagram, encode_messages as encode_snap_messages
 from opensnap.protocol.enums import GameTags, PostGameReportMask, RoomSubcommand
-from opensnap.protocol.models import SnapMessage
+from opensnap.protocol.models import Endpoint, SnapMessage
 
 
 class GamePlugin:
@@ -21,6 +22,16 @@ class GamePlugin:
 
         del context
         return []
+
+    def decode_datagram(self, payload: bytes, endpoint: Endpoint) -> list[SnapMessage]:
+        """Decode one datagram for this plugin."""
+
+        return decode_snap_datagram(payload, endpoint)
+
+    def encode_messages(self, messages: list[SnapMessage], *, footer_bytes: bytes | None = None) -> bytes:
+        """Encode one or more outbound messages for this plugin."""
+
+        return encode_snap_messages(messages, footer_bytes=footer_bytes)
 
     @staticmethod
     def decode_room_game_tag(subcommand: int) -> GameTags | None:

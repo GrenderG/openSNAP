@@ -84,7 +84,7 @@ class CodecTests(unittest.TestCase):
         self.assertTrue(encoded.endswith(FOOTER_BYTES_KAGE))
         self.assertFalse(encoded.endswith(FOOTER_BYTES))
 
-    def test_decode_multi_query_datagram_keeps_first_embedded_entry_only(self) -> None:
+    def test_decode_multi_query_datagram_keeps_embedded_followup(self) -> None:
         endpoint = Endpoint(host='127.0.0.1', port=2222)
         first = SnapMessage(
             endpoint=endpoint,
@@ -111,9 +111,12 @@ class CodecTests(unittest.TestCase):
         encoded = encode_messages([first, second])
         decoded = decode_datagram(encoded, endpoint)
 
-        self.assertEqual(len(decoded), 1)
+        self.assertEqual(len(decoded), 2)
         self.assertEqual(decoded[0].command, 0x09)
         self.assertEqual(decoded[0].payload, b'\x80\x02')
+        self.assertFalse(decoded[0].embedded_in_multi)
+        self.assertEqual(decoded[1].command, 0x07)
+        self.assertTrue(decoded[1].embedded_in_multi)
 
     def test_decode_multi_send_datagram_keeps_embedded_followup(self) -> None:
         endpoint = Endpoint(host='127.0.0.1', port=2223)
@@ -148,6 +151,13 @@ class CodecTests(unittest.TestCase):
         self.assertFalse(decoded[0].embedded_in_multi)
         self.assertEqual(decoded[1].command, 0x07)
         self.assertTrue(decoded[1].embedded_in_multi)
+
+    def test_codec_rejects_beta1_legacy_packet_without_snap_footer(self) -> None:
+        endpoint = Endpoint(host='127.0.0.1', port=2224)
+        legacy = b'\x00\x00\x00\x00\x81\x01d\x03\x00\x04\x00\x00\x00\xff\xff\xff\x00\x07\x00\x02'
+
+        with self.assertRaises(PacketDecodeError):
+            decode_datagram(legacy, endpoint)
 
 
 if __name__ == '__main__':

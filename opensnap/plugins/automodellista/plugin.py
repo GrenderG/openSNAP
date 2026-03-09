@@ -1,6 +1,6 @@
 """Auto Modellista game plugin."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 import struct
 
@@ -58,6 +58,9 @@ class AutoModellistaPlugin(GamePlugin):
     def __init__(self) -> None:
         # Retransmitted reliable create-room packets reuse sequence numbers.
         self._create_room_results: dict[tuple[int, int], int] = {}
+        # Reliable leave retries must replay the same wrapper sequence so the
+        # client treats them as duplicates instead of a fresh callback.
+        self._latest_reliable_leave_result: dict[tuple[int, int], tuple[int, SnapMessage]] = {}
         self._room_game_states: dict[int, RoomGameState] = {}
         # Track which post-game packet families each room member has reported
         # for the current game. Keys are room_id -> {session_id: bitmask}.
@@ -140,7 +143,17 @@ class AutoModellistaPlugin(GamePlugin):
         ]
 
     def _handle_query_attribute(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        if message.type_flags & FLAG_MULTI:
+        channel_type = message.type_flags & FLAG_CHANNEL_BITS
+
+        if (
+            message.embedded_in_multi
+            and channel_type == FLAG_CHANNEL_BITS
+            and len(message.payload) >= 8
+            and message.payload[4:8] == USER_ATTRIBUTE_TOKEN
+        ):
+            return []
+
+        if (message.type_flags & FLAG_MULTI) and channel_type == FLAG_CHANNEL_BITS:
             # Keep behavior where one multi-packet contains lobby USER counts.
             payload = self._build_multi_lobby_user_query_payload(context, message)
             type_flags = FLAG_CHANNEL_BITS | FLAG_RESPONSE | FLAG_MULTI
@@ -155,20 +168,22 @@ class AutoModellistaPlugin(GamePlugin):
                 )
             ]
 
-        lobby_id = get_u32(message.payload, 0)
-        users_in_lobby = 0
-        if _is_allowed_lobby_id(context, lobby_id):
-            users_in_lobby = context.sessions.count_users_in_lobby(lobby_id)
-        payload = struct.pack(
-            '>L4sL',
-            lobby_id,
-            USER_ATTRIBUTE_TOKEN,
-            users_in_lobby,
-        )
+        channel_id = get_u32(message.payload, 0)
+        users_in_channel = 0
+
+        if channel_type == FLAG_ROOM:
+            _prune_stale_room_members(context, channel_id)
+            room = context.rooms.get(channel_id)
+            if room is not None:
+                users_in_channel = len(room.members)
+        elif _is_allowed_lobby_id(context, channel_id):
+            users_in_channel = context.sessions.count_users_in_lobby(channel_id)
+
+        payload = struct.pack('>L4sL', channel_id, USER_ATTRIBUTE_TOKEN, users_in_channel)
         return [
             context.reply(
                 message,
-                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
+                type_flags=channel_type | FLAG_RESPONSE,
                 command=commands.CMD_QUERY_ATTRIBUTE,
                 payload=payload,
             )
@@ -417,6 +432,11 @@ class AutoModellistaPlugin(GamePlugin):
         session = _resolve_session(context, message)
         if session is None:
             return []
+
+        cached_result = self._cached_reliable_leave_result(message, session)
+        if cached_result is not None:
+            return [cached_result]
+
         acknowledge_number = _ack_for_request(message, session)
 
         if (message.type_flags & FLAG_CHANNEL_BITS) == FLAG_CHANNEL_BITS:
@@ -441,16 +461,16 @@ class AutoModellistaPlugin(GamePlugin):
             # the leave callback selector. Reusing the join selector here sends
             # the client down the join-room callback path ("Getting information").
             payload = struct.pack('>2L', GameTags.GAME_OVER, RESULT_WRAPPER_STATUS_OK)
-            return [
-                context.reply(
-                    message,
-                    type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
-                    command=commands.CMD_RESULT_WRAPPER,
-                    payload=payload,
-                    session_id=session.session_id,
-                    acknowledge_number=acknowledge_number,
-                )
-            ] + callbacks
+            result_wrapper = context.reply(
+                message,
+                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
+                command=commands.CMD_RESULT_WRAPPER,
+                payload=payload,
+                session_id=session.session_id,
+                acknowledge_number=acknowledge_number,
+            )
+            self._remember_reliable_leave_result(message, session, result_wrapper)
+            return [result_wrapper] + callbacks
 
         if (message.type_flags & FLAG_CHANNEL_BITS) == FLAG_ROOM:
             self._pending_room_joins.pop(session.session_id, None)
@@ -473,16 +493,16 @@ class AutoModellistaPlugin(GamePlugin):
             # flows. The post-game distinction is carried by the earlier room
             # transition packet (`0x8009`), not by changing the 0x28 selector.
             payload = struct.pack('>2L', GameTags.GAME_OVER, RESULT_WRAPPER_STATUS_OK)
-            return [
-                context.reply(
-                    message,
-                    type_flags=FLAG_ROOM | FLAG_RESPONSE,
-                    command=commands.CMD_RESULT_WRAPPER,
-                    payload=payload,
-                    session_id=session.session_id,
-                    acknowledge_number=acknowledge_number,
-                )
-            ] + callbacks
+            result_wrapper = context.reply(
+                message,
+                type_flags=FLAG_ROOM | FLAG_RESPONSE,
+                command=commands.CMD_RESULT_WRAPPER,
+                payload=payload,
+                session_id=session.session_id,
+                acknowledge_number=acknowledge_number,
+            )
+            self._remember_reliable_leave_result(message, session, result_wrapper)
+            return [result_wrapper] + callbacks
 
         _LOGGER.warning(
             'Rejecting leave command from %s:%d: unsupported channel type=0x%04x.',
@@ -491,6 +511,45 @@ class AutoModellistaPlugin(GamePlugin):
             message.type_flags,
         )
         return []
+
+    def _cached_reliable_leave_result(self, message: SnapMessage, session: Session) -> SnapMessage | None:
+        """Replay the original wrapper for an exact reliable leave retry."""
+
+        if (message.type_flags & FLAG_RELIABLE) == 0:
+            return None
+        if message.embedded_in_multi and message.sequence_number == 0:
+            return None
+
+        key = (session.session_id, message.type_flags & FLAG_CHANNEL_BITS)
+        cached = self._latest_reliable_leave_result.get(key)
+        if cached is None:
+            return None
+
+        cached_sequence, cached_result = cached
+        if cached_sequence != message.sequence_number:
+            return None
+
+        return replace(
+            cached_result,
+            endpoint=message.endpoint,
+            session_id=session.session_id,
+        )
+
+    def _remember_reliable_leave_result(
+        self,
+        message: SnapMessage,
+        session: Session,
+        result_wrapper: SnapMessage,
+    ) -> None:
+        """Remember one reliable leave wrapper for exact retry replay."""
+
+        if (message.type_flags & FLAG_RELIABLE) == 0:
+            return
+        if message.embedded_in_multi and message.sequence_number == 0:
+            return
+
+        key = (session.session_id, message.type_flags & FLAG_CHANNEL_BITS)
+        self._latest_reliable_leave_result[key] = (message.sequence_number, result_wrapper)
 
     def _handle_send(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         session = _resolve_session(context, message)
