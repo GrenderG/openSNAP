@@ -8,10 +8,9 @@ import time
 from opensnap.config import DEFAULT_TICK_INTERVAL_SECONDS, ServiceEndpointConfig
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.logging_utils import format_hexdump
-from opensnap.protocol import commands
 from opensnap.protocol.codec import PacketDecodeError, detect_footer_bytes
 from opensnap.protocol.constants import (
-    BARE_ACK_FLAGS,
+    FLAG_RESPONSE,
     FLAG_RELIABLE,
     FOOTER_BYTES,
 )
@@ -29,16 +28,17 @@ class _ReliablePending:
     datagram: bytes
     last_sent_at: float
     retransmit_attempts: int = 0
+    retry_cap_logged: bool = False
 
 
 class SnapUdpServer:
     """Blocking UDP server with periodic tick processing."""
 
-    _RETRANSMIT_INTERVAL_SECONDS = 0.25
+    _RETRANSMIT_INTERVAL_SECONDS = 0.20
+    _RETRY_CAP_INTERVAL_SECONDS = 1.0
     _MAX_RETRANSMIT_ATTEMPTS = 4
     _MAX_RETRANSMITS_PER_CYCLE = 128
     _MAX_PENDING_RELIABLE_PER_SESSION = 256
-    _ACK_FUTURE_SLACK = 512
 
     def __init__(
         self,
@@ -54,7 +54,6 @@ class SnapUdpServer:
         self._stopped = False
         self._logger = logging.getLogger(logger_name)
         self._reliable_pending: dict[tuple[str, int, int, int], _ReliablePending] = {}
-        self._last_sent_sequence: dict[tuple[str, int, int], int] = {}
         self._footer_bytes_by_endpoint: dict[tuple[str, int], bytes] = {}
 
     def run(self) -> None:
@@ -179,7 +178,6 @@ class SnapUdpServer:
                 format_hexdump(datagram),
             )
             udp_socket.sendto(datagram, (endpoint.host, endpoint.port))
-            self._note_sent_sequence(message)
             self._track_reliable(message, datagram, send_time)
 
     def _remember_footer_variant(self, payload: bytes, endpoint: Endpoint) -> None:
@@ -208,7 +206,7 @@ class SnapUdpServer:
             self._logger.error('Engine error from %s:%d: %s', endpoint.host, endpoint.port, error)
 
     def _process_transport_acks(self, payload: bytes, endpoint: Endpoint) -> None:
-        """Track transport ACK sources and clear pending reliable packets."""
+        """Retire pending reliable packets from response-path reverse ACKs."""
 
         try:
             messages = self._engine.decode_datagram(payload, endpoint)
@@ -216,40 +214,10 @@ class SnapUdpServer:
             return
 
         for message in messages:
-            is_bare_ack = (
-                message.command == commands.CMD_ACK
-                and (message.type_flags & BARE_ACK_FLAGS) == BARE_ACK_FLAGS
-            )
-            is_reliable_payload = (message.type_flags & FLAG_RELIABLE) != 0
-
-            # During active gameplay, both beta1 and release piggyback exact
-            # rUDP ACK numbers on ordinary reliable room/game packets (for
-            # example `0xa000 0x0f`), while still using bare ACKs as needed.
-            # `FLAG_RESPONSE` controls the explicit reverse-ACK bookkeeping
-            # path (`kkSetRevAck`), but the header acknowledge field remains a
-            # valid transport ACK source on any plausible reliable packet.
-            if not is_bare_ack and not is_reliable_payload:
+            if (message.type_flags & FLAG_RESPONSE) == 0:
                 continue
 
-            acknowledge_number = self._normalize_transport_ack(
-                endpoint,
-                message.session_id,
-                message.acknowledge_number,
-            )
-            if acknowledge_number is None:
-                self._logger.debug(
-                    (
-                        'Ignoring implausible transport ACK from %s:%d '
-                        '(sess=0x%08x ack=%d).'
-                    ),
-                    endpoint.host,
-                    endpoint.port,
-                    message.session_id,
-                    message.acknowledge_number,
-                )
-                continue
-
-            self._clear_reliable_pending(endpoint, message.session_id, acknowledge_number)
+            self._clear_reliable_pending(endpoint, message.session_id, message.acknowledge_number)
 
     def _track_reliable(self, message: SnapMessage, datagram: bytes, send_time: float) -> None:
         """Store outgoing reliable packets until acknowledged."""
@@ -305,32 +273,6 @@ class SnapUdpServer:
             max(dropped_sequences),
         )
 
-    def _normalize_transport_ack(
-        self,
-        endpoint: Endpoint,
-        session_id: int,
-        acknowledge_number: int,
-    ) -> int | None:
-        """Validate one transport ACK against the last sequence sent to that peer."""
-
-        last_sent = self._last_sent_sequence.get((endpoint.host, endpoint.port, session_id))
-        if last_sent is None:
-            return acknowledge_number
-
-        upper_bound = last_sent + self._ACK_FUTURE_SLACK
-        if acknowledge_number <= upper_bound:
-            return acknowledge_number
-
-        swapped = int.from_bytes(
-            acknowledge_number.to_bytes(4, byteorder='big', signed=False),
-            byteorder='little',
-            signed=False,
-        )
-        if swapped <= upper_bound:
-            return swapped
-
-        return None
-
     def _clear_reliable_pending(self, endpoint: Endpoint, session_id: int, acknowledge_number: int) -> None:
         """Clear one exactly acknowledged reliable packet for one peer/session."""
 
@@ -345,19 +287,8 @@ class SnapUdpServer:
         for key in keys_to_remove:
             self._reliable_pending.pop(key, None)
 
-    def _note_sent_sequence(self, message: SnapMessage) -> None:
-        """Remember the highest outbound sequence per endpoint/session."""
-
-        if (message.type_flags & FLAG_RELIABLE) == 0:
-            return
-
-        key = (message.endpoint.host, message.endpoint.port, message.session_id)
-        current = self._last_sent_sequence.get(key)
-        if current is None or message.sequence_number > current:
-            self._last_sent_sequence[key] = message.sequence_number
-
     def _retransmit_due(self, udp_socket: socket.socket) -> None:
-        """Retransmit due reliable packets and expire exhausted entries."""
+        """Retransmit due reliable packets."""
 
         if not self._reliable_pending:
             return
@@ -366,30 +297,30 @@ class SnapUdpServer:
         retransmit_count = 0
         deferred_due_packets = False
 
-        for key in sorted(self._reliable_pending):
+        for key in self._oldest_pending_keys_by_session():
             pending = self._reliable_pending.get(key)
             if pending is None:
                 continue
-            if (now - pending.last_sent_at) < self._RETRANSMIT_INTERVAL_SECONDS:
+            if (now - pending.last_sent_at) < self._retry_interval_seconds(pending):
                 continue
             if retransmit_count >= self._MAX_RETRANSMITS_PER_CYCLE:
                 deferred_due_packets = True
                 continue
             if pending.retransmit_attempts >= self._MAX_RETRANSMIT_ATTEMPTS:
-                self._logger.warning(
-                    (
-                        'Dropping reliable packet 0x%02x to %s:%d '
-                        '(sess=0x%08x seq=%d) after %d retry attempt(s).'
-                    ),
-                    pending.command,
-                    pending.endpoint.host,
-                    pending.endpoint.port,
-                    pending.session_id,
-                    pending.sequence_number,
-                    pending.retransmit_attempts,
-                )
-                self._reliable_pending.pop(key, None)
-                continue
+                if not pending.retry_cap_logged:
+                    self._logger.warning(
+                        (
+                            'Reliable packet 0x%02x to %s:%d '
+                            '(sess=0x%08x seq=%d) reached retry cap; '
+                            'switching to timeout retry cadence.'
+                        ),
+                        pending.command,
+                        pending.endpoint.host,
+                        pending.endpoint.port,
+                        pending.session_id,
+                        pending.sequence_number,
+                    )
+                    pending.retry_cap_logged = True
 
             self._logger.debug(
                 (
@@ -404,7 +335,8 @@ class SnapUdpServer:
                 pending.retransmit_attempts + 1,
             )
             udp_socket.sendto(pending.datagram, (pending.endpoint.host, pending.endpoint.port))
-            pending.retransmit_attempts += 1
+            if pending.retransmit_attempts < self._MAX_RETRANSMIT_ATTEMPTS:
+                pending.retransmit_attempts += 1
             pending.last_sent_at = now
             retransmit_count += 1
 
@@ -416,3 +348,23 @@ class SnapUdpServer:
                 ),
                 self._MAX_RETRANSMITS_PER_CYCLE,
             )
+
+    def _oldest_pending_keys_by_session(self) -> list[tuple[str, int, int, int]]:
+        """Return the oldest pending reliable packet per endpoint/session."""
+
+        oldest_keys: list[tuple[str, int, int, int]] = []
+        seen_sessions: set[tuple[str, int, int]] = set()
+        for key in sorted(self._reliable_pending):
+            session_key = key[:3]
+            if session_key in seen_sessions:
+                continue
+            seen_sessions.add(session_key)
+            oldest_keys.append(key)
+        return oldest_keys
+
+    def _retry_interval_seconds(self, pending: _ReliablePending) -> float:
+        """Return the binary-backed retry cadence for one pending packet."""
+
+        if pending.retransmit_attempts >= self._MAX_RETRANSMIT_ATTEMPTS:
+            return self._RETRY_CAP_INTERVAL_SECONDS
+        return self._RETRANSMIT_INTERVAL_SECONDS

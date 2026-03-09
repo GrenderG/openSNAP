@@ -5,10 +5,15 @@ import struct
 
 from opensnap.core.context import HandlerContext
 from opensnap.plugins.automodellista import AutoModellistaPlugin
-from opensnap.plugins.automodellista.plugin import USER_ATTRIBUTE_TOKEN, _ack_for_session, _prune_stale_room_members
+from opensnap.plugins.automodellista.plugin import (
+    USER_ATTRIBUTE_TOKEN,
+    _ack_for_session,
+    _is_allowed_lobby_id,
+    _prune_stale_room_members,
+)
 from opensnap.protocol import commands
 from opensnap.protocol.codec import PacketDecodeError, decode_datagram as decode_snap_datagram, encode_messages as encode_snap_messages
-from opensnap.protocol.constants import FLAG_CHANNEL_BITS, FLAG_RESPONSE, FLAG_ROOM
+from opensnap.protocol.constants import FLAG_CHANNEL_BITS, FLAG_MULTI, FLAG_RESPONSE, FLAG_ROOM
 from opensnap.protocol.fields import get_len_prefixed_string, get_u16, get_u32
 from opensnap.protocol.models import Endpoint, SnapMessage, WIRE_FORMAT_AM_BETA1_LEGACY, WIRE_FORMAT_SNAP
 
@@ -56,6 +61,33 @@ class AutoModellistaBeta1Plugin(AutoModellistaPlugin):
             room_id=room_id,
             excluding_endpoint=message.endpoint,
         )
+
+    def _handle_query_attribute(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
+        channel_type = message.type_flags & FLAG_CHANNEL_BITS
+        if (
+            channel_type != FLAG_CHANNEL_BITS
+            or (message.type_flags & FLAG_MULTI) == 0
+            or len(message.payload) < 8
+        ):
+            return super()._handle_query_attribute(context, message)
+        if message.payload[4:8] != USER_ATTRIBUTE_TOKEN:
+            return super()._handle_query_attribute(context, message)
+
+        lobby_id = get_u32(message.payload, 0)
+        users_in_lobby = 0
+        if _is_allowed_lobby_id(context, lobby_id):
+            users_in_lobby = context.sessions.count_users_in_lobby(lobby_id)
+
+        # Beta1 keeps lobby USER queries on the normal single-reply callback
+        # path even when they ride inside one top-level multi datagram.
+        return [
+            context.reply(
+                message,
+                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
+                command=commands.CMD_QUERY_ATTRIBUTE,
+                payload=struct.pack('>L4sL', lobby_id, USER_ATTRIBUTE_TOKEN, users_in_lobby),
+            )
+        ]
 
     def decode_datagram(self, payload: bytes, endpoint: Endpoint) -> list[SnapMessage]:
         """Decode SNAP datagrams plus the beta1 legacy room-entry packet family."""

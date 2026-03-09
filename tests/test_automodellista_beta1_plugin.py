@@ -9,8 +9,7 @@ from opensnap.config import StorageConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.plugins.automodellista_beta1 import AutoModellistaBeta1Plugin
 from opensnap.protocol import commands
-from opensnap.protocol.codec import decode_datagram
-from opensnap.protocol.constants import FLAG_CHANNEL_BITS, FLAG_LOBBY, FLAG_MULTI, FLAG_RELIABLE, FLAG_RESPONSE, FLAG_ROOM
+from opensnap.protocol.constants import FLAG_CHANNEL_BITS, FLAG_MULTI, FLAG_RELIABLE, FLAG_RESPONSE, FLAG_ROOM
 from opensnap.protocol.models import Endpoint, SnapMessage, WIRE_FORMAT_AM_BETA1_LEGACY
 
 LEGACY_ROOM_ENTRY_COMMAND = 0x6406
@@ -161,53 +160,47 @@ class AutoModellistaBeta1PluginTests(unittest.TestCase):
         self.assertEqual(result.messages[0].payload, struct.pack('>L4sL', room_id, b'USER', 1))
         self.assertEqual(struct.unpack_from('>L', result.messages[0].payload, 8)[0], 1)
 
-    def test_multi_lobby_query_attribute_reply_keeps_follow_up_headers_beta1_compatible(self) -> None:
-        config = replace(
-            self._config,
-            server=replace(self._config.server, max_lobbies=2),
-        )
-        engine = SnapProtocolEngine(
-            config=config,
-            plugin=AutoModellistaBeta1Plugin(),
-        )
-        self.addCleanup(engine.close)
-
+    def test_multi_lobby_user_query_after_room_exit_uses_normal_single_reply(self) -> None:
         endpoint = Endpoint(host='127.0.0.1', port=51116)
-        session_id = _create_session_via_login(engine, endpoint, 'test')
+        session_id = _create_session_via_login(self._engine, endpoint, 'test')
+        _join_lobby(self._engine, endpoint, session_id, lobby_id=1, sequence=1)
 
-        first = SnapMessage(
+        query = SnapMessage(
             endpoint=endpoint,
             type_flags=FLAG_CHANNEL_BITS | FLAG_MULTI | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_QUERY_ATTRIBUTE,
             session_id=session_id,
-            sequence_number=2,
+            sequence_number=12,
             acknowledge_number=0,
             payload=struct.pack('>L4s', 1, b'USER'),
             size_word_override=(FLAG_CHANNEL_BITS | FLAG_MULTI | FLAG_RELIABLE) | 0x0018,
         )
-        second = SnapMessage(
+        status = SnapMessage(
             endpoint=endpoint,
             type_flags=FLAG_CHANNEL_BITS | FLAG_RELIABLE,
             packet_number=1,
-            command=commands.CMD_QUERY_ATTRIBUTE,
+            command=commands.CMD_CHANGE_USER_STATUS,
             session_id=session_id,
             sequence_number=0,
             acknowledge_number=0,
-            payload=struct.pack('>L4s', 2, b'USER'),
+            payload=struct.pack('>L', 0xF7C00001),
         )
 
-        result = engine.handle_datagram(engine.encode_messages([first, second]), endpoint)
+        result = self._engine.handle_datagram(self._engine.encode_messages([query, status]), endpoint)
         self.assertFalse(result.errors)
-        self.assertEqual(len(result.messages), 1)
+        self.assertEqual(len(result.messages), 2)
 
-        decoded = decode_datagram(engine.encode_messages(result.messages), endpoint)
-        self.assertEqual(len(decoded), 2)
-        self.assertEqual(decoded[0].type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE | FLAG_MULTI)
-        self.assertEqual(decoded[0].acknowledge_number, 2)
-        self.assertEqual(decoded[1].type_flags, FLAG_LOBBY | FLAG_RESPONSE)
-        self.assertEqual(decoded[1].sequence_number, 0)
-        self.assertEqual(decoded[1].acknowledge_number, 2)
+        query_reply = result.messages[0]
+        self.assertEqual(query_reply.command, commands.CMD_QUERY_ATTRIBUTE)
+        self.assertEqual(query_reply.type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE)
+        self.assertEqual(query_reply.acknowledge_number, 12)
+        self.assertEqual(query_reply.payload, struct.pack('>L4sL', 1, b'USER', 1))
+
+        status_reply = result.messages[1]
+        self.assertEqual(status_reply.command, commands.CMD_RESULT_WRAPPER)
+        self.assertEqual(status_reply.acknowledge_number, 12)
+        self.assertEqual(struct.unpack('>2L', status_reply.payload), (commands.CMD_CHANGE_USER_STATUS, 0))
 
     def test_room_join_notifies_host_with_session_id_at_payload_plus_0x10(self) -> None:
         endpoint_one = Endpoint(host='127.0.0.1', port=51121)

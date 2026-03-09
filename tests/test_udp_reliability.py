@@ -59,7 +59,6 @@ class UdpReliabilityTests(unittest.TestCase):
                 session_id=session_id,
                 sequence_number=sequence,
             )
-            server._note_sent_sequence(outgoing)
             server._track_reliable(outgoing, b'packet', 0.0)
 
         incoming = SnapMessage(
@@ -81,7 +80,39 @@ class UdpReliabilityTests(unittest.TestCase):
         )
         self.assertEqual(remaining_sequences, [10])
 
-    def test_non_response_reliable_payload_ack_clears_matching_pending(self) -> None:
+    def test_response_ack_zero_clears_sequence_zero_pending(self) -> None:
+        server = self._server()
+        endpoint = Endpoint(host='127.0.0.1', port=50013)
+        session_id = 0x0BADB002
+
+        for sequence in (0, 1):
+            outgoing = self._reliable_message(
+                endpoint=endpoint,
+                session_id=session_id,
+                sequence_number=sequence,
+            )
+            server._track_reliable(outgoing, b'packet', 0.0)
+
+        incoming = SnapMessage(
+            endpoint=endpoint,
+            type_flags=FLAG_ROOM | FLAG_RESPONSE,
+            packet_number=0,
+            command=commands.CMD_ACK,
+            session_id=session_id,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=b'',
+        )
+        server._process_transport_acks(encode_messages([incoming]), endpoint)
+
+        remaining_sequences = sorted(
+            sequence
+            for host, port, pending_session, sequence in server._reliable_pending
+            if host == endpoint.host and port == endpoint.port and pending_session == session_id
+        )
+        self.assertEqual(remaining_sequences, [1])
+
+    def test_non_response_reliable_payload_ack_is_ignored_for_pending_retirement(self) -> None:
         server = self._server()
         endpoint = Endpoint(host='127.0.0.1', port=50008)
         session_id = 0x1234ABCD
@@ -92,7 +123,6 @@ class UdpReliabilityTests(unittest.TestCase):
                 session_id=session_id,
                 sequence_number=sequence,
             )
-            server._note_sent_sequence(outgoing)
             server._track_reliable(outgoing, b'packet', 0.0)
 
         incoming = SnapMessage(
@@ -112,7 +142,7 @@ class UdpReliabilityTests(unittest.TestCase):
             for host, port, pending_session, sequence in server._reliable_pending
             if host == endpoint.host and port == endpoint.port and pending_session == session_id
         )
-        self.assertEqual(remaining_sequences, [30])
+        self.assertEqual(remaining_sequences, [30, 31])
 
     def test_bare_ack_clears_matching_pending_packet(self) -> None:
         server = self._server()
@@ -125,7 +155,6 @@ class UdpReliabilityTests(unittest.TestCase):
                 session_id=session_id,
                 sequence_number=sequence,
             )
-            server._note_sent_sequence(outgoing)
             server._track_reliable(outgoing, b'packet', 0.0)
 
         incoming = SnapMessage(
@@ -147,7 +176,7 @@ class UdpReliabilityTests(unittest.TestCase):
         )
         self.assertEqual(remaining_sequences, [40])
 
-    def test_implausible_ack_is_ignored(self) -> None:
+    def test_unknown_response_ack_is_ignored(self) -> None:
         server = self._server()
         endpoint = Endpoint(host='127.0.0.1', port=50001)
         session_id = 0x11112222
@@ -158,7 +187,6 @@ class UdpReliabilityTests(unittest.TestCase):
                 session_id=session_id,
                 sequence_number=sequence,
             )
-            server._note_sent_sequence(outgoing)
             server._track_reliable(outgoing, b'packet', 0.0)
 
         incoming = SnapMessage(
@@ -175,7 +203,7 @@ class UdpReliabilityTests(unittest.TestCase):
 
         self.assertEqual(len(server._reliable_pending), 2)
 
-    def test_byte_swapped_ack_is_accepted_when_plausible(self) -> None:
+    def test_byte_swapped_ack_is_not_interpreted(self) -> None:
         server = self._server()
         endpoint = Endpoint(host='127.0.0.1', port=50004)
         session_id = 0x51525354
@@ -186,10 +214,8 @@ class UdpReliabilityTests(unittest.TestCase):
                 session_id=session_id,
                 sequence_number=sequence,
             )
-            server._note_sent_sequence(outgoing)
             server._track_reliable(outgoing, b'packet', 0.0)
 
-        # 0xE6010000 byte-swaps to 0x000001E6 (486), which is plausible.
         incoming = SnapMessage(
             endpoint=endpoint,
             type_flags=FLAG_ROOM | FLAG_RELIABLE | FLAG_RESPONSE,
@@ -207,7 +233,7 @@ class UdpReliabilityTests(unittest.TestCase):
             for host, port, pending_session, sequence in server._reliable_pending
             if host == endpoint.host and port == endpoint.port and pending_session == session_id
         )
-        self.assertEqual(remaining_sequences, [485])
+        self.assertEqual(remaining_sequences, [485, 486])
 
     def test_ack_with_mismatched_session_id_does_not_clear_pending(self) -> None:
         server = self._server()
@@ -220,7 +246,6 @@ class UdpReliabilityTests(unittest.TestCase):
             session_id=first_session_id,
             sequence_number=77,
         )
-        server._note_sent_sequence(first_outgoing)
         server._track_reliable(first_outgoing, b'packet-first', 0.0)
 
         incoming = SnapMessage(
@@ -250,7 +275,6 @@ class UdpReliabilityTests(unittest.TestCase):
                     session_id=session_id,
                     sequence_number=sequence,
                 )
-                server._note_sent_sequence(outgoing)
                 server._track_reliable(outgoing, b'packet', 0.0)
         finally:
             server._MAX_PENDING_RELIABLE_PER_SESSION = old_limit
@@ -262,7 +286,7 @@ class UdpReliabilityTests(unittest.TestCase):
         )
         self.assertEqual(kept_sequences, [3, 4, 5])
 
-    def test_reliable_packet_drops_after_retry_limit(self) -> None:
+    def test_retry_capped_packet_uses_timeout_cadence(self) -> None:
         server = self._server()
         endpoint = Endpoint(host='127.0.0.1', port=50010)
         session_id = 0x10101010
@@ -271,7 +295,6 @@ class UdpReliabilityTests(unittest.TestCase):
             session_id=session_id,
             sequence_number=77,
         )
-        server._note_sent_sequence(outgoing)
         server._track_reliable(outgoing, b'packet', 0.0)
 
         key = (endpoint.host, endpoint.port, session_id, 77)
@@ -279,26 +302,67 @@ class UdpReliabilityTests(unittest.TestCase):
         pending.retransmit_attempts = server._MAX_RETRANSMIT_ATTEMPTS
 
         fake_socket = _FakeSocket()
-        with patch('opensnap.udp_server.time.monotonic', return_value=101.0):
+        pending.last_sent_at = 100.3
+        with patch('opensnap.udp_server.time.monotonic', return_value=100.5):
             server._retransmit_due(fake_socket)  # type: ignore[arg-type]
 
         self.assertEqual(len(fake_socket.sent), 0)
-        self.assertNotIn(key, server._reliable_pending)
+        self.assertIn(key, server._reliable_pending)
+
+        with patch('opensnap.udp_server.time.monotonic', return_value=101.4):
+            server._retransmit_due(fake_socket)  # type: ignore[arg-type]
+
+        self.assertEqual(len(fake_socket.sent), 1)
+        self.assertIn(key, server._reliable_pending)
+
+    def test_retransmit_uses_oldest_pending_per_session_only(self) -> None:
+        server = self._server()
+        endpoint = Endpoint(host='127.0.0.1', port=50011)
+        session_id = 0x20202020
+
+        oldest = self._reliable_message(
+            endpoint=endpoint,
+            session_id=session_id,
+            sequence_number=100,
+        )
+        newer = self._reliable_message(
+            endpoint=endpoint,
+            session_id=session_id,
+            sequence_number=101,
+        )
+        server._track_reliable(oldest, b'oldest', 0.0)
+        server._track_reliable(newer, b'newer', 0.0)
+
+        oldest_key = (endpoint.host, endpoint.port, session_id, 100)
+        newer_key = (endpoint.host, endpoint.port, session_id, 101)
+        server._reliable_pending[oldest_key].retransmit_attempts = server._MAX_RETRANSMIT_ATTEMPTS
+        server._reliable_pending[newer_key].retransmit_attempts = server._MAX_RETRANSMIT_ATTEMPTS
+
+        fake_socket = _FakeSocket()
+        with patch('opensnap.udp_server.time.monotonic', return_value=101.0):
+            server._retransmit_due(fake_socket)  # type: ignore[arg-type]
+
+        self.assertIn(oldest_key, server._reliable_pending)
+        self.assertIn(newer_key, server._reliable_pending)
+        self.assertEqual(len(fake_socket.sent), 1)
+        self.assertEqual(fake_socket.sent[0][0], b'oldest')
 
     def test_retransmit_budget_caps_per_cycle(self) -> None:
         server = self._server()
         endpoint = Endpoint(host='127.0.0.1', port=50003)
-        session_id = 0x01020304
         old_budget = server._MAX_RETRANSMITS_PER_CYCLE
         server._MAX_RETRANSMITS_PER_CYCLE = 2
         try:
-            for sequence in (1, 2, 3, 4, 5):
+            for session_id, sequence in (
+                (0x01020304, 1),
+                (0x01020305, 1),
+                (0x01020306, 1),
+            ):
                 outgoing = self._reliable_message(
                     endpoint=endpoint,
                     session_id=session_id,
                     sequence_number=sequence,
                 )
-                server._note_sent_sequence(outgoing)
                 server._track_reliable(outgoing, b'packet', 0.0)
 
             fake_socket = _FakeSocket()
