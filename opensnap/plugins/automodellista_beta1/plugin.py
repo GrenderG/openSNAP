@@ -12,10 +12,24 @@ from opensnap.plugins.automodellista.plugin import (
     _prune_stale_room_members,
 )
 from opensnap.protocol import commands
-from opensnap.protocol.codec import PacketDecodeError, decode_datagram as decode_snap_datagram, encode_messages as encode_snap_messages
-from opensnap.protocol.constants import FLAG_CHANNEL_BITS, FLAG_MULTI, FLAG_RESPONSE, FLAG_ROOM
+from opensnap.protocol.codec import (
+    PacketDecodeError,
+    decode_datagram as decode_snap_datagram,
+    encode_messages as encode_snap_messages,
+)
+from opensnap.protocol.constants import (
+    FLAG_CHANNEL_BITS,
+    FLAG_MULTI,
+    FLAG_RESPONSE,
+    FLAG_ROOM,
+)
 from opensnap.protocol.fields import get_len_prefixed_string, get_u16, get_u32
-from opensnap.protocol.models import Endpoint, SnapMessage, WIRE_FORMAT_AM_BETA1_LEGACY, WIRE_FORMAT_SNAP
+from opensnap.protocol.models import (
+    Endpoint,
+    SnapMessage,
+    WIRE_FORMAT_AM_BETA1_LEGACY,
+    WIRE_FORMAT_SNAP,
+)
 
 _LOGGER = logging.getLogger('opensnap.plugins.automodellista_beta1')
 
@@ -68,9 +82,8 @@ class AutoModellistaBeta1Plugin(AutoModellistaPlugin):
             channel_type != FLAG_CHANNEL_BITS
             or (message.type_flags & FLAG_MULTI) == 0
             or len(message.payload) < 8
+            or message.payload[4:8] != USER_ATTRIBUTE_TOKEN
         ):
-            return super()._handle_query_attribute(context, message)
-        if message.payload[4:8] != USER_ATTRIBUTE_TOKEN:
             return super()._handle_query_attribute(context, message)
 
         lobby_id = get_u32(message.payload, 0)
