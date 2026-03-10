@@ -29,11 +29,11 @@ class AutoModellistaRuleSerializationTests(unittest.TestCase):
         self.assertEqual(
             build_am_rule_csv_rows(),
             (
-                '00000a00000800000100000000000000000000280000000000000000',
-                '00000a00000800000100000000000000000000280000000000000000',
-                '00000a00000800000100000000000000000000280000000000000000',
-                '00000a00000300000100000000000000000000280000000000000100',
-                '00000000000000000000000000000000000000110000000000000000',
+                '00000a0000080f000100000000000000000000280000000000000000',
+                '00000a0000080f000100000000000000000000280000000000000000',
+                '00000a0000080f000100000000000000000000280000000000000000',
+                '00000a0000030f000100000000000000000000280000000000000100',
+                '0000000000000f000000000000000000000000110000000000000000',
                 performance.hex(),
                 '00',
             ),
@@ -46,7 +46,7 @@ class AutoModellistaRuleSerializationTests(unittest.TestCase):
         self.assertIn('<!-- 3 Event / Clubmeeting runtime -->', page)
         self.assertIn('<!-- 4 Clubmeeting (stock reference) -->', page)
         self.assertIn('<!-- 5 Performance -->', page)
-        self.assertIn('"00000a00000300000100000000000000000000280000000000000100",', page)
+        self.assertIn('"00000a0000030f000100000000000000000000280000000000000100",', page)
         self.assertTrue(page.endswith('</html>\n'))
 
     def test_serializer_supports_template_and_explicit_byte_overrides(self) -> None:
@@ -69,6 +69,10 @@ class AutoModellistaRuleSerializationTests(unittest.TestCase):
             field_overrides={'max_people_default_count': 0x08},
         )
         self.assertEqual(row[19], 0x28)
+
+    def test_serializer_emits_stock_finish_grace_seconds_at_byte_6(self) -> None:
+        row = serialize_am_rule_row(template='normal')
+        self.assertEqual(row[6], 0x0F)
 
     def test_serializer_rejects_out_of_range_max_people_default_count(self) -> None:
         with self.assertRaises(ValueError):
@@ -136,9 +140,9 @@ class AutoModellistaBeta1RuleSerializationTests(unittest.TestCase):
         self.assertEqual(
             build_ambeta1_rule_csv_rows(),
             (
-                '00000a0000080000010000000000000000280000000000000000',
-                '00000a0000080000010000000000000000280000000000000000',
-                '00000a0000080000010000000000000000280000000000000000',
+                '00000a0000080f00010000000000000000280000000000000000',
+                '00000a0000080f00010000000000000000280000000000000000',
+                '00000a0000080f00010000000000000000280000000000000000',
             ),
         )
 
@@ -147,7 +151,7 @@ class AutoModellistaBeta1RuleSerializationTests(unittest.TestCase):
         self.assertIn('<!--AM-USA-GAME-RULE-->', page)
         self.assertIn('<!-- 0 Mountain -->', page)
         self.assertIn('<!-- 2 Circuit -->', page)
-        self.assertIn('"00000a0000080000010000000000000000280000000000000000"', page)
+        self.assertIn('"00000a0000080f00010000000000000000280000000000000000"', page)
         self.assertTrue(page.endswith('</html>\n'))
 
     def test_beta1_serializer_packs_player_defaults_at_offset_17(self) -> None:
@@ -164,6 +168,10 @@ class AutoModellistaBeta1RuleSerializationTests(unittest.TestCase):
             field_overrides={'max_people_default_count': 0x08},
         )
         self.assertEqual(row[17], 0x28)
+
+    def test_beta1_serializer_emits_stock_finish_grace_seconds_at_byte_6(self) -> None:
+        row = serialize_ambeta1_rule_row(template='normal')
+        self.assertEqual(row[6], 0x0F)
 
 
 if __name__ == '__main__':

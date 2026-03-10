@@ -7,6 +7,7 @@ from opensnap_web.games.automodellista import (
     AM_RULE_DEFAULT_INDEX_STANDARD_MAX_PEOPLE,
     AM_RULE_DEFAULT_INDEX_STANDARD_NEEDED_PLAYERS,
     AM_RULE_EDIT_MASK_STOCK_EDITABLE,
+    AM_RULE_FINISH_GRACE_SECONDS_STOCK,
     AM_RULE_LAP_SEED_STOCK,
     AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE,
     AutoModellistaWebModule,
@@ -46,6 +47,13 @@ AM_BETA1_RULE_ROW_FIELDS = {
         'offset': 2,
         'meaning': 'Patched in `To_ReadyBattle` from current course selection mapping.',
     },
+    'finish_grace_seconds': {
+        'offset': 6,
+        'meaning': (
+            'Post-first-finish grace timer in seconds. `netmsg_trans_netrule` '
+            'stores `-1` when this byte is zero, otherwise `seconds * 60` frames.'
+        ),
+    },
     'lap_seed': {
         'offset': 5,
         'meaning': 'Patched in `To_ReadyBattle` from lobby rule state (+1).',
@@ -64,12 +72,14 @@ AM_BETA1_RULE_ROW_FIELDS = {
 }
 
 AM_BETA1_RULE_OFFSET_COURSE_MODE_SEED = int(AM_BETA1_RULE_ROW_FIELDS['course_mode_seed']['offset'])
+AM_BETA1_RULE_OFFSET_FINISH_GRACE_SECONDS = int(AM_BETA1_RULE_ROW_FIELDS['finish_grace_seconds']['offset'])
 AM_BETA1_RULE_OFFSET_LAP_SEED = int(AM_BETA1_RULE_ROW_FIELDS['lap_seed']['offset'])
 AM_BETA1_RULE_OFFSET_EDIT_MASK = int(AM_BETA1_RULE_ROW_FIELDS['edit_mask']['offset'])
 AM_BETA1_RULE_OFFSET_PLAYERS_PACKED = int(AM_BETA1_RULE_ROW_FIELDS['players_packed']['offset'])
 
 AM_BETA1_RULE_SCALAR_FIELD_OFFSETS = {
     'course_mode_seed': AM_BETA1_RULE_OFFSET_COURSE_MODE_SEED,
+    'finish_grace_seconds': AM_BETA1_RULE_OFFSET_FINISH_GRACE_SECONDS,
     'lap_seed': AM_BETA1_RULE_OFFSET_LAP_SEED,
     'edit_mask': AM_BETA1_RULE_OFFSET_EDIT_MASK,
 }
@@ -82,6 +92,7 @@ AM_BETA1_RULE_PACKED_FIELD_MAX_PEOPLE_DEFAULT_COUNT = 'max_people_default_count'
 AM_BETA1_RULE_KNOWN_OFFSETS = frozenset(
     (
         AM_BETA1_RULE_OFFSET_COURSE_MODE_SEED,
+        AM_BETA1_RULE_OFFSET_FINISH_GRACE_SECONDS,
         AM_BETA1_RULE_OFFSET_LAP_SEED,
         AM_BETA1_RULE_OFFSET_EDIT_MASK,
         AM_BETA1_RULE_OFFSET_PLAYERS_PACKED,
@@ -236,6 +247,7 @@ AM_BETA1_RULE_TEMPLATE_NAME_NORMAL = 'normal'
 # Known semantic defaults:
 # - +2  course_mode_seed = 0x0A
 # - +5  lap_seed         = 0x08
+# - +6  finish_grace_seconds = 0x0F
 # - +8  edit_mask        = 0x01
 # - +17 players_packed   = 0x24 (needed=2, max_people=4)
 #
@@ -249,6 +261,7 @@ AM_BETA1_RULE_TEMPLATE_NAME_NORMAL = 'normal'
 AM_BETA1_RULE_TEMPLATE_NORMAL = {
     'course_mode_seed': AM_RULE_COURSE_MODE_SEED_STOCK,
     'lap_seed': AM_RULE_LAP_SEED_STOCK,
+    'finish_grace_seconds': AM_RULE_FINISH_GRACE_SECONDS_STOCK,
     'edit_mask': AM_RULE_EDIT_MASK_STOCK_EDITABLE,
     'needed_players_default': AM_RULE_DEFAULT_INDEX_STANDARD_NEEDED_PLAYERS,
     'max_people_default': AM_RULE_DEFAULT_INDEX_STANDARD_MAX_PEOPLE,

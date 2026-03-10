@@ -73,6 +73,15 @@ AM_RULE_ROW_FIELDS = {
         'format': 'u8',
         'meaning': 'Course mode seed selected by menu/runtime mapping logic.',
     },
+    'finish_grace_seconds': {
+        'offset': 6,
+        'size': 1,
+        'format': 'u8(seconds)',
+        'meaning': (
+            'Post-first-finish grace timer in seconds. `netmsg_trans_netrule` '
+            'stores `-1` when this byte is zero, otherwise `seconds * 60` frames.'
+        ),
+    },
     'lap_seed': {
         'offset': 5,
         'size': 1,
@@ -100,6 +109,7 @@ AM_RULE_ROW_FIELDS = {
 }
 
 AM_RULE_OFFSET_COURSE_MODE_SEED = int(AM_RULE_ROW_FIELDS['course_mode_seed']['offset'])
+AM_RULE_OFFSET_FINISH_GRACE_SECONDS = int(AM_RULE_ROW_FIELDS['finish_grace_seconds']['offset'])
 AM_RULE_OFFSET_LAP_SEED = int(AM_RULE_ROW_FIELDS['lap_seed']['offset'])
 AM_RULE_OFFSET_EDIT_MASK = int(AM_RULE_ROW_FIELDS['edit_mask']['offset'])
 AM_RULE_OFFSET_PLAYERS_PACKED = int(AM_RULE_ROW_FIELDS['players_packed']['offset'])
@@ -110,6 +120,7 @@ AM_RULE_OFFSET_EVENT_FLAG = int(AM_RULE_ROW_FIELDS['event_flag']['offset'])
 AM_RULE_KNOWN_OFFSETS = frozenset(
     (
         AM_RULE_OFFSET_COURSE_MODE_SEED,
+        AM_RULE_OFFSET_FINISH_GRACE_SECONDS,
         AM_RULE_OFFSET_LAP_SEED,
         AM_RULE_OFFSET_EDIT_MASK,
         AM_RULE_OFFSET_PLAYERS_PACKED,
@@ -123,6 +134,7 @@ AM_RULE_UNKNOWN_OFFSETS = tuple(
 # Semantic scalar fields map to one byte each.
 AM_RULE_SCALAR_FIELD_OFFSETS = {
     'course_mode_seed': AM_RULE_OFFSET_COURSE_MODE_SEED,
+    'finish_grace_seconds': AM_RULE_OFFSET_FINISH_GRACE_SECONDS,
     'lap_seed': AM_RULE_OFFSET_LAP_SEED,
     'edit_mask': AM_RULE_OFFSET_EDIT_MASK,
     'event_flag': AM_RULE_OFFSET_EVENT_FLAG,
@@ -140,6 +152,7 @@ AM_RULE_PACKED_FIELD_MAX_PEOPLE_DEFAULT_COUNT = 'max_people_default_count'
 # Stock constants from observed AM-USA-GAME-RULE seed rows.
 AM_RULE_COURSE_MODE_SEED_STOCK = 0x0A
 AM_RULE_LAP_SEED_STOCK = 0x08
+AM_RULE_FINISH_GRACE_SECONDS_STOCK = 0x0F
 # Event profile uses a separate lap branch in `set_netrule_normal`:
 # - reads `BsGameRule[row3].byte+5`
 # - subtracts 1
@@ -196,12 +209,14 @@ AM_RULE_TEMPLATE_NAME_BLANK = 'blank'
 # Byte-level defaults:
 # - +2  (`course_mode_seed`) = 0x0A
 # - +5  (`lap_seed`) = 0x08
+# - +6  (`finish_grace_seconds`) = 0x0F
 # - +8  (`edit_mask`) = 0x01
 # - +19 (`players_packed`) high/low defaults = 0x2/0x4 -> packed 0x24
 # - +26 (`event_flag`) = 0
 AM_RULE_TEMPLATE_NORMAL = {
     'course_mode_seed': AM_RULE_COURSE_MODE_SEED_STOCK,
     'lap_seed': AM_RULE_LAP_SEED_STOCK,
+    'finish_grace_seconds': AM_RULE_FINISH_GRACE_SECONDS_STOCK,
     'edit_mask': AM_RULE_EDIT_MASK_STOCK_EDITABLE,
     'needed_players_default': AM_RULE_DEFAULT_INDEX_STANDARD_NEEDED_PLAYERS,
     'max_people_default': AM_RULE_DEFAULT_INDEX_STANDARD_MAX_PEOPLE,
@@ -477,6 +492,7 @@ AM_GAME_RULE_CONFIG = {
             'label': 'Clubmeeting (stock reference)',
             'template': AM_RULE_TEMPLATE_NAME_BLANK,
             'field_overrides': {
+                'finish_grace_seconds': AM_RULE_FINISH_GRACE_SECONDS_STOCK,
                 # Stock AM-USA-GAME-RULE payload uses packed defaults 0x11.
                 'needed_players_default': AM_RULE_DEFAULT_INDEX_CLUBMEETING_NEEDED_PLAYERS,
                 'max_people_default': AM_RULE_DEFAULT_INDEX_CLUBMEETING_MAX_PEOPLE,
