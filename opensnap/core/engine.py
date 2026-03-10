@@ -27,6 +27,7 @@ from opensnap.protocol.constants import (
 )
 from opensnap.protocol.models import Endpoint, SnapMessage, WIRE_FORMAT_SNAP
 from opensnap.storage.factory import create_storage
+from opensnap.core.sessions import Session
 
 
 @dataclass(slots=True)
@@ -267,6 +268,37 @@ class SnapProtocolEngine:
         if self._plugin is None:
             return []
         return self._plugin.on_tick(self._context)
+
+    def handle_transport_timeout(self, endpoint: Endpoint, session_id: int) -> list[SnapMessage]:
+        """Tear down one timed-out session and return any cleanup callbacks."""
+
+        session = self.resolve_session(endpoint, session_id)
+        if session is None:
+            return []
+
+        self._logger.warning(
+            'Timing out session 0x%08x for %s:%d.',
+            session.session_id,
+            session.endpoint.host,
+            session.endpoint.port,
+        )
+
+        messages: list[SnapMessage] = []
+        if self._plugin is not None:
+            messages.extend(self._plugin.on_session_timeout(self._context, session))
+        elif session.room_id > 0:
+            self._rooms.leave(session.room_id, session.session_id)
+
+        self._sessions.remove(session.session_id)
+        return messages
+
+    def resolve_session(self, endpoint: Endpoint, session_id: int) -> Session | None:
+        """Resolve one session by id first, then by bound endpoint."""
+
+        session = self._sessions.get(session_id)
+        if session is not None:
+            return session
+        return self._sessions.get_by_endpoint(endpoint)
 
     def close(self) -> None:
         """Close engine-owned resources."""

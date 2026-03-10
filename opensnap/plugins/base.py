@@ -2,6 +2,7 @@
 
 from opensnap.core.context import HandlerContext
 from opensnap.core.router import CommandRouter
+from opensnap.core.sessions import Session
 from opensnap.protocol.codec import decode_datagram as decode_snap_datagram, encode_messages as encode_snap_messages
 from opensnap.protocol.enums import GameTags, PostGameReportMask, RoomSubcommand
 from opensnap.protocol.models import Endpoint, SnapMessage
@@ -21,6 +22,12 @@ class GamePlugin:
         """Run periodic plugin work."""
 
         del context
+        return []
+
+    def on_session_timeout(self, context: HandlerContext, session: Session) -> list[SnapMessage]:
+        """Handle one transport-timed-out session."""
+
+        del context, session
         return []
 
     def decode_datagram(self, payload: bytes, endpoint: Endpoint) -> list[SnapMessage]:

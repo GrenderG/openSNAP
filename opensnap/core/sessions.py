@@ -69,6 +69,14 @@ class SessionRegistry:
         self._id_by_endpoint[endpoint] = session_id
         return session
 
+    def remove(self, session_id: int) -> None:
+        """Remove one session from all lookup tables."""
+
+        session = self._by_id.pop(session_id, None)
+        if session is None:
+            return
+        self._id_by_endpoint.pop(session.endpoint, None)
+
     def get(self, session_id: int) -> Session | None:
         """Get session by id."""
 

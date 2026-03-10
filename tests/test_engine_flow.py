@@ -10,7 +10,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.decrepit.ciphers import algorithms as decrepit_algorithms
 from cryptography.hazmat.primitives.ciphers import Cipher, modes
 
-from opensnap.config import StorageConfig, default_app_config
+from opensnap.config import StorageConfig, UserConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.protocol import commands
@@ -778,7 +778,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(result.messages[0].command, commands.CMD_RESULT_WRAPPER)
         self.assertEqual(struct.unpack_from('>2L', result.messages[0].payload), (0x06, 0))
 
-    def test_duplicate_reliable_room_join_returns_wrapper_only_after_first_peer_callback(self) -> None:
+    def test_duplicate_reliable_room_join_replays_original_response_bundle(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint_one = Endpoint(host='127.0.0.1', port=50110)
@@ -809,18 +809,24 @@ class EngineFlowTests(unittest.TestCase):
 
         duplicate_result = engine.handle_datagram(_encode(join_request), endpoint_two)
         self.assertFalse(duplicate_result.errors)
-        self.assertEqual(len(duplicate_result.messages), 1)
+        self.assertEqual(len(duplicate_result.messages), 2)
         duplicate_wrapper = duplicate_result.messages[0]
+        duplicate_callback = duplicate_result.messages[1]
         self.assertEqual(duplicate_wrapper.command, commands.CMD_RESULT_WRAPPER)
         self.assertEqual(duplicate_wrapper.endpoint, endpoint_two)
         self.assertEqual(struct.unpack_from('>2L', duplicate_wrapper.payload), (0x06, 0))
-        self.assertGreater(duplicate_wrapper.sequence_number, first_wrapper.sequence_number)
+        self.assertEqual(duplicate_wrapper.sequence_number, first_wrapper.sequence_number)
         self.assertEqual(duplicate_wrapper.payload, first_wrapper.payload)
         self.assertEqual(first_callback.command, commands.CMD_JOIN)
         self.assertEqual(first_callback.endpoint, endpoint_one)
         self.assertEqual(first_callback.session_id, host_session)
+        self.assertEqual(duplicate_callback.command, commands.CMD_JOIN)
+        self.assertEqual(duplicate_callback.endpoint, endpoint_one)
+        self.assertEqual(duplicate_callback.session_id, host_session)
+        self.assertEqual(duplicate_callback.sequence_number, first_callback.sequence_number)
+        self.assertEqual(duplicate_callback.payload, first_callback.payload)
 
-    def test_stale_duplicate_reliable_room_join_is_reply_only(self) -> None:
+    def test_duplicate_reliable_room_join_replays_original_bundle_after_intermediate_sync(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint_one = Endpoint(host='127.0.0.1', port=50120)
@@ -834,7 +840,7 @@ class EngineFlowTests(unittest.TestCase):
         room_id = _create_room(engine, endpoint_one, host_session, sequence=4, room_name='join-retry-room')
         join_request = SnapMessage(
             endpoint=endpoint_two,
-            type_flags=FLAG_ROOM,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_JOIN,
             session_id=joiner_session,
@@ -862,9 +868,13 @@ class EngineFlowTests(unittest.TestCase):
 
         stale_duplicate_result = engine.handle_datagram(_encode(join_request), endpoint_two)
         self.assertFalse(stale_duplicate_result.errors)
-        self.assertEqual(len(stale_duplicate_result.messages), 1)
+        self.assertEqual(len(stale_duplicate_result.messages), 2)
         self.assertEqual(stale_duplicate_result.messages[0].command, commands.CMD_RESULT_WRAPPER)
         self.assertEqual(stale_duplicate_result.messages[0].endpoint, endpoint_two)
+        self.assertEqual(stale_duplicate_result.messages[0].sequence_number, join_result.messages[0].sequence_number)
+        self.assertEqual(stale_duplicate_result.messages[1].command, commands.CMD_JOIN)
+        self.assertEqual(stale_duplicate_result.messages[1].endpoint, endpoint_one)
+        self.assertEqual(stale_duplicate_result.messages[1].sequence_number, join_result.messages[1].sequence_number)
 
     def test_room_join_does_not_enqueue_background_retry_callbacks(self) -> None:
         config = self._config
@@ -2452,6 +2462,63 @@ class EngineFlowTests(unittest.TestCase):
         payload = result.messages[0].payload
         room_count = struct.unpack_from('>L', payload, 8)[0]
         self.assertEqual(room_count, 0)
+
+    def test_transport_timeout_dissolves_room_when_host_times_out(self) -> None:
+        config = replace(
+            self._config,
+            users=self._config.users + (
+                UserConfig(user_id=2, username='test2', password='1111', seed='', team=''),
+            ),
+        )
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        host_endpoint = Endpoint(host='127.0.0.1', port=50043)
+        guest_endpoint = Endpoint(host='127.0.0.1', port=50044)
+
+        host_session = _create_session_via_login(engine, host_endpoint, 'test')
+        guest_session = _create_session_via_login(engine, guest_endpoint, 'test2')
+        _join_lobby(engine, host_endpoint, host_session, lobby_id=1, sequence=3)
+        _join_lobby(engine, guest_endpoint, guest_session, lobby_id=1, sequence=3)
+        room_id = _create_room(engine, host_endpoint, host_session, sequence=4, room_name='timeout-room')
+        _join_room(engine, guest_endpoint, guest_session, room_id=room_id, sequence=4)
+
+        messages = engine.handle_transport_timeout(host_endpoint, host_session)
+
+        self.assertEqual(messages, [])
+        self.assertIsNone(engine._sessions.get(host_session))  # noqa: SLF001
+        self.assertIsNone(engine._rooms.get(room_id))  # noqa: SLF001
+        guest = engine._sessions.get(guest_session)  # noqa: SLF001
+        assert guest is not None
+        self.assertEqual(guest.lobby_id, 1)
+        self.assertEqual(guest.room_id, 0)
+
+    def test_transport_timeout_notifies_room_host_when_guest_times_out(self) -> None:
+        config = replace(
+            self._config,
+            users=self._config.users + (
+                UserConfig(user_id=2, username='test2', password='1111', seed='', team=''),
+            ),
+        )
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        host_endpoint = Endpoint(host='127.0.0.1', port=50045)
+        guest_endpoint = Endpoint(host='127.0.0.1', port=50046)
+
+        host_session = _create_session_via_login(engine, host_endpoint, 'test')
+        guest_session = _create_session_via_login(engine, guest_endpoint, 'test2')
+        _join_lobby(engine, host_endpoint, host_session, lobby_id=1, sequence=3)
+        _join_lobby(engine, guest_endpoint, guest_session, lobby_id=1, sequence=3)
+        room_id = _create_room(engine, host_endpoint, host_session, sequence=4, room_name='timeout-room')
+        _join_room(engine, guest_endpoint, guest_session, room_id=room_id, sequence=4)
+
+        messages = engine.handle_transport_timeout(guest_endpoint, guest_session)
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0].endpoint, host_endpoint)
+        self.assertEqual(messages[0].command, commands.CMD_LEAVE)
+        self.assertEqual(get_u32(messages[0].payload, 0), guest_session)
+        self.assertIsNone(engine._sessions.get(guest_session))  # noqa: SLF001
+        room = engine._rooms.get(room_id)  # noqa: SLF001
+        assert room is not None
+        self.assertEqual(room.members, {host_session})
 
     def test_duplicate_or_older_sequence_is_tolerated_for_authenticated_session(self) -> None:
         config = self._config

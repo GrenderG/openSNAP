@@ -51,6 +51,17 @@ class SessionRegistryTests(unittest.TestCase):
         self.assertIsNone(registry.get_by_endpoint(old_endpoint))
         self.assertEqual(registry.get_by_endpoint(new_endpoint), rebound)
 
+    def test_remove_drops_session_and_endpoint_binding(self) -> None:
+        registry = SessionRegistry()
+        user = build_account(user_id=9, username='u9', password_record='p', seed='s', team='')
+        endpoint = Endpoint(host='10.0.0.9', port=9009)
+        session = registry.create_or_replace(endpoint, user)
+
+        registry.remove(session.session_id)
+
+        self.assertIsNone(registry.get(session.session_id))
+        self.assertIsNone(registry.get_by_endpoint(endpoint))
+
 
 if __name__ == '__main__':
     unittest.main()

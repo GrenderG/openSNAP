@@ -32,13 +32,53 @@ class _ReliablePending:
 
 
 class SnapUdpServer:
-    """Blocking UDP server with periodic tick processing."""
+    """Blocking UDP transport loop for SNAP game traffic.
+
+    This class is the server-side approximation of the SN@P client's reliable
+    UDP layer. The game protocol rides on plain UDP datagrams, but some SNAP
+    messages are marked reliable and must stay in a resend queue until the peer
+    explicitly acknowledges them.
+
+    The important transport rules are:
+
+    - One logical outbound `SnapMessage` is encoded into one UDP datagram
+      unless the game/plugin has already built a synthetic multi-message SNAP
+      payload.
+    - Outbound reliable messages are tracked by
+      `(endpoint, session_id, sequence_number)` before they are sent.
+    - Reliable retirement is driven only by inbound response-path ACK state.
+      That mirrors the client `kkDispatchingPacket -> kkSetRevAck` path:
+      response packets carry the reverse ACK that retires one exact queued
+      reliable sequence. Retirement is exact-sequence only, never cumulative.
+    - Retransmission is oldest-pending-per-session. The server retries every
+      `200 ms`, up to four counted retransmits, which matches the client
+      `kkSendOperation` cadence and retry gate.
+    - After the retry cap is reached, the packet stays pending while the peer
+      is still sending traffic. This avoids disconnecting an active client just
+      because one reliable packet was lost.
+    - If the same peer stays inbound-silent for `5 s` after a reliable packet
+      has already hit the retry cap, the server treats that as a transport
+      timeout and asks the engine/plugin to clean up the timed-out session.
+    - If the session is already gone by the time retransmit logic runs, the
+      server immediately clears the stale pending state instead of retrying
+      forever.
+
+    The main loop therefore has four phases:
+
+    1. Receive one datagram and remember the footer variant used by that peer.
+    2. Retire any exact reliable ACKs carried by response packets.
+    3. Dispatch the payload through the protocol engine and send fresh replies.
+    4. Periodically tick the engine and retransmit due reliable packets.
+
+    This docstring intentionally describes the transport contract in human
+    terms because the protocol is easy to misunderstand: ordinary receive-side
+    reliable acceptance and sender-side reverse-ACK retirement are separate
+    mechanisms in the client, and the server has to preserve that distinction.
+    """
 
     _RETRANSMIT_INTERVAL_SECONDS = 0.20
-    _RETRY_CAP_INTERVAL_SECONDS = 1.0
+    _SESSION_INACTIVITY_TIMEOUT_SECONDS = 5.0
     _MAX_RETRANSMIT_ATTEMPTS = 4
-    _MAX_RETRANSMITS_PER_CYCLE = 128
-    _MAX_PENDING_RELIABLE_PER_SESSION = 256
 
     def __init__(
         self,
@@ -55,6 +95,7 @@ class SnapUdpServer:
         self._logger = logging.getLogger(logger_name)
         self._reliable_pending: dict[tuple[str, int, int, int], _ReliablePending] = {}
         self._footer_bytes_by_endpoint: dict[tuple[str, int], bytes] = {}
+        self._last_inbound_at_by_endpoint: dict[tuple[str, int], float] = {}
 
     def run(self) -> None:
         """Run UDP loop until stopped."""
@@ -97,6 +138,7 @@ class SnapUdpServer:
                         break
 
                     if payload:
+                        received_at = time.monotonic()
                         self._logger.info(
                             'Received datagram from %s:%d (%d byte(s)).',
                             host,
@@ -110,6 +152,7 @@ class SnapUdpServer:
                             format_hexdump(payload),
                         )
                         endpoint = Endpoint(host=host, port=port)
+                        self._last_inbound_at_by_endpoint[(endpoint.host, endpoint.port)] = received_at
                         self._remember_footer_variant(payload, endpoint)
                         self._process_transport_acks(payload, endpoint)
                         result = self._engine.handle_datagram(payload, endpoint)
@@ -158,27 +201,13 @@ class SnapUdpServer:
                 [message],
                 footer_bytes=self._footer_bytes_by_endpoint.get((endpoint.host, endpoint.port), FOOTER_BYTES),
             )
-            self._logger.info(
-                'Sending datagram to %s:%d (%d byte(s), %d message(s)).',
-                endpoint.host,
-                endpoint.port,
-                len(datagram),
-                1,
-            )
-            self._logger.debug(
-                'Outbound commands to %s:%d: 0x%02x.',
-                endpoint.host,
-                endpoint.port,
-                message.command,
-            )
-            self._logger.debug(
-                'Outbound hexdump to %s:%d\n%s',
-                endpoint.host,
-                endpoint.port,
-                format_hexdump(datagram),
-            )
-            udp_socket.sendto(datagram, (endpoint.host, endpoint.port))
             self._track_reliable(message, datagram, send_time)
+            self._send_new_datagram(
+                udp_socket,
+                endpoint=endpoint,
+                command=message.command,
+                datagram=datagram,
+            )
 
     def _remember_footer_variant(self, payload: bytes, endpoint: Endpoint) -> None:
         """Track which supported SNAP footer marker one endpoint is using."""
@@ -219,7 +248,12 @@ class SnapUdpServer:
 
             self._clear_reliable_pending(endpoint, message.session_id, message.acknowledge_number)
 
-    def _track_reliable(self, message: SnapMessage, datagram: bytes, send_time: float) -> None:
+    def _track_reliable(
+        self,
+        message: SnapMessage,
+        datagram: bytes,
+        send_time: float,
+    ) -> None:
         """Store outgoing reliable packets until acknowledged."""
 
         if (message.type_flags & FLAG_RELIABLE) == 0:
@@ -238,39 +272,6 @@ class SnapUdpServer:
             command=message.command,
             datagram=datagram,
             last_sent_at=send_time,
-        )
-
-        self._prune_reliable_queue_if_needed(message.endpoint, message.session_id)
-
-    def _prune_reliable_queue_if_needed(self, endpoint: Endpoint, session_id: int) -> None:
-        """Cap pending reliable packets per session by dropping the oldest entries."""
-
-        session_keys = [
-            key
-            for key in self._reliable_pending
-            if key[0] == endpoint.host and key[1] == endpoint.port and key[2] == session_id
-        ]
-        overflow = len(session_keys) - self._MAX_PENDING_RELIABLE_PER_SESSION
-        if overflow <= 0:
-            return
-
-        session_keys.sort(key=lambda item: item[3])
-        dropped = session_keys[:overflow]
-        dropped_sequences = [key[3] for key in dropped]
-        for key in dropped:
-            self._reliable_pending.pop(key, None)
-
-        self._logger.warning(
-            (
-                'Reliable queue pressure for %s:%d (sess=0x%08x): '
-                'dropped %d oldest packet(s), seq %d..%d.'
-            ),
-            endpoint.host,
-            endpoint.port,
-            session_id,
-            overflow,
-            min(dropped_sequences),
-            max(dropped_sequences),
         )
 
     def _clear_reliable_pending(self, endpoint: Endpoint, session_id: int, acknowledge_number: int) -> None:
@@ -294,25 +295,23 @@ class SnapUdpServer:
             return
 
         now = time.monotonic()
-        retransmit_count = 0
-        deferred_due_packets = False
 
         for key in self._oldest_pending_keys_by_session():
             pending = self._reliable_pending.get(key)
             if pending is None:
                 continue
-            if (now - pending.last_sent_at) < self._retry_interval_seconds(pending):
+            if self._drop_missing_session_pending(pending):
                 continue
-            if retransmit_count >= self._MAX_RETRANSMITS_PER_CYCLE:
-                deferred_due_packets = True
+            if (now - pending.last_sent_at) < self._RETRANSMIT_INTERVAL_SECONDS:
                 continue
             if pending.retransmit_attempts >= self._MAX_RETRANSMIT_ATTEMPTS:
                 if not pending.retry_cap_logged:
+                    pending.retry_cap_logged = True
                     self._logger.warning(
                         (
                             'Reliable packet 0x%02x to %s:%d '
                             '(sess=0x%08x seq=%d) reached retry cap; '
-                            'switching to timeout retry cadence.'
+                            'keeping it pending while the peer is still active.'
                         ),
                         pending.command,
                         pending.endpoint.host,
@@ -320,7 +319,23 @@ class SnapUdpServer:
                         pending.session_id,
                         pending.sequence_number,
                     )
-                    pending.retry_cap_logged = True
+                if self._peer_is_inactive(pending.endpoint, now):
+                    self._timeout_session(udp_socket, pending)
+                    continue
+                self._logger.debug(
+                    (
+                        'Retransmitting capped reliable packet 0x%02x to %s:%d '
+                        '(sess=0x%08x seq=%d).'
+                    ),
+                    pending.command,
+                    pending.endpoint.host,
+                    pending.endpoint.port,
+                    pending.session_id,
+                    pending.sequence_number,
+                )
+                udp_socket.sendto(pending.datagram, (pending.endpoint.host, pending.endpoint.port))
+                pending.last_sent_at = now
+                continue
 
             self._logger.debug(
                 (
@@ -335,19 +350,8 @@ class SnapUdpServer:
                 pending.retransmit_attempts + 1,
             )
             udp_socket.sendto(pending.datagram, (pending.endpoint.host, pending.endpoint.port))
-            if pending.retransmit_attempts < self._MAX_RETRANSMIT_ATTEMPTS:
-                pending.retransmit_attempts += 1
+            pending.retransmit_attempts += 1
             pending.last_sent_at = now
-            retransmit_count += 1
-
-        if deferred_due_packets:
-            self._logger.debug(
-                (
-                    'Retransmit budget exhausted (%d packet(s) this cycle); '
-                    'deferring remaining due reliable packets.'
-                ),
-                self._MAX_RETRANSMITS_PER_CYCLE,
-            )
 
     def _oldest_pending_keys_by_session(self) -> list[tuple[str, int, int, int]]:
         """Return the oldest pending reliable packet per endpoint/session."""
@@ -362,9 +366,99 @@ class SnapUdpServer:
             oldest_keys.append(key)
         return oldest_keys
 
-    def _retry_interval_seconds(self, pending: _ReliablePending) -> float:
-        """Return the binary-backed retry cadence for one pending packet."""
+    def _drop_missing_session_pending(self, pending: _ReliablePending) -> bool:
+        """Drop reliable transport state for sessions that no longer exist."""
 
-        if pending.retransmit_attempts >= self._MAX_RETRANSMIT_ATTEMPTS:
-            return self._RETRY_CAP_INTERVAL_SECONDS
-        return self._RETRANSMIT_INTERVAL_SECONDS
+        session = self._engine.resolve_session(pending.endpoint, pending.session_id)
+        if session is None:
+            self._clear_session_pending(pending.endpoint, pending.session_id)
+            self._clear_session_runtime(pending.endpoint)
+            return True
+
+        return False
+
+    def _peer_is_inactive(self, endpoint: Endpoint, now: float) -> bool:
+        """Check whether one endpoint has been inbound-silent long enough to time out."""
+
+        last_inbound_at = self._last_inbound_at_by_endpoint.get((endpoint.host, endpoint.port))
+        if last_inbound_at is None:
+            return False
+        return (now - last_inbound_at) >= self._SESSION_INACTIVITY_TIMEOUT_SECONDS
+
+    def _clear_session_pending(
+        self,
+        endpoint: Endpoint,
+        session_id: int,
+    ) -> None:
+        """Remove pending reliable packets for one endpoint/session."""
+
+        session_keys = [
+            key
+            for key, pending in self._reliable_pending.items()
+            if key[0] == endpoint.host
+            and key[1] == endpoint.port
+            and key[2] == session_id
+        ]
+        for key in session_keys:
+            self._reliable_pending.pop(key, None)
+
+    def _clear_session_runtime(self, endpoint: Endpoint) -> None:
+        """Drop cached transport-side state for one endpoint."""
+
+        self._footer_bytes_by_endpoint.pop((endpoint.host, endpoint.port), None)
+        self._last_inbound_at_by_endpoint.pop((endpoint.host, endpoint.port), None)
+
+    def _timeout_session(self, udp_socket: socket.socket, pending: _ReliablePending) -> None:
+        """Fail one peer session after reliable retransmits outlive inbound activity."""
+
+        now = time.monotonic()
+        self._logger.warning(
+            (
+                'Reliable session timeout after packet 0x%02x to %s:%d '
+                '(sess=0x%08x seq=%d) while peer stayed inactive for %.1f second(s).'
+            ),
+            pending.command,
+            pending.endpoint.host,
+            pending.endpoint.port,
+            pending.session_id,
+            pending.sequence_number,
+            now - self._last_inbound_at_by_endpoint.get((pending.endpoint.host, pending.endpoint.port), now),
+        )
+
+        self._clear_session_pending(pending.endpoint, pending.session_id)
+        self._clear_session_runtime(pending.endpoint)
+
+        cleanup_messages = self._engine.handle_transport_timeout(pending.endpoint, pending.session_id)
+        if cleanup_messages:
+            self._send_messages(udp_socket, cleanup_messages)
+
+    def _send_new_datagram(
+        self,
+        udp_socket: socket.socket,
+        *,
+        endpoint: Endpoint,
+        command: int,
+        datagram: bytes,
+    ) -> None:
+        """Log and send one freshly produced outbound datagram."""
+
+        self._logger.info(
+            'Sending datagram to %s:%d (%d byte(s), %d message(s)).',
+            endpoint.host,
+            endpoint.port,
+            len(datagram),
+            1,
+        )
+        self._logger.debug(
+            'Outbound commands to %s:%d: 0x%02x.',
+            endpoint.host,
+            endpoint.port,
+            command,
+        )
+        self._logger.debug(
+            'Outbound hexdump to %s:%d\n%s',
+            endpoint.host,
+            endpoint.port,
+            format_hexdump(datagram),
+        )
+        udp_socket.sendto(datagram, (endpoint.host, endpoint.port))

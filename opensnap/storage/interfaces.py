@@ -39,6 +39,9 @@ class SessionStore(Protocol):
     def rebind_endpoint(self, session_id: int, endpoint: Endpoint) -> Session | None:
         """Bind an existing session id to a new endpoint."""
 
+    def remove(self, session_id: int) -> None:
+        """Remove one session and any direct endpoint binding."""
+
     def get(self, session_id: int) -> Session | None:
         """Get session by id."""
 

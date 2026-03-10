@@ -315,6 +315,18 @@ class SqliteSessionRegistry:
         )
         return self.get(session_id)
 
+    def remove(self, session_id: int) -> None:
+        """Remove one session and any stale room-membership row."""
+
+        self._database.execute(
+            'DELETE FROM room_members WHERE session_id = ?',
+            (session_id,),
+        )
+        self._database.execute(
+            'DELETE FROM sessions WHERE session_id = ?',
+            (session_id,),
+        )
+
     def get(self, session_id: int) -> Session | None:
         """Get session by id."""
 
