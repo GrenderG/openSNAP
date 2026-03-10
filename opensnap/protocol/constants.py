@@ -37,6 +37,10 @@ FLAG_RELIABLE = 0x8000
 # - room context value: `FLAG_ROOM` (only room bit set)
 FLAG_CHANNEL_BITS = FLAG_ROOM | FLAG_LOBBY
 RELAY_CONTEXT_MASK = FLAG_CHANNEL_BITS | FLAG_RELAY
+# `SLUS_206.42` / `SLUS_204.98` `kkSendTextChat` send room chat as raw `0xa400`
+# and lobby chat as raw `0xb400`, so masking the raw lobby request keeps both
+# channel bits set (`0x3400`).
+TYPE_LOBBY_RELAY_REQUEST = FLAG_CHANNEL_BITS | FLAG_RELAY
 TYPE_ROOM_RELAY = FLAG_ROOM | FLAG_RELAY
 TYPE_LOBBY_RELAY = FLAG_LOBBY | FLAG_RELAY
 # Bare transport ACK frames from Auto Modellista clients use command `CMD_ACK`

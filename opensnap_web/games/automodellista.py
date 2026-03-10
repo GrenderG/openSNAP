@@ -408,12 +408,13 @@ AM_RULE_PROFILE_INDEX_PERFORMANCE = 5
 #
 # Human-readable profile rules:
 # - Mountain/City/Circuit use stock `normal` template.
-# - Index 3 is consumed by both Event signaling and Clubmeeting runtime rule-init
+# - Index 3 is consumed by Clubmeeting lobby/menu rule init
 #   (`To_EnterClubMeeting` sets lobby id 0x14 -> `lbc_in_lobby_00` selects row 3).
 #   We keep event flag byte +26 set to 1, but force packed defaults to 0x28 so
 #   Clubmeeting follows the editable 2..8 branch in `set_netrule_clubmeeting`.
-# - Index 4 keeps the stock Clubmeeting payload defaults (0x11) as a compatibility
-#   reference row.
+# - Index 4 is the separate active Clubmeeting rule row used by `To_ReadyBattle`
+#   via the lobby-id lookup table at `0x003710df + lobby_id`. For lobby id `20`,
+#   that table selects row `4`, so byte `+8` must also keep chat enabled there.
 # - Performance row is separate (64 bytes) and currently seeds only known fields.
 #
 # Config contract:
@@ -489,10 +490,15 @@ AM_GAME_RULE_CONFIG = {
         },
         {
             'index': AM_RULE_PROFILE_INDEX_CLUBMEETING,
-            'label': 'Clubmeeting (stock reference)',
+            'label': 'Clubmeeting active runtime',
             'template': AM_RULE_TEMPLATE_NAME_BLANK,
             'field_overrides': {
                 'finish_grace_seconds': AM_RULE_FINISH_GRACE_SECONDS_STOCK,
+                # Release `player_gallery` (`Start -> Triangle`) gates
+                # `netmsg_push_chat` on runtime byte `0x4abd7a`, which comes
+                # from rule byte `+8`. Club Meeting active rule selection uses
+                # row 4, not row 3, through `To_ReadyBattle`'s lobby-id table.
+                'edit_mask': AM_RULE_EDIT_MASK_STOCK_EDITABLE,
                 # Stock AM-USA-GAME-RULE payload uses packed defaults 0x11.
                 'needed_players_default': AM_RULE_DEFAULT_INDEX_CLUBMEETING_NEEDED_PLAYERS,
                 'max_people_default': AM_RULE_DEFAULT_INDEX_CLUBMEETING_MAX_PEOPLE,

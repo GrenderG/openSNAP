@@ -22,6 +22,7 @@ from opensnap.protocol.constants import (
     FLAG_RELIABLE,
     RELAY_CONTEXT_MASK,
     TYPE_LOBBY_RELAY,
+    TYPE_LOBBY_RELAY_REQUEST,
     TYPE_ROOM_RELAY,
 )
 from opensnap.protocol.models import Endpoint, SnapMessage, WIRE_FORMAT_SNAP
@@ -442,7 +443,7 @@ class SnapProtocolEngine:
             ack_type_flags = FLAG_ROOM | FLAG_RESPONSE
         elif message.command == commands.CMD_SEND:
             callback_flags = message.type_flags & RELAY_CONTEXT_MASK
-            if callback_flags == TYPE_LOBBY_RELAY:
+            if callback_flags in (TYPE_LOBBY_RELAY, TYPE_LOBBY_RELAY_REQUEST):
                 ack_type_flags = FLAG_CHANNEL_BITS | FLAG_RESPONSE
             elif callback_flags == TYPE_ROOM_RELAY:
                 ack_type_flags = FLAG_ROOM | FLAG_RESPONSE

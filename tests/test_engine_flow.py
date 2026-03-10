@@ -581,7 +581,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(result.messages[0].payload, struct.pack('>L4sL', room_id, b'USER', 2))
         self.assertEqual(struct.unpack_from('>H', result.messages[0].payload, 10)[0], 2)
 
-    def test_lobby_chat_broadcasts_to_other_lobby_members_and_acks_sender(self) -> None:
+    def test_lobby_chat_accepts_simplified_lobby_relay_type_word(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint_one = Endpoint(host='127.0.0.1', port=50010)
@@ -590,12 +590,56 @@ class EngineFlowTests(unittest.TestCase):
         sender_session = _create_session_via_login(engine, endpoint_one, 'test')
         receiver_session = _create_session_via_login(engine, endpoint_two, 'test')
 
-        _join_lobby(engine, endpoint_one, sender_session, lobby_id=1, sequence=3)
-        _join_lobby(engine, endpoint_two, receiver_session, lobby_id=1, sequence=3)
+        _join_lobby(engine, endpoint_one, sender_session, lobby_id=20, sequence=3)
+        _join_lobby(engine, endpoint_two, receiver_session, lobby_id=20, sequence=3)
 
         chat_request = SnapMessage(
             endpoint=endpoint_one,
             type_flags=FLAG_RELAY | FLAG_LOBBY,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=sender_session,
+            sequence_number=4,
+            acknowledge_number=0,
+            payload=b'\x04\x04testteamhello',
+        )
+        chat_result = engine.handle_datagram(_encode(chat_request), endpoint_one)
+        self.assertFalse(chat_result.errors)
+
+        self.assertEqual(len(chat_result.messages), 2)
+        ack_messages = [message for message in chat_result.messages if message.command == commands.CMD_ACK]
+        chat_messages = [message for message in chat_result.messages if message.command == commands.CMD_SEND]
+        self.assertEqual(len(ack_messages), 1)
+        self.assertEqual(len(chat_messages), 1)
+
+        self.assertEqual(ack_messages[0].session_id, sender_session)
+        self.assertEqual(ack_messages[0].endpoint, endpoint_one)
+        self.assertEqual(ack_messages[0].type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE)
+
+        chat_session_ids = {message.session_id for message in chat_messages}
+        self.assertEqual(chat_session_ids, {receiver_session})
+        chat_endpoints = {message.endpoint for message in chat_messages}
+        self.assertEqual(chat_endpoints, {endpoint_two})
+        self.assertEqual(chat_messages[0].payload, chat_request.payload)
+
+    def test_lobby_chat_accepts_raw_release_lobby_relay_type_word(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint_one = Endpoint(host='127.0.0.1', port=50012)
+        endpoint_two = Endpoint(host='127.0.0.2', port=50013)
+
+        sender_session = _create_session_via_login(engine, endpoint_one, 'test')
+        receiver_session = _create_session_via_login(engine, endpoint_two, 'test')
+
+        _join_lobby(engine, endpoint_one, sender_session, lobby_id=20, sequence=3)
+        _join_lobby(engine, endpoint_two, receiver_session, lobby_id=20, sequence=3)
+
+        chat_request = SnapMessage(
+            endpoint=endpoint_one,
+            # `SLUS_206.42` `cpnSendChatText` sends Club Meeting chat through
+            # `kkSendTextChat(..., a3=0x1000)`, producing the raw lobby relay
+            # type word `0xb400` rather than the simplified `0x1400` test shape.
+            type_flags=FLAG_CHANNEL_BITS | FLAG_RELAY | FLAG_RELIABLE,
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
@@ -615,6 +659,7 @@ class EngineFlowTests(unittest.TestCase):
 
         self.assertEqual(ack_messages[0].session_id, sender_session)
         self.assertEqual(ack_messages[0].endpoint, endpoint_one)
+        self.assertEqual(ack_messages[0].type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE)
 
         chat_session_ids = {message.session_id for message in chat_messages}
         self.assertEqual(chat_session_ids, {receiver_session})

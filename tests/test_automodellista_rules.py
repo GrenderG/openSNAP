@@ -33,7 +33,7 @@ class AutoModellistaRuleSerializationTests(unittest.TestCase):
                 '00000a0000080f000100000000000000000000280000000000000000',
                 '00000a0000080f000100000000000000000000280000000000000000',
                 '00000a0000030f000100000000000000000000280000000000000100',
-                '0000000000000f000000000000000000000000110000000000000000',
+                '0000000000000f000100000000000000000000110000000000000000',
                 performance.hex(),
                 '00',
             ),
@@ -44,7 +44,7 @@ class AutoModellistaRuleSerializationTests(unittest.TestCase):
         self.assertIn('<!--AM-USA-GAME-RULE-->', page)
         self.assertIn('<!-- 0 Mountain -->', page)
         self.assertIn('<!-- 3 Event / Clubmeeting runtime -->', page)
-        self.assertIn('<!-- 4 Clubmeeting (stock reference) -->', page)
+        self.assertIn('<!-- 4 Clubmeeting active runtime -->', page)
         self.assertIn('<!-- 5 Performance -->', page)
         self.assertIn('"00000a0000030f000100000000000000000000280000000000000100",', page)
         self.assertTrue(page.endswith('</html>\n'))
@@ -73,6 +73,11 @@ class AutoModellistaRuleSerializationTests(unittest.TestCase):
     def test_serializer_emits_stock_finish_grace_seconds_at_byte_6(self) -> None:
         row = serialize_am_rule_row(template='normal')
         self.assertEqual(row[6], 0x0F)
+
+    def test_clubmeeting_active_row_enables_chat_gate_at_byte_8(self) -> None:
+        rows = build_am_rule_csv_rows()
+        active_row = bytes.fromhex(rows[4])
+        self.assertEqual(active_row[8], 0x01)
 
     def test_serializer_rejects_out_of_range_max_people_default_count(self) -> None:
         with self.assertRaises(ValueError):

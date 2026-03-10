@@ -24,6 +24,7 @@ from opensnap.protocol.constants import (
     RELAY_CONTEXT_MASK,
     RESULT_WRAPPER_STATUS_ERROR_DIALOG,
     RESULT_WRAPPER_STATUS_OK,
+    TYPE_LOBBY_RELAY_REQUEST,
     TYPE_LOBBY_RELAY,
     TYPE_ROOM_RELAY,
 )
@@ -601,7 +602,7 @@ class AutoModellistaPlugin(GamePlugin):
             return responses
 
         callback_flags = message.type_flags & RELAY_CONTEXT_MASK
-        if callback_flags == TYPE_LOBBY_RELAY:
+        if callback_flags in (TYPE_LOBBY_RELAY, TYPE_LOBBY_RELAY_REQUEST):
             chat_payload = _build_chat_echo_payload(message.payload)
             chats = _broadcast_lobby_chat(
                 context,
