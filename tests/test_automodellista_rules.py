@@ -136,9 +136,9 @@ class AutoModellistaBeta1RuleSerializationTests(unittest.TestCase):
         self.assertEqual(
             build_ambeta1_rule_csv_rows(),
             (
-                '00000a0000080000010000000000000000240000000000000000',
-                '00000a0000080000010000000000000000240000000000000000',
-                '00000a0000080000010000000000000000240000000000000000',
+                '00000a0000080000010000000000000000280000000000000000',
+                '00000a0000080000010000000000000000280000000000000000',
+                '00000a0000080000010000000000000000280000000000000000',
             ),
         )
 
@@ -147,7 +147,7 @@ class AutoModellistaBeta1RuleSerializationTests(unittest.TestCase):
         self.assertIn('<!--AM-USA-GAME-RULE-->', page)
         self.assertIn('<!-- 0 Mountain -->', page)
         self.assertIn('<!-- 2 Circuit -->', page)
-        self.assertIn('"00000a0000080000010000000000000000240000000000000000"', page)
+        self.assertIn('"00000a0000080000010000000000000000280000000000000000"', page)
         self.assertTrue(page.endswith('</html>\n'))
 
     def test_beta1_serializer_packs_player_defaults_at_offset_17(self) -> None:
@@ -157,6 +157,13 @@ class AutoModellistaBeta1RuleSerializationTests(unittest.TestCase):
         )
         self.assertEqual(len(row), 26)
         self.assertEqual(row[17], 0x36)
+
+    def test_beta1_serializer_packs_max_people_default_count_alias_at_offset_17(self) -> None:
+        row = serialize_ambeta1_rule_row(
+            template='normal',
+            field_overrides={'max_people_default_count': 0x08},
+        )
+        self.assertEqual(row[17], 0x28)
 
 
 if __name__ == '__main__':

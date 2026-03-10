@@ -8,6 +8,7 @@ from opensnap_web.games.automodellista import (
     AM_RULE_DEFAULT_INDEX_STANDARD_NEEDED_PLAYERS,
     AM_RULE_EDIT_MASK_STOCK_EDITABLE,
     AM_RULE_LAP_SEED_STOCK,
+    AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE,
     AutoModellistaWebModule,
     _apply_byte_overrides,
     _coerce_max_people_default_count,
@@ -237,6 +238,14 @@ AM_BETA1_RULE_TEMPLATE_NAME_NORMAL = 'normal'
 # - +5  lap_seed         = 0x08
 # - +8  edit_mask        = 0x01
 # - +17 players_packed   = 0x24 (needed=2, max_people=4)
+#
+# Important Beta1 editability note (`SLUS_204.98`):
+# - `lbc_in_lobby_16` (`0x002ca780..0x002ca7cc`) unlocks editable
+#   `No. of People` only when packed defaults are `(needed=2, max_people=8)`;
+# - that means byte `+17` must be `0x28`;
+# - `SLUS_204.98` still hard-locks course settings, needed players, and lap in
+#   code (`sb zero` to their editable flags), so this ruleset can only align the
+#   `No. of People` behavior with release-style standard profiles.
 AM_BETA1_RULE_TEMPLATE_NORMAL = {
     'course_mode_seed': AM_RULE_COURSE_MODE_SEED_STOCK,
     'lap_seed': AM_RULE_LAP_SEED_STOCK,
@@ -259,21 +268,27 @@ AM_BETA1_GAME_RULE_CONFIG = {
             'index': AM_BETA1_RULE_PROFILE_INDEX_MOUNTAIN,
             'label': 'Mountain',
             'template': AM_BETA1_RULE_TEMPLATE_NAME_NORMAL,
-            'field_overrides': {},
+            'field_overrides': {
+                'max_people_default_count': AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE,
+            },
             'byte_overrides': {},
         },
         {
             'index': AM_BETA1_RULE_PROFILE_INDEX_CITY,
             'label': 'City',
             'template': AM_BETA1_RULE_TEMPLATE_NAME_NORMAL,
-            'field_overrides': {},
+            'field_overrides': {
+                'max_people_default_count': AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE,
+            },
             'byte_overrides': {},
         },
         {
             'index': AM_BETA1_RULE_PROFILE_INDEX_CIRCUIT,
             'label': 'Circuit',
             'template': AM_BETA1_RULE_TEMPLATE_NAME_NORMAL,
-            'field_overrides': {},
+            'field_overrides': {
+                'max_people_default_count': AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE,
+            },
             'byte_overrides': {},
         },
     )

@@ -173,6 +173,14 @@ AM_RULE_STANDARD_MAX_PEOPLE_MAX = 0x08
 # Keep stock default at 4 (template-level baseline).
 AM_RULE_STANDARD_MAX_PEOPLE_DEFAULT = AM_RULE_DEFAULT_INDEX_STANDARD_MAX_PEOPLE
 # Explicit override used by openSNAP standard profiles to unlock 2..8 editing.
+#
+# Important release-binary note (`SLUS_206.42`):
+# - low nibble `0x8` is the sentinel that sends `set_netrule_normal`
+#   (`0x00288c20..0x00288c70`) into the editable `2..8` branch;
+# - it does NOT by itself make the displayed default start at `8`;
+# - stock code seeds the current selection from `RoomInfo+4` via
+#   `lb v1, 0(v1)` at `0x00288c54` (file offset `0x188dd4`) and then subtracts
+#   `2`;
 AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE = AM_RULE_STANDARD_MAX_PEOPLE_MAX
 # Clubmeeting runtime override:
 # - keep "Needed players" locked to 2 (same locked baseline as standard profiles),
@@ -406,8 +414,10 @@ AM_GAME_RULE_CONFIG = {
             'label': 'Mountain',
             'template': AM_RULE_TEMPLATE_NAME_NORMAL,
             'field_overrides': {
-                # Preserve stock template default (4), then override to 8 to hit
-                # the broader editable path in `set_netrule_normal`.
+                # Override byte +19 low nibble to `8` so release `set_netrule_normal`
+                # enters its editable `2..8` branch. The displayed default still
+                # comes from the binary-side selection seed, not directly from this
+                # nibble.
                 'max_people_default_count': AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE,
             },
             'byte_overrides': {},
@@ -417,8 +427,10 @@ AM_GAME_RULE_CONFIG = {
             'label': 'City',
             'template': AM_RULE_TEMPLATE_NAME_NORMAL,
             'field_overrides': {
-                # Preserve stock template default (4), then override to 8 to hit
-                # the broader editable path in `set_netrule_normal`.
+                # Override byte +19 low nibble to `8` so release `set_netrule_normal`
+                # enters its editable `2..8` branch. The displayed default still
+                # comes from the binary-side selection seed, not directly from this
+                # nibble.
                 'max_people_default_count': AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE,
             },
             'byte_overrides': {},
@@ -428,8 +440,10 @@ AM_GAME_RULE_CONFIG = {
             'label': 'Circuit',
             'template': AM_RULE_TEMPLATE_NAME_NORMAL,
             'field_overrides': {
-                # Preserve stock template default (4), then override to 8 to hit
-                # the broader editable path in `set_netrule_normal`.
+                # Override byte +19 low nibble to `8` so release `set_netrule_normal`
+                # enters its editable `2..8` branch. The displayed default still
+                # comes from the binary-side selection seed, not directly from this
+                # nibble.
                 'max_people_default_count': AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE,
             },
             'byte_overrides': {},
