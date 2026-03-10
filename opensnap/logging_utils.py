@@ -11,7 +11,7 @@ DEFAULT_LOG_PATH = ''
 SERVICE_LOG_FILENAMES = {
     'bootstrap': 'opensnap-bootstrap.log',
     'game': 'opensnap-game.log',
-    'dns': 'opensnap-dns-log',
+    'dns': 'opensnap-dns.log',
     'web': 'opensnap-web.log',
 }
 LOG_LEVELS: dict[str, int] = {
