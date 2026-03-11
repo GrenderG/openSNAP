@@ -324,7 +324,7 @@ class UdpReliabilityTests(unittest.TestCase):
         )
         self.assertEqual(remaining_sequences, [10, 12])
 
-    def test_retry_capped_room_packet_keeps_retrying_while_peer_is_active(self) -> None:
+    def test_retry_capped_packet_waits_for_fast_retry_cadence(self) -> None:
         server = self._server()
         endpoint = Endpoint(host='127.0.0.1', port=50010)
         session_id = 0x10101010
@@ -342,17 +342,16 @@ class UdpReliabilityTests(unittest.TestCase):
 
         self._mark_inbound_active(server, endpoint, 100.4)
         fake_socket = _FakeSocket()
-        with patch('opensnap.udp_server.time.monotonic', return_value=100.5):
+        with patch('opensnap.udp_server.time.monotonic', return_value=100.3):
             server._retransmit_due(fake_socket)  # type: ignore[arg-type]
 
-        self.assertEqual(len(fake_socket.sent), 1)
+        self.assertEqual(len(fake_socket.sent), 0)
         self.assertIn(key, server._reliable_pending)
-        self.assertEqual(fake_socket.sent[0][0], b'packet')
         self.assertEqual(pending.retransmit_attempts, server._MAX_RETRANSMIT_ATTEMPTS)
         self.assertTrue(pending.retry_cap_logged)
         server._engine.handle_transport_timeout.assert_not_called()
 
-    def test_retry_capped_non_room_packet_keeps_retrying_while_peer_is_active(self) -> None:
+    def test_retry_capped_packet_retransmits_on_fast_retry_cadence(self) -> None:
         server = self._server()
         endpoint = Endpoint(host='127.0.0.1', port=50014)
         session_id = 0x14141414
@@ -374,9 +373,9 @@ class UdpReliabilityTests(unittest.TestCase):
             server._retransmit_due(fake_socket)  # type: ignore[arg-type]
 
         self.assertEqual(len(fake_socket.sent), 1)
-        self.assertIn(key, server._reliable_pending)
         self.assertEqual(fake_socket.sent[0][0], b'packet')
-        self.assertTrue(pending.retry_cap_logged)
+        self.assertIn(key, server._reliable_pending)
+        self.assertEqual(pending.last_sent_at, 100.5)
         server._engine.handle_transport_timeout.assert_not_called()
 
     def test_retry_capped_packet_times_out_after_peer_inactivity_window(self) -> None:
@@ -404,31 +403,6 @@ class UdpReliabilityTests(unittest.TestCase):
         self.assertNotIn(key, server._reliable_pending)
         server._engine.handle_transport_timeout.assert_called_once_with(endpoint, session_id)
 
-    def test_retry_capped_packet_without_peer_inactivity_stays_pending(self) -> None:
-        server = self._server()
-        endpoint = Endpoint(host='127.0.0.1', port=50015)
-        session_id = 0x15151515
-        outgoing = self._control_reliable_message(
-            endpoint=endpoint,
-            session_id=session_id,
-            sequence_number=99,
-        )
-        server._track_reliable(outgoing, b'packet', 0.0)
-
-        key = (endpoint.host, endpoint.port, session_id, 99)
-        pending = server._reliable_pending[key]
-        pending.retransmit_attempts = server._MAX_RETRANSMIT_ATTEMPTS
-        pending.last_sent_at = 100.2
-
-        self._mark_inbound_active(server, endpoint, 100.4)
-        fake_socket = _FakeSocket()
-        with patch('opensnap.udp_server.time.monotonic', return_value=100.5):
-            server._retransmit_due(fake_socket)  # type: ignore[arg-type]
-
-        self.assertEqual(len(fake_socket.sent), 1)
-        self.assertIn(key, server._reliable_pending)
-        server._engine.handle_transport_timeout.assert_not_called()
-
     def test_retry_capped_pending_for_missing_session_is_cleared(self) -> None:
         server = self._server()
         endpoint = Endpoint(host='127.0.0.1', port=50017)
@@ -453,6 +427,114 @@ class UdpReliabilityTests(unittest.TestCase):
         self.assertEqual(len(fake_socket.sent), 0)
         self.assertNotIn(key, server._reliable_pending)
         server._engine.handle_transport_timeout.assert_not_called()
+
+    def test_room_pending_clear_drops_only_room_channel_packets(self) -> None:
+        server = self._server()
+        endpoint = Endpoint(host='127.0.0.1', port=50017)
+        session_id = 0x17170001
+
+        room_message = self._reliable_message(
+            endpoint=endpoint,
+            session_id=session_id,
+            sequence_number=101,
+        )
+        lobby_message = self._control_reliable_message(
+            endpoint=endpoint,
+            session_id=session_id,
+            sequence_number=102,
+        )
+        server._track_reliable(room_message, b'room', 0.0)
+        server._track_reliable(lobby_message, b'lobby', 0.0)
+        server._enqueue_deferred_reliable(room_message)
+        server._enqueue_deferred_reliable(lobby_message)
+
+        server._apply_room_pending_clears([(endpoint, session_id)])
+
+        remaining_sequences = sorted(
+            sequence
+            for host, port, pending_session, sequence in server._reliable_pending
+            if host == endpoint.host and port == endpoint.port and pending_session == session_id
+        )
+        self.assertEqual(remaining_sequences, [102])
+        deferred_sequences = [
+            queued.sequence_number
+            for queued in server._deferred_reliable[(endpoint.host, endpoint.port, session_id)]
+        ]
+        self.assertEqual(deferred_sequences, [102])
+
+    def test_reliable_send_defers_once_inflight_window_is_full(self) -> None:
+        server = self._server()
+        endpoint = Endpoint(host='127.0.0.1', port=50020)
+        session_id = 0x20202021
+        fake_socket = _FakeSocket()
+
+        messages = [
+            self._reliable_message(
+                endpoint=endpoint,
+                session_id=session_id,
+                sequence_number=sequence,
+            )
+            for sequence in range(server._MAX_INFLIGHT_RELIABLE_PER_SESSION + 1)
+        ]
+
+        with patch('opensnap.udp_server.time.monotonic', return_value=20.0):
+            server._send_messages(fake_socket, messages)  # type: ignore[arg-type]
+
+        self.assertEqual(len(fake_socket.sent), server._MAX_INFLIGHT_RELIABLE_PER_SESSION)
+        self.assertIn(
+            (endpoint.host, endpoint.port, session_id, server._MAX_INFLIGHT_RELIABLE_PER_SESSION - 1),
+            server._reliable_pending,
+        )
+        self.assertNotIn(
+            (endpoint.host, endpoint.port, session_id, server._MAX_INFLIGHT_RELIABLE_PER_SESSION),
+            server._reliable_pending,
+        )
+        self.assertEqual(
+            len(server._deferred_reliable[(endpoint.host, endpoint.port, session_id)]),
+            1,
+        )
+
+    def test_exact_ack_flushes_one_deferred_reliable_when_window_slot_opens(self) -> None:
+        server = self._server()
+        endpoint = Endpoint(host='127.0.0.1', port=50021)
+        session_id = 0x21212121
+        fake_socket = _FakeSocket()
+
+        messages = [
+            self._reliable_message(
+                endpoint=endpoint,
+                session_id=session_id,
+                sequence_number=sequence,
+            )
+            for sequence in range(server._MAX_INFLIGHT_RELIABLE_PER_SESSION + 1)
+        ]
+        with patch('opensnap.udp_server.time.monotonic', return_value=30.0):
+            server._send_messages(fake_socket, messages)  # type: ignore[arg-type]
+
+        ack = SnapMessage(
+            endpoint=endpoint,
+            type_flags=FLAG_ROOM | FLAG_RESPONSE,
+            packet_number=0,
+            command=commands.CMD_ACK,
+            session_id=session_id,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=b'',
+        )
+        server._process_transport_acks(encode_messages([ack]), endpoint)
+
+        with patch('opensnap.udp_server.time.monotonic', return_value=30.1):
+            server._send_messages(fake_socket, [])  # type: ignore[arg-type]
+
+        self.assertIn(
+            (endpoint.host, endpoint.port, session_id, server._MAX_INFLIGHT_RELIABLE_PER_SESSION),
+            server._reliable_pending,
+        )
+        self.assertNotIn(
+            (endpoint.host, endpoint.port, session_id, 0),
+            server._reliable_pending,
+        )
+        self.assertNotIn((endpoint.host, endpoint.port, session_id), server._deferred_reliable)
 
     def test_new_reliable_packet_is_not_deferred_behind_capped_older_sequence(self) -> None:
         server = self._server()

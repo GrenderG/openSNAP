@@ -1,6 +1,6 @@
 """Protocol engine orchestrating decode, dispatch, and tick."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 import logging
 from typing import Literal
@@ -36,6 +36,7 @@ class EngineResult:
 
     messages: list[SnapMessage]
     errors: list[str]
+    room_pending_clears: list[tuple[Endpoint, int]] = field(default_factory=list)
 
 
 class DuplicateAckPolicy(IntEnum):
@@ -114,8 +115,10 @@ class SnapProtocolEngine:
         )
         outbound: list[SnapMessage] = []
         errors: list[str] = []
+        room_pending_clears: list[tuple[Endpoint, int]] = []
         duplicate_reliable_multi_parent = False
         for message in messages:
+            prior_room_id = self._room_id_for_session(message.session_id)
             self._logger.debug(
                 (
                     'Handling command 0x%02x from %s:%d '
@@ -224,6 +227,8 @@ class SnapProtocolEngine:
             try:
                 produced = self._router.dispatch(self._context, message)
                 outbound.extend(produced)
+                if self._should_clear_room_pending_after_message(message, prior_room_id):
+                    room_pending_clears.append((message.endpoint, message.session_id))
                 self._logger.debug(
                     'Handler for command 0x%02x produced %d outbound message(s).',
                     message.command,
@@ -246,7 +251,11 @@ class SnapProtocolEngine:
             len(outbound),
             len(errors),
         )
-        return EngineResult(messages=outbound, errors=errors)
+        return EngineResult(
+            messages=outbound,
+            errors=errors,
+            room_pending_clears=list(dict.fromkeys(room_pending_clears)),
+        )
 
     def decode_datagram(self, payload: bytes, endpoint: Endpoint) -> list[SnapMessage]:
         """Decode one inbound datagram using the configured game plugin when applicable."""
@@ -291,6 +300,23 @@ class SnapProtocolEngine:
 
         self._sessions.remove(session.session_id)
         return messages
+
+    def _room_id_for_session(self, session_id: int) -> int:
+        """Return the current room id for one session, or `0` if unknown."""
+
+        session = self._sessions.get(session_id)
+        if session is None:
+            return 0
+        return session.room_id
+
+    def _should_clear_room_pending_after_message(self, message: SnapMessage, prior_room_id: int) -> bool:
+        """Report whether one handled message moved a session out of a room."""
+
+        if message.command != commands.CMD_LEAVE:
+            return False
+        if prior_room_id <= 0:
+            return False
+        return self._room_id_for_session(message.session_id) == 0
 
     def resolve_session(self, endpoint: Endpoint, session_id: int) -> Session | None:
         """Resolve one session by id first, then by bound endpoint."""

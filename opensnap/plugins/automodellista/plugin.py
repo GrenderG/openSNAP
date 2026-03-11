@@ -39,7 +39,7 @@ PENDING_ROOM_JOIN_RETRY_TICKS = 3
 PENDING_ROOM_JOIN_MAX_RETRIES = 3
 # Event create-race uses this client-side sentinel when password is disabled.
 # Keep room creation semantics as "no password", not literal sentinel text.
-ROOM_PASSWORD_EMPTY_SENTINELS = frozenset({'no pw'})
+ROOM_PASSWORD_EMPTY_SENTINELS = frozenset({'No PW'})
 
 
 @dataclass(slots=True)

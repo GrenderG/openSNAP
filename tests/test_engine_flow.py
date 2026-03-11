@@ -930,6 +930,7 @@ class EngineFlowTests(unittest.TestCase):
         leave_result = engine.handle_datagram(_encode(leave_request), endpoint_two)
         self.assertFalse(leave_result.errors)
         self.assertEqual(len(leave_result.messages), 2)
+        self.assertEqual(leave_result.room_pending_clears, [(endpoint_two, leaver_session)])
 
         result_wrapper = leave_result.messages[0]
         callback = leave_result.messages[1]
@@ -1037,6 +1038,7 @@ class EngineFlowTests(unittest.TestCase):
         leave_result = engine.handle_datagram(_encode(leave_request), endpoint_one)
         self.assertFalse(leave_result.errors)
         self.assertEqual(len(leave_result.messages), 2)
+        self.assertEqual(leave_result.room_pending_clears, [(endpoint_one, host_session)])
 
         result_wrapper = leave_result.messages[0]
         leave_callback = leave_result.messages[1]
