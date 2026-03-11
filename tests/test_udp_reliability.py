@@ -396,7 +396,10 @@ class UdpReliabilityTests(unittest.TestCase):
 
         self._mark_inbound_active(server, endpoint, 100.0)
         fake_socket = _FakeSocket()
-        with patch('opensnap.udp_server.time.monotonic', return_value=105.1):
+        with patch(
+            'opensnap.udp_server.time.monotonic',
+            return_value=100.0 + server._SESSION_INACTIVITY_TIMEOUT_SECONDS + 0.1,
+        ):
             server._retransmit_due(fake_socket)  # type: ignore[arg-type]
 
         self.assertEqual(len(fake_socket.sent), 0)

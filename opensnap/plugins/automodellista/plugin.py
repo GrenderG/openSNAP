@@ -1136,7 +1136,7 @@ def _network_username(value: str) -> str:
 def _normalize_room_password(value: str) -> str:
     """Map known client sentinel text to an empty room password."""
 
-    if value.casefold() in ROOM_PASSWORD_EMPTY_SENTINELS:
+    if value.casefold() in {sentinel.casefold() for sentinel in ROOM_PASSWORD_EMPTY_SENTINELS}:
         return ''
     return value
 

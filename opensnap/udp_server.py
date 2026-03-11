@@ -65,7 +65,7 @@ class SnapUdpServer:
       and keeps its normal resend cadence while the peer is still active. The
       retry cap only starts the timeout watch; it is not a stale-packet drop
       rule.
-    - If the same peer then stays inbound-silent for `5 s` after a reliable
+    - If the same peer then stays inbound-silent for `60 s` after a reliable
       packet has already hit the retry cap, the server treats that as a
       transport timeout and asks the engine/plugin to clean up the timed-out
       session.
@@ -100,10 +100,13 @@ class SnapUdpServer:
     _MAX_INFLIGHT_RELIABLE_PER_SESSION = 0x10
     # `kkReceiveData` refreshes the last-receive clock on every inbound packet,
     # and `kkDispatchOperationByPreriod` escalates to timeout after roughly
-    # `0x1388` (`5000 ms`) of silence:
+    # `0x1388` (`5000 ms`) of silence in both builds:
     # - `SLUS_204.98` `0x002e887c`, `0x002e8700..0x002e8778`
     # - `SLUS_206.42` `0x002eed94`, `0x002eeb14..0x002eebd8`
-    _SESSION_INACTIVITY_TIMEOUT_SECONDS = 5.0
+    # openSNAP intentionally uses a broader `60 s` server-side grace so clients
+    # have more room to recover from temporary network hiccups before the
+    # session is torn down.
+    _SESSION_INACTIVITY_TIMEOUT_SECONDS = 60.0
     # `kkSendOperation` keeps requeueing only while the resend count is `< 5`,
     # so the server mirrors that as four counted retransmits after the initial
     # send:
