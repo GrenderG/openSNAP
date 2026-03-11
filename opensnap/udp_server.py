@@ -169,8 +169,14 @@ class SnapUdpServer:
                         payload, (host, port) = udp_socket.recvfrom(4096)
                     except socket.timeout:
                         payload = b''
-                    except OSError:
-                        break
+                    except OSError as exc:
+                        self._logger.error(
+                            'UDP recvfrom failed on %s:%d: %s',
+                            self._config.host,
+                            self._config.port,
+                            exc,
+                        )
+                        raise
 
                     if payload:
                         received_at = time.monotonic()

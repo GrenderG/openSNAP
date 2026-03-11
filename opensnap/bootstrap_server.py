@@ -5,7 +5,7 @@ import logging
 from opensnap.config import default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.env_loader import load_env_file
-from opensnap.logging_utils import configure_logging
+from opensnap.logging_utils import configure_logging, exit_with_logged_os_error
 from opensnap.udp_server import SnapUdpServer
 
 
@@ -33,8 +33,8 @@ def main() -> None:
         server.run()
     except KeyboardInterrupt:
         logger.info('Received keyboard interrupt, shutting down bootstrap service.')
-    except OSError:
-        raise SystemExit(1)
+    except OSError as exc:
+        exit_with_logged_os_error(logger, service_name='bootstrap', error=exc)
 
 
 if __name__ == '__main__':

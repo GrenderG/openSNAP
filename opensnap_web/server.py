@@ -6,7 +6,7 @@ import ssl
 import threading
 
 from opensnap.env_loader import load_env_file
-from opensnap.logging_utils import configure_logging
+from opensnap.logging_utils import configure_logging, exit_with_logged_os_error
 from opensnap_web.app import create_web_app
 from opensnap_web.config import WebServerConfig, default_web_server_config
 from werkzeug.serving import BaseWSGIServer, ThreadedWSGIServer, make_server
@@ -49,8 +49,7 @@ def main(*, web_plugin: str | None = None) -> None:
     except KeyboardInterrupt:
         logger.info('Received keyboard interrupt, shutting down web service.')
     except OSError as exc:
-        logger.error('Failed to bind/start web service: %s', exc)
-        raise SystemExit(1) from exc
+        exit_with_logged_os_error(logger, service_name='web', error=exc)
     finally:
         if https_server is not None:
             https_server.shutdown()

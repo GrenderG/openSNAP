@@ -4,6 +4,7 @@ from collections.abc import Iterable
 import logging
 import os
 from pathlib import Path
+from typing import NoReturn
 
 DEFAULT_LOG_LEVEL = 'debug'
 DEFAULT_HEXDUMP_LIMIT = 16384
@@ -59,6 +60,18 @@ def configure_logging(level_name: str | None = None, *, service_name: str) -> No
             )
         else:
             logger.info('File logging enabled at %s.', resolved_log_file_path)
+
+
+def exit_with_logged_os_error(
+    logger: logging.Logger,
+    *,
+    service_name: str,
+    error: OSError,
+) -> NoReturn:
+    """Log one fatal service `OSError` with traceback, then exit non-zero."""
+
+    logger.exception('Fatal %s service OSError: %s', service_name, error)
+    raise SystemExit(1) from error
 
 
 def parse_log_level(level_name: str) -> int:

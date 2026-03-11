@@ -9,7 +9,7 @@ import socket
 from dnslib import A, DNSRecord, QTYPE, RCODE, RR
 
 from opensnap.env_loader import load_env_file
-from opensnap.logging_utils import configure_logging
+from opensnap.logging_utils import configure_logging, exit_with_logged_os_error
 from opensnap_dns.config import DnsServerConfig, default_dns_server_config
 
 
@@ -64,8 +64,14 @@ class SnapDnsServer:
                     payload, (host, port) = dns_socket.recvfrom(4096)
                 except socket.timeout:
                     continue
-                except OSError:
-                    break
+                except OSError as exc:
+                    self._logger.error(
+                        'DNS recvfrom failed on %s:%d: %s',
+                        self._config.host,
+                        self._config.port,
+                        exc,
+                    )
+                    raise
 
                 self._logger.debug(
                     'Received DNS datagram from %s:%d (%d byte(s)).',
@@ -195,8 +201,8 @@ def main() -> None:
         server.run()
     except KeyboardInterrupt:
         logger.info('Received keyboard interrupt, shutting down DNS service.')
-    except OSError:
-        raise SystemExit(1)
+    except OSError as exc:
+        exit_with_logged_os_error(logger, service_name='dns', error=exc)
 
 
 if __name__ == '__main__':
