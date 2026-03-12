@@ -249,10 +249,15 @@ def handle_bootstrap_check(context: HandlerContext, message: SnapMessage) -> lis
 def detect_game_identifier(*, message: SnapMessage, default_game_identifier: str) -> str:
     """Return the bootstrap-selected game id for one login attempt.
 
-    TODO: The current UDP bootstrap payload does not expose the original
-    bootstrap URL or hostname through this layer. Once a stable, version-agnostic
-    protocol identifier is confirmed, use it here. Until then, stay on the
-    configured default instead of guessing from packet quirks.
+    Intentionally *not* treated as discriminators:
+    - the legacy KAGE footer (`0xBA476610`);
+    - the primary footer (`0xBA476611`);
+    - the secondary `@cei-auth` login string copy.
+
+    TODO: Recover a game-specific bootstrap discriminator that is not tied to
+    footer bytes alone. The KAGE footer currently cannot be assigned directly
+    to Auto Modellista beta1 because that variant may be shared by other SN@P
+    titles.
     """
 
     _ = message

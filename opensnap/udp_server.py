@@ -50,10 +50,14 @@ class SnapUdpServer:
       payload.
     - Outbound reliable messages are tracked by
       `(endpoint, session_id, sequence_number)` before they are sent.
-    - Reliable retirement is driven only by inbound response-path ACK state.
-      That mirrors the client `kkDispatchingPacket -> kkSetRevAck` path:
-      response packets carry the reverse ACK that retires one exact queued
-      reliable sequence. Retirement is exact-sequence only, never cumulative.
+    - Reliable retirement uses the exact ACK number carried by inbound
+      response packets, including bare ACK frames. That mirrors
+      `kkDispatchingPacket -> kkSetRevAck` in the client.
+    - The normal reliable receive path (`kkReceiveExtentCheck* ->
+      kkSetAckNumber`) is separate: it queues an ACK for the received reliable
+      sequence from packet offset `+8`, not from the incoming packet's own
+      reverse-ACK field. Plain reliable `0xa000` room traffic is therefore not
+      a valid reverse-ACK retirement source.
     - Retransmission is oldest-pending-per-session. The server retries every
       `200 ms`, up to four counted retransmits, which matches the client
       `kkSendOperation` cadence and retry gate.
@@ -61,10 +65,9 @@ class SnapUdpServer:
       keeps at most 16 reliable packets in flight per endpoint/session and
       defers newer reliable work behind that window instead of emitting it
       immediately.
-    - After the retry cap is reached, the oldest missing packet stays pending
-      and keeps its normal resend cadence while the peer is still active. The
-      retry cap only starts the timeout watch; it is not a stale-packet drop
-      rule.
+    - After the retry cap is reached, the packet stays pending but is no
+      longer retransmitted. `kkSendOperation` stops requeueing at that point;
+      the later watchdog is a timeout path, not a second resend loop.
     - If the same peer then stays inbound-silent for `60 s` after a reliable
       packet has already hit the retry cap, the server treats that as a
       transport timeout and asks the engine/plugin to clean up the timed-out
@@ -81,8 +84,8 @@ class SnapUdpServer:
     4. Periodically tick the engine and retransmit due reliable packets.
 
     The split matters: the client handles reliable receive progression and
-    reverse-ACK retirement in different paths, and the server has to mirror
-    that instead of collapsing them into one rule.
+    reverse-ACK retirement in different paths, and the server has to keep that
+    separation instead of collapsing both into one ACK rule.
     """
 
     # `kkSendOperation` adds `0x00c8` (`200 ms`) to the next-send timestamp in
@@ -90,6 +93,11 @@ class SnapUdpServer:
     # - `SLUS_204.98` `0x002e6b64`
     # - `SLUS_206.42` `0x002ea8f0`
     _RETRANSMIT_INTERVAL_SECONDS = 0.20
+    # Idle socket poll fallback. When no reliable packet is pending, the recv
+    # loop can sleep longer without smearing the binary-backed `200 ms`
+    # retransmit cadence; `_poll_timeout_seconds(...)` shortens this as soon as
+    # one pending reliable has an earlier due time.
+    _IDLE_SOCKET_POLL_SECONDS = 0.50
     # `kkCreateARUDPRevWindow(0x10)` allocates a 16-entry reliable receive
     # window in both builds:
     # - `SLUS_204.98` `0x002e6248`
@@ -106,6 +114,7 @@ class SnapUdpServer:
     # openSNAP intentionally uses a broader `60 s` server-side grace so clients
     # have more room to recover from temporary network hiccups before the
     # session is torn down.
+    #_SESSION_INACTIVITY_TIMEOUT_SECONDS = 5.0
     _SESSION_INACTIVITY_TIMEOUT_SECONDS = 60.0
     # `kkSendOperation` keeps requeueing only while the resend count is `< 5`,
     # so the server mirrors that as four counted retransmits after the initial
@@ -162,21 +171,21 @@ class SnapUdpServer:
                 next_tick = time.monotonic() + self._tick_interval_seconds
 
                 while not self._stopped:
-                    timeout = max(0.0, next_tick - time.monotonic())
-                    udp_socket.settimeout(min(timeout, 0.5))
+                    now = time.monotonic()
+                    udp_socket.settimeout(self._poll_timeout_seconds(now, next_tick))
 
                     try:
                         payload, (host, port) = udp_socket.recvfrom(4096)
                     except socket.timeout:
                         payload = b''
                     except OSError as exc:
-                        self._logger.error(
-                            'UDP recvfrom failed on %s:%d: %s',
+                        self._logger.exception(
+                            'UDP recvfrom failed on %s:%d; continuing: %s',
                             self._config.host,
                             self._config.port,
                             exc,
                         )
-                        raise
+                        payload = b''
 
                     if payload:
                         received_at = time.monotonic()
@@ -229,6 +238,30 @@ class SnapUdpServer:
 
         self._stopped = True
 
+    def _poll_timeout_seconds(self, now: float, next_tick: float) -> float:
+        """Return how long the recv loop may sleep before the next due task."""
+
+        tick_delay = max(0.0, next_tick - now)
+        retransmit_delay = self._next_retransmit_delay_seconds(now)
+        if retransmit_delay is None:
+            return min(tick_delay, self._IDLE_SOCKET_POLL_SECONDS)
+        return min(tick_delay, retransmit_delay, self._RETRANSMIT_INTERVAL_SECONDS)
+
+    def _next_retransmit_delay_seconds(self, now: float) -> float | None:
+        """Return seconds until the next oldest pending reliable becomes due."""
+
+        next_delay: float | None = None
+        for key in self._oldest_pending_keys_by_session():
+            pending = self._reliable_pending.get(key)
+            if pending is None:
+                continue
+            if pending.retransmit_attempts >= self._MAX_RETRANSMIT_ATTEMPTS:
+                continue
+            delay = max(0.0, self._RETRANSMIT_INTERVAL_SECONDS - (now - pending.last_sent_at))
+            if next_delay is None or delay < next_delay:
+                next_delay = delay
+        return next_delay
+
     def _send_messages(self, udp_socket: socket.socket, messages: list[SnapMessage]) -> None:
         """Encode and send outbound messages.
 
@@ -271,7 +304,7 @@ class SnapUdpServer:
             self._logger.error('Engine error from %s:%d: %s', endpoint.host, endpoint.port, error)
 
     def _process_transport_acks(self, payload: bytes, endpoint: Endpoint) -> None:
-        """Retire pending reliable packets from response-path reverse ACKs."""
+        """Retire pending reliable packets from exact ACKs on response packets."""
 
         try:
             messages = self._engine.decode_datagram(payload, endpoint)
@@ -279,9 +312,10 @@ class SnapUdpServer:
             return
 
         for message in messages:
+            if message.embedded_in_multi:
+                continue
             if (message.type_flags & FLAG_RESPONSE) == 0:
                 continue
-
             self._clear_reliable_pending(endpoint, message.session_id, message.acknowledge_number)
 
     def _track_reliable(
@@ -397,7 +431,14 @@ class SnapUdpServer:
                 pending.sequence_number,
                 pending.retransmit_attempts + 1,
             )
-            udp_socket.sendto(pending.datagram, (pending.endpoint.host, pending.endpoint.port))
+            if not self._send_socket_datagram(
+                udp_socket,
+                datagram=pending.datagram,
+                endpoint=pending.endpoint,
+                action='retransmit reliable packet',
+            ):
+                pending.last_sent_at = now
+                continue
             pending.retransmit_attempts += 1
             pending.last_sent_at = now
 
@@ -428,22 +469,10 @@ class SnapUdpServer:
             self._timeout_session(udp_socket, pending)
             return
 
-        if (now - pending.last_sent_at) < self._RETRANSMIT_INTERVAL_SECONDS:
-            return
-
-        self._logger.debug(
-            (
-                'Retransmitting capped reliable packet 0x%02x to %s:%d '
-                '(sess=0x%08x seq=%d).'
-            ),
-            pending.command,
-            pending.endpoint.host,
-            pending.endpoint.port,
-            pending.session_id,
-            pending.sequence_number,
-        )
-        udp_socket.sendto(pending.datagram, (pending.endpoint.host, pending.endpoint.port))
-        pending.last_sent_at = now
+        # After the fourth retry the client leaves the packet in timeout-watch
+        # state; it does not keep requeueing it on the normal `200 ms` resend
+        # cadence.
+        return
 
     def _oldest_pending_keys_by_session(self) -> list[tuple[str, int, int, int]]:
         """Return the oldest pending reliable packet per endpoint/session."""
@@ -564,7 +593,12 @@ class SnapUdpServer:
             endpoint.port,
             format_hexdump(datagram),
         )
-        udp_socket.sendto(datagram, (endpoint.host, endpoint.port))
+        self._send_socket_datagram(
+            udp_socket,
+            datagram=datagram,
+            endpoint=endpoint,
+            action='send fresh datagram',
+        )
 
     def _send_encoded_message(
         self,
@@ -586,6 +620,29 @@ class SnapUdpServer:
             command=message.command,
             datagram=datagram,
         )
+
+    def _send_socket_datagram(
+        self,
+        udp_socket: socket.socket,
+        *,
+        datagram: bytes,
+        endpoint: Endpoint,
+        action: str,
+    ) -> bool:
+        """Send one UDP datagram unless the socket error is truly fatal."""
+
+        try:
+            udp_socket.sendto(datagram, (endpoint.host, endpoint.port))
+        except OSError as exc:
+            self._logger.exception(
+                'UDP sendto failed during %s to %s:%d; continuing: %s',
+                action,
+                endpoint.host,
+                endpoint.port,
+                exc,
+            )
+            return False
+        return True
 
     def _should_defer_reliable(self, message: SnapMessage) -> bool:
         """Check whether a reliable packet must wait for in-flight window room."""

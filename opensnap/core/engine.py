@@ -118,6 +118,8 @@ class SnapProtocolEngine:
         room_pending_clears: list[tuple[Endpoint, int]] = []
         duplicate_reliable_multi_parent = False
         for message in messages:
+            if message.wire_format == WIRE_FORMAT_SNAP:
+                self._normalize_session_for_message(message)
             prior_room_id = self._room_id_for_session(message.session_id)
             self._logger.debug(
                 (
@@ -143,7 +145,6 @@ class SnapProtocolEngine:
                     )
                     continue
 
-                self._normalize_session_for_message(message)
                 # Track highest inbound sequence per session so direct fanout ACKs can
                 # mirror client-side flow control state.
                 accepted = self._sessions.accept_incoming(message.session_id, message.sequence_number)
@@ -312,7 +313,7 @@ class SnapProtocolEngine:
     def _should_clear_room_pending_after_message(self, message: SnapMessage, prior_room_id: int) -> bool:
         """Report whether one handled message moved a session out of a room."""
 
-        if message.command != commands.CMD_LEAVE:
+        if message.command not in {commands.CMD_LEAVE, commands.CMD_LOGIN_TO_KICS}:
             return False
         if prior_room_id <= 0:
             return False

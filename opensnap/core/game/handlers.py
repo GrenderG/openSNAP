@@ -47,6 +47,8 @@ def handle_login_to_kics(context: HandlerContext, message: SnapMessage) -> list[
         if rebound is not None:
             session = rebound
 
+    _reset_room_state_for_relogin(context, session)
+
     if len(message.payload) < 0x130:
         LOGGER.warning(
             (
@@ -70,6 +72,29 @@ def handle_login_to_kics(context: HandlerContext, message: SnapMessage) -> list[
             session_id=session.session_id,
         )
     ]
+
+
+def _reset_room_state_for_relogin(context: HandlerContext, session) -> None:
+    """Silently clear stale room membership when a client re-enters via KICS login."""
+
+    room_id = session.room_id
+    if room_id <= 0:
+        return
+
+    room = context.rooms.get(room_id)
+    if room is None:
+        context.sessions.set_room(session.session_id, 0)
+        return
+
+    if session.session_id == room.host_session_id:
+        for member in context.sessions.list_room_members(room_id):
+            context.sessions.set_room(member.session_id, 0)
+        for member_session_id in tuple(room.members):
+            context.rooms.leave(room_id, member_session_id)
+        return
+
+    context.rooms.leave(room_id, session.session_id)
+    context.sessions.set_room(session.session_id, 0)
 
 
 @dataclass(frozen=True, slots=True)

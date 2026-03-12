@@ -217,6 +217,10 @@ SPECS.md
 opensnap.db
 *.sqlite
 *.sqlite3
+*.pcap
+*.pcapng
+
+# Random stuff used for debugging/research.
 # Auto Modellista Beta 1 ELF
 SLUS_204.98
 # Auto Modellista Beta 2 ELF
@@ -225,6 +229,8 @@ SLUS_280.31
 SLUS_206.42
 amus_bin/
 ambeta1_bin/
+etc/experiments/
+AFSPacker/
 
 # Files from https://github.com/flyinghead/kage_server/ used for debugging / comparison.
 kageserver.cpp

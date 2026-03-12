@@ -65,13 +65,13 @@ class SnapDnsServer:
                 except socket.timeout:
                     continue
                 except OSError as exc:
-                    self._logger.error(
-                        'DNS recvfrom failed on %s:%d: %s',
+                    self._logger.exception(
+                        'DNS recvfrom failed on %s:%d; continuing: %s',
                         self._config.host,
                         self._config.port,
                         exc,
                     )
-                    raise
+                    continue
 
                 self._logger.debug(
                     'Received DNS datagram from %s:%d (%d byte(s)).',
@@ -82,7 +82,16 @@ class SnapDnsServer:
                 response = self._build_response(payload)
                 if response is None:
                     continue
-                dns_socket.sendto(response, (host, port))
+                try:
+                    dns_socket.sendto(response, (host, port))
+                except OSError as exc:
+                    self._logger.exception(
+                        'DNS sendto failed to %s:%d; continuing: %s',
+                        host,
+                        port,
+                        exc,
+                    )
+                    continue
 
     def stop(self) -> None:
         """Request graceful DNS-loop stop."""

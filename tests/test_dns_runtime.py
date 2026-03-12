@@ -1,7 +1,9 @@
 """Runtime-loop failure tests for the DNS server."""
 
+import errno
+import socket
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 try:
     from opensnap_dns.config import DnsServerConfig
@@ -11,14 +13,17 @@ except ModuleNotFoundError:  # pragma: no cover
     SnapDnsServer = None
 
 
-class _FailingRecvSocket:
-    """Socket double that fails on the first DNS `recvfrom`."""
+class _TransientRecvSocket:
+    """Socket double that emits one recoverable DNS recv error, then stops."""
 
-    def __init__(self) -> None:
+    def __init__(self, error: OSError, stop_callback) -> None:
         self.bound: tuple[str, int] | None = None
         self.timeout: float | None = None
+        self.error = error
+        self.stop_callback = stop_callback
+        self.recv_calls = 0
 
-    def __enter__(self) -> "_FailingRecvSocket":
+    def __enter__(self) -> "_TransientRecvSocket":
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:
@@ -34,29 +39,37 @@ class _FailingRecvSocket:
         self.timeout = timeout
 
     def recvfrom(self, size: int) -> tuple[bytes, tuple[str, int]]:
-        raise OSError('network down')
+        self.recv_calls += 1
+        if self.recv_calls == 1:
+            raise self.error
+        self.stop_callback()
+        raise socket.timeout()
 
 
 @unittest.skipIf(SnapDnsServer is None, 'dnslib is not installed.')
 class DnsRuntimeTests(unittest.TestCase):
-    """Verify DNS socket-loop failures do not exit silently."""
+    """Verify DNS socket-loop errors stay visible without killing the loop."""
 
-    def test_run_logs_and_reraises_recvfrom_os_error(self) -> None:
+    def test_run_logs_and_continues_after_recvfrom_os_error(self) -> None:
         assert DnsServerConfig is not None
-        server = SnapDnsServer(config=DnsServerConfig(entries={}, ttl=60))
-        fake_socket = _FailingRecvSocket()
 
-        with self.assertLogs('opensnap.dns', level='ERROR') as captured:
-            with self.assertRaises(OSError) as raised:
-                with patch('opensnap_dns.server.socket.socket', return_value=fake_socket):
-                    server.run()
-
-        self.assertEqual(str(raised.exception), 'network down')
-        joined = '\n'.join(captured.output)
-        self.assertIn(
-            f'DNS recvfrom failed on {server._config.host}:{server._config.port}: network down',
-            joined,
+        runtime_errors = (
+            BlockingIOError(errno.EAGAIN, 'Resource temporarily unavailable'),
+            OSError('network down'),
+            OSError(errno.EBADF, 'Bad file descriptor'),
         )
+
+        for error in runtime_errors:
+            with self.subTest(error=str(error)):
+                server = SnapDnsServer(config=DnsServerConfig(entries={}, ttl=60))
+                fake_socket = _TransientRecvSocket(error, server.stop)
+
+                with self.assertLogs('opensnap.dns', level='ERROR') as captured:
+                    with patch('opensnap_dns.server.socket.socket', return_value=fake_socket):
+                        server.run()
+
+                self.assertEqual(fake_socket.recv_calls, 2)
+                self.assertIn('DNS recvfrom failed on', '\n'.join(captured.output))
 
 
 if __name__ == '__main__':

@@ -147,7 +147,7 @@ Environment variables for the split UDP services:
 The bootstrap and game servers are separate processes. Keep both pointed at the same `OPENSNAP_SQLITE_PATH` so the bootstrap-issued session id is available when the client reconnects to the game port.
 The bootstrap handshake stays on the bootstrap endpoint through login start and verifier exchange (`0x2c` / `0x41`). The client should not switch to the game endpoint until bootstrap login success returns the final game server IP/port.
 
-The bootstrap UDP layer does not receive the original web-style bootstrap URL through the current transport API, so the server cannot reliably infer the requested game from hostname or URL today. Bootstrap routing therefore uses the configured `OPENSNAP_BOOTSTRAP_DEFAULT_GAME_IDENTIFIER` unless a future protocol-level identifier is confirmed. The redirect target is then resolved through the explicit `OPENSNAP_GAME_SERVER_MAP` plus the current process's local game endpoint.
+The bootstrap UDP layer does not receive the original web-style bootstrap URL through the current transport API, so the server cannot reliably infer the requested game from hostname or URL alone today. openSNAP currently promotes the validated Auto Modellista beta1 KAGE footer (`0xBA476610`) to `automodellista_beta1`; all primary-footer (`0xBA476611`) clients still route through `OPENSNAP_BOOTSTRAP_DEFAULT_GAME_IDENTIFIER` because Auto Modellista beta2/release share the same proven bootstrap UDP path and those newer markers are also used by other SN@P titles. The redirect target is then resolved through the explicit `OPENSNAP_GAME_SERVER_MAP` plus the current process's local game endpoint.
 
 ## Run Bootstrap Server
 

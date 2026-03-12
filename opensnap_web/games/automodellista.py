@@ -538,6 +538,24 @@ AM_GAME_RULE_CONFIG = {
 
 AM_RANK_PAGE = '<html><body>am_rank</body></html>\n'
 AM_TABOO_PAGE = '<html><body>am_taboo</body></html>\n'
+# `patch*.html` is not a cosmetic page family in either Beta1 or release.
+#
+# Reverse-engineered browser contract:
+# - `AM-USA-GAME-PROG` is special-tag type `0x26` in both overlays.
+# - `special_tag_check` maps that to parser mode `11`.
+# - once the page also exposes a `<CSV>` block, `get_crs_shadow_data(11)`
+#   decodes the numeric payload directly into the same `0x20000` patch buffer
+#   later executed by main-ELF `PatchExec`.
+# - the first CSV byte is a fixed chunk id `'1'..'5'`; chunks 1..4 fill
+#   `0x7000` bytes each and chunk 5 fills the final `0x4000`.
+#
+# So:
+# - Beta1 `/amusa/patch1.html` .. `/amusa/patch5.html`
+# - Release `/amusa/patch/2/am_patch1.html` .. `/amusa/patch/2/am_patch5.html`
+# are five transport shards of one runtime patch program, not patch notes.
+#
+# These placeholder pages are intentionally inert because they do not provide
+# the original `<!--AM-USA-GAME-PROG-->` + `<CSV>` payload contract.
 AM_PATCH1_PAGE = '<html><body>This is test patch1.html file</body></html>\n'
 AM_PATCH2_PAGE = '<html><body>This is test patch2.html file</body></html>\n'
 AM_PATCH3_PAGE = '<html><body>This is test patch3.html file</body></html>\n'
@@ -1077,6 +1095,15 @@ class AutoModellistaWebModule:
                 host=host,
             )
 
+        # Keep both patch URL families alive.
+        #
+        # Binary-backed purpose:
+        # - Beta1 fetches `/amusa/patchN.html`
+        # - release fetches `/amusa/patch/2/am_patchN.html`
+        # - both are aliases for the `AM-USA-GAME-PROG` runtime patch transport
+        #   consumed by browser parser mode 11 and executed later by `PatchExec`
+        # - page number `N` is meaningful: it selects chunk `'1'..'5'` of the
+        #   five-piece `0x20000` patch buffer layout.
         for patch_index in sorted(self.patch_pages):
             page = self.patch_pages[patch_index]
             view = _make_static_page_view(tools, page)

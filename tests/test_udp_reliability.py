@@ -9,6 +9,7 @@ from opensnap.protocol.codec import decode_datagram, encode_messages
 from opensnap.protocol.constants import (
     FLAG_CHANNEL_BITS,
     FLAG_LOBBY,
+    FLAG_MULTI,
     FLAG_RELIABLE,
     FLAG_RESPONSE,
     FLAG_ROOM,
@@ -173,6 +174,76 @@ class UdpReliabilityTests(unittest.TestCase):
             if host == endpoint.host and port == endpoint.port and pending_session == session_id
         )
         self.assertEqual(remaining_sequences, [30, 31])
+
+    def test_embedded_multi_followup_ack_is_ignored_for_pending_retirement(self) -> None:
+        server = self._server()
+        endpoint = Endpoint(host='127.0.0.1', port=50024)
+        session_id = 0x2468ACE0
+
+        outgoing = self._reliable_message(
+            endpoint=endpoint,
+            session_id=session_id,
+            sequence_number=31,
+        )
+        server._track_reliable(outgoing, b'packet', 0.0)
+
+        outer = SnapMessage(
+            endpoint=endpoint,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE | FLAG_MULTI,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=session_id,
+            sequence_number=2000,
+            acknowledge_number=0,
+            payload=b'\x80\x02',
+            size_word_override=(FLAG_ROOM | FLAG_RELIABLE | FLAG_MULTI) | 0x0012,
+        )
+        embedded = SnapMessage(
+            endpoint=endpoint,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=session_id,
+            sequence_number=0,
+            acknowledge_number=31,
+            payload=b'',
+        )
+
+        server._process_transport_acks(encode_messages([outer, embedded]), endpoint)
+
+        self.assertIn((endpoint.host, endpoint.port, session_id, 31), server._reliable_pending)
+
+    def test_non_reliable_non_response_payload_ack_is_ignored_for_pending_retirement(self) -> None:
+        server = self._server()
+        endpoint = Endpoint(host='127.0.0.1', port=50022)
+        session_id = 0x2222ABCD
+
+        for sequence in (50, 51):
+            outgoing = self._reliable_message(
+                endpoint=endpoint,
+                session_id=session_id,
+                sequence_number=sequence,
+            )
+            server._track_reliable(outgoing, b'packet', 0.0)
+
+        incoming = SnapMessage(
+            endpoint=endpoint,
+            type_flags=FLAG_ROOM,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=session_id,
+            sequence_number=3000,
+            acknowledge_number=51,
+            payload=b'\x80\x07' + b'\x00' * 62,
+        )
+        server._process_transport_acks(encode_messages([incoming]), endpoint)
+
+        remaining_sequences = sorted(
+            sequence
+            for host, port, pending_session, sequence in server._reliable_pending
+            if host == endpoint.host and port == endpoint.port and pending_session == session_id
+        )
+        self.assertEqual(remaining_sequences, [50, 51])
 
     def test_bare_ack_clears_matching_pending_packet(self) -> None:
         server = self._server()
@@ -351,7 +422,7 @@ class UdpReliabilityTests(unittest.TestCase):
         self.assertTrue(pending.retry_cap_logged)
         server._engine.handle_transport_timeout.assert_not_called()
 
-    def test_retry_capped_packet_retransmits_on_fast_retry_cadence(self) -> None:
+    def test_retry_capped_packet_stays_pending_without_further_retransmit(self) -> None:
         server = self._server()
         endpoint = Endpoint(host='127.0.0.1', port=50014)
         session_id = 0x14141414
@@ -372,11 +443,28 @@ class UdpReliabilityTests(unittest.TestCase):
         with patch('opensnap.udp_server.time.monotonic', return_value=100.5):
             server._retransmit_due(fake_socket)  # type: ignore[arg-type]
 
-        self.assertEqual(len(fake_socket.sent), 1)
-        self.assertEqual(fake_socket.sent[0][0], b'packet')
+        self.assertEqual(len(fake_socket.sent), 0)
         self.assertIn(key, server._reliable_pending)
-        self.assertEqual(pending.last_sent_at, 100.5)
+        self.assertEqual(pending.last_sent_at, 100.2)
         server._engine.handle_transport_timeout.assert_not_called()
+
+    def test_next_retransmit_delay_ignores_retry_capped_pending(self) -> None:
+        server = self._server()
+        endpoint = Endpoint(host='127.0.0.1', port=50025)
+        session_id = 0x25252525
+        outgoing = self._reliable_message(
+            endpoint=endpoint,
+            session_id=session_id,
+            sequence_number=123,
+        )
+        server._track_reliable(outgoing, b'packet', 0.0)
+
+        key = (endpoint.host, endpoint.port, session_id, 123)
+        pending = server._reliable_pending[key]
+        pending.retransmit_attempts = server._MAX_RETRANSMIT_ATTEMPTS
+        pending.last_sent_at = 10.0
+
+        self.assertIsNone(server._next_retransmit_delay_seconds(now=20.0))
 
     def test_retry_capped_packet_times_out_after_peer_inactivity_window(self) -> None:
         server = self._server()

@@ -8,7 +8,7 @@ from opensnap.protocol.models import Endpoint, SnapMessage
 
 
 class BootstrapGameDetectionTests(unittest.TestCase):
-    """Verify bootstrap game detection stays conservative."""
+    """Verify bootstrap game detection uses only proven bootstrap markers."""
 
     def test_detector_uses_configured_default_for_standard_footer(self) -> None:
         message = _message(footer_bytes=FOOTER_BYTES)
@@ -20,8 +20,26 @@ class BootstrapGameDetectionTests(unittest.TestCase):
 
         self.assertEqual(detected, 'automodellista')
 
-    def test_detector_does_not_switch_games_for_kage_footer_variant(self) -> None:
+    def test_detector_keeps_configured_default_for_kage_footer(self) -> None:
         message = _message(footer_bytes=FOOTER_BYTES_KAGE)
+
+        detected = detect_game_identifier(
+            message=message,
+            default_game_identifier='automodellista',
+        )
+
+        self.assertEqual(detected, 'automodellista')
+
+    def test_detector_does_not_guess_from_primary_footer_cei_auth_shape(self) -> None:
+        message = _message(
+            footer_bytes=FOOTER_BYTES,
+            payload=(
+                b'test\n\x00'
+                + (b'\x00' * 35)
+                + b'test\n@cei-auth\x00'
+                + (b'\x00' * 64)
+            ),
+        )
 
         detected = detect_game_identifier(
             message=message,
@@ -30,8 +48,7 @@ class BootstrapGameDetectionTests(unittest.TestCase):
 
         self.assertEqual(detected, 'monsterhunter')
 
-
-def _message(*, footer_bytes: bytes) -> SnapMessage:
+def _message(*, footer_bytes: bytes, payload: bytes = b'test\n\x00') -> SnapMessage:
     """Build a minimal bootstrap login packet."""
 
     return SnapMessage(
@@ -42,7 +59,7 @@ def _message(*, footer_bytes: bytes) -> SnapMessage:
         session_id=0,
         sequence_number=0,
         acknowledge_number=0,
-        payload=b'test\n\x00',
+        payload=payload,
         footer_bytes=footer_bytes,
     )
 

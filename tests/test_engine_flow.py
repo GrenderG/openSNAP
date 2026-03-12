@@ -10,7 +10,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.decrepit.ciphers import algorithms as decrepit_algorithms
 from cryptography.hazmat.primitives.ciphers import Cipher, modes
 
-from opensnap.config import StorageConfig, UserConfig, default_app_config
+from opensnap.config import GameServerTargetConfig, StorageConfig, UserConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.protocol import commands
@@ -227,7 +227,19 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(login_result.messages[0].command, commands.CMD_BOOTSTRAP_LOGIN_SWAN)
 
     def test_login_client_with_kage_footer_uses_kage_bootstrap_variant(self) -> None:
-        config = self._config
+        config = replace(
+            self._config,
+            server=replace(
+                self._config.server,
+                game_targets=self._config.server.game_targets + (
+                    GameServerTargetConfig(
+                        game_identifier='automodellista_beta1',
+                        host='127.0.0.1',
+                        port=self._config.server.game.port,
+                    ),
+                ),
+            ),
+        )
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint = Endpoint(host='127.0.0.1', port=50014)
 
@@ -944,6 +956,37 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(callback.type_flags & FLAG_RESPONSE, FLAG_RESPONSE)
         self.assertEqual(callback.type_flags & FLAG_RELIABLE, 0)
         self.assertEqual(struct.unpack('>L', callback.payload)[0], leaver_session)
+
+    def test_login_to_kics_reentry_clears_room_state_and_room_pending(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50124)
+
+        host_session = _create_session_via_login(engine, endpoint, 'test')
+        _join_lobby(engine, endpoint, host_session, lobby_id=1, sequence=3)
+        room_id = _create_room(engine, endpoint, host_session, sequence=4, room_name='relogin-room-clear')
+
+        team_payload = bytearray(0x130)
+        team_payload[0x128:0x12F] = b'team-a\x00'
+        relogin = SnapMessage(
+            endpoint=endpoint,
+            type_flags=FLAG_CHANNEL_BITS,
+            packet_number=0,
+            command=commands.CMD_LOGIN_TO_KICS,
+            session_id=0x026407D0,
+            sequence_number=5,
+            acknowledge_number=0,
+            payload=bytes(team_payload),
+        )
+        relogin_result = engine.handle_datagram(_encode(relogin), endpoint)
+
+        self.assertFalse(relogin_result.errors)
+        self.assertEqual(len(relogin_result.messages), 1)
+        self.assertEqual(relogin_result.messages[0].command, commands.CMD_RESULT_LOGIN_TO_KICS)
+        self.assertEqual(relogin_result.messages[0].session_id, host_session)
+        self.assertEqual(relogin_result.room_pending_clears, [(endpoint, host_session)])
+        self.assertEqual(engine._sessions.get(host_session).room_id, 0)
+        self.assertIsNone(engine._rooms.get(room_id))
 
     def test_host_room_leave_after_post_game_transition_keeps_normal_leave_flow(self) -> None:
         config = self._config
