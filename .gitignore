@@ -215,6 +215,7 @@ tasks/
 AGENTS.md
 SPECS.md
 opensnap.db
+opensnap.db-journal
 *.sqlite
 *.sqlite3
 *.pcap
