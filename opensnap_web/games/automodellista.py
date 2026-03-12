@@ -537,6 +537,26 @@ AM_GAME_RULE_CONFIG = {
 }
 
 AM_RANK_PAGE = '<html><body>am_rank</body></html>\n'
+# `am_taboo.html` is not a human-facing release page.
+#
+# Reverse-engineered release mechanism:
+# - `amus_bin/browser.bin` maps `AM-USA-GAME-TABOO` to special-tag type `0x27`,
+#   then `special_tag_check` arms parser mode `12`.
+# - after a `<CSV>` marker, `get_crs_shadow_data(12)` decodes the page into the
+#   `Net_Kinshi_buff` table used by `cmn_mongon_check` as an extra downloadable
+#   taboo-word list layered on top of the game's built-in word filters.
+# - the decoded table uses the same packed `check_mongon` layout as the retail
+#   static list: `14` text bytes per slot plus metadata/continuation state in
+#   byte `15`, allowing long taboo phrases to span multiple `16`-byte records.
+#
+# So the original server-side contract is effectively:
+# - `<!--AM-USA-GAME-TABOO-->`
+# - one multi-line quoted `<CSV>` field containing taboo phrases in that packed
+#   transport format.
+#
+# This placeholder intentionally omits that contract. It keeps the fetch path
+# live without populating the downloadable taboo table, so only the game's
+# built-in filters remain active in openSNAP for now.
 AM_TABOO_PAGE = '<html><body>am_taboo</body></html>\n'
 # `patch*.html` is not a cosmetic page family in either Beta1 or release.
 #

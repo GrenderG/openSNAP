@@ -228,6 +228,10 @@ SLUS_204.98
 SLUS_280.31
 # Auto Modellista ELF
 SLUS_206.42
+# Auto Modellista PAL ELF
+SLES_511.91
+# Auto Modellista JP Classic ELF
+SLPM_651.24
 amus_bin/
 ambeta1_bin/
 etc/experiments/

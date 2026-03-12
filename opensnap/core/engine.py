@@ -521,11 +521,21 @@ class SnapProtocolEngine:
         else:
             return None
 
-        return self._context.reply(
-            message,
+        # `kkSendToTargetServer` builds standalone duplicate/retry ACKs as bare
+        # response packets with `sequence_number == 0`; the ACK field alone
+        # retires the peer's pending reliable send. Reusing `reply()` here would
+        # allocate a fresh server sequence and produce a packet shape the client
+        # does not emit for this path.
+        return SnapMessage(
+            endpoint=message.endpoint,
             type_flags=ack_type_flags,
+            packet_number=0,
             command=commands.CMD_ACK,
             session_id=message.session_id,
+            sequence_number=0,
+            acknowledge_number=message.sequence_number,
+            footer_bytes=message.footer_bytes,
+            wire_format=message.wire_format,
         )
 
     def _drop_redundant_bare_acks(self, outbound: list[SnapMessage]) -> list[SnapMessage]:

@@ -653,7 +653,7 @@ class SnapUdpServer:
         session_key = (message.endpoint.host, message.endpoint.port, message.session_id)
         if self._deferred_reliable.get(session_key):
             return True
-        return self._pending_count_for_session(session_key) >= self._MAX_INFLIGHT_RELIABLE_PER_SESSION
+        return not self._inflight_window_has_room(session_key, message.sequence_number)
 
     def _enqueue_deferred_reliable(self, message: SnapMessage) -> None:
         """Queue one reliable packet until the peer frees an in-flight slot."""
@@ -666,6 +666,32 @@ class SnapUdpServer:
 
         return sum(1 for key in self._reliable_pending if key[:3] == session_key)
 
+    def _inflight_window_has_room(
+        self,
+        session_key: tuple[str, int, int],
+        sequence_number: int,
+    ) -> bool:
+        """Check whether one reliable sequence still fits the peer receive window."""
+
+        if self._pending_count_for_session(session_key) >= self._MAX_INFLIGHT_RELIABLE_PER_SESSION:
+            return False
+
+        oldest_pending_sequence = self._oldest_pending_sequence_for_session(session_key)
+        if oldest_pending_sequence is None:
+            return True
+        return (sequence_number - oldest_pending_sequence) < self._MAX_INFLIGHT_RELIABLE_PER_SESSION
+
+    def _oldest_pending_sequence_for_session(self, session_key: tuple[str, int, int]) -> int | None:
+        """Return the oldest still-pending reliable sequence for one endpoint/session."""
+
+        oldest_sequence: int | None = None
+        for host, port, pending_session, sequence_number in self._reliable_pending:
+            if (host, port, pending_session) != session_key:
+                continue
+            if oldest_sequence is None or sequence_number < oldest_sequence:
+                oldest_sequence = sequence_number
+        return oldest_sequence
+
     def _flush_deferred_reliable(self, udp_socket: socket.socket, send_time: float) -> None:
         """Send deferred reliables once one endpoint/session has window room again."""
 
@@ -674,7 +700,7 @@ class SnapUdpServer:
 
         empty_sessions: list[tuple[str, int, int]] = []
         for session_key, deferred in self._deferred_reliable.items():
-            while deferred and self._pending_count_for_session(session_key) < self._MAX_INFLIGHT_RELIABLE_PER_SESSION:
+            while deferred and self._inflight_window_has_room(session_key, deferred[0].sequence_number):
                 self._send_encoded_message(udp_socket, deferred.popleft(), send_time)
             if not deferred:
                 empty_sessions.append(session_key)

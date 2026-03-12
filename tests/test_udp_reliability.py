@@ -627,6 +627,47 @@ class UdpReliabilityTests(unittest.TestCase):
         )
         self.assertNotIn((endpoint.host, endpoint.port, session_id), server._deferred_reliable)
 
+    def test_reliable_send_defers_when_oldest_gap_has_15_later_sequences(self) -> None:
+        server = self._server()
+        endpoint = Endpoint(host='127.0.0.1', port=50024)
+        session_id = 0x24242424
+        fake_socket = _FakeSocket()
+
+        initial_messages = [
+            self._reliable_message(
+                endpoint=endpoint,
+                session_id=session_id,
+                sequence_number=sequence,
+            )
+            for sequence in range(100, 116)
+        ]
+        with patch('opensnap.udp_server.time.monotonic', return_value=40.0):
+            server._send_messages(fake_socket, initial_messages)  # type: ignore[arg-type]
+
+        for sequence in range(101, 116):
+            server._clear_reliable_pending(endpoint, session_id, sequence)
+
+        blocked = self._reliable_message(
+            endpoint=endpoint,
+            session_id=session_id,
+            sequence_number=116,
+        )
+        with patch('opensnap.udp_server.time.monotonic', return_value=40.1):
+            server._send_messages(fake_socket, [blocked])  # type: ignore[arg-type]
+
+        self.assertNotIn((endpoint.host, endpoint.port, session_id, 116), server._reliable_pending)
+        self.assertEqual(
+            [queued.sequence_number for queued in server._deferred_reliable[(endpoint.host, endpoint.port, session_id)]],
+            [116],
+        )
+
+        server._clear_reliable_pending(endpoint, session_id, 100)
+        with patch('opensnap.udp_server.time.monotonic', return_value=40.2):
+            server._send_messages(fake_socket, [])  # type: ignore[arg-type]
+
+        self.assertIn((endpoint.host, endpoint.port, session_id, 116), server._reliable_pending)
+        self.assertNotIn((endpoint.host, endpoint.port, session_id), server._deferred_reliable)
+
     def test_new_reliable_packet_is_not_deferred_behind_capped_older_sequence(self) -> None:
         server = self._server()
         endpoint = Endpoint(host='127.0.0.1', port=50018)

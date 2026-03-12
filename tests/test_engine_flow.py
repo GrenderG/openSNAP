@@ -2652,6 +2652,9 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(duplicate_result.messages), 1)
         self.assertEqual(duplicate_result.messages[0].command, commands.CMD_ACK)
         self.assertEqual(duplicate_result.messages[0].endpoint, endpoint_one)
+        self.assertEqual(duplicate_result.messages[0].sequence_number, 0)
+        self.assertEqual(duplicate_result.messages[0].packet_number, 0)
+        self.assertEqual(duplicate_result.messages[0].acknowledge_number, 22)
 
     def test_duplicate_reliable_leave_replays_result_wrapper(self) -> None:
         config = self._config
@@ -2807,6 +2810,8 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(stale_duplicate.messages), 1)
         self.assertEqual(stale_duplicate.messages[0].command, commands.CMD_ACK)
         self.assertEqual(stale_duplicate.messages[0].endpoint, endpoint)
+        self.assertEqual(stale_duplicate.messages[0].sequence_number, 0)
+        self.assertEqual(stale_duplicate.messages[0].packet_number, 0)
         self.assertEqual(stale_duplicate.messages[0].acknowledge_number, 22)
 
     def test_stale_duplicate_reliable_lobby_leave_is_ack_only(self) -> None:
@@ -2890,6 +2895,8 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(duplicate_result.messages), 1)
         self.assertEqual(duplicate_result.messages[0].command, commands.CMD_ACK)
         self.assertEqual(duplicate_result.messages[0].endpoint, endpoint_one)
+        self.assertEqual(duplicate_result.messages[0].sequence_number, 0)
+        self.assertEqual(duplicate_result.messages[0].packet_number, 0)
         self.assertEqual(duplicate_result.messages[0].acknowledge_number, 5)
 
     def test_duplicate_reliable_send_response_flag_is_ack_only(self) -> None:
