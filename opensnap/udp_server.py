@@ -53,11 +53,22 @@ class SnapUdpServer:
     - Reliable retirement uses the exact ACK number carried by inbound
       response packets, including bare ACK frames. That mirrors
       `kkDispatchingPacket -> kkSetRevAck` in the client.
+    - Standalone transport ACKs must stay in that bare shape: `CMD_ACK`
+      replies with no payload use `packet_number = 0` and `sequence_number = 0`.
+      Both clients build ACK-only replies that way in `kkSendToTargetServer`,
+      and reusing a fresh server sequence there can leave the client's own
+      reliable send queue unretired.
     - The normal reliable receive path (`kkReceiveExtentCheck* ->
       kkSetAckNumber`) is separate: it queues an ACK for the received reliable
       sequence from packet offset `+8`, not from the incoming packet's own
       reverse-ACK field. Plain reliable `0xa000` room traffic is therefore not
       a valid reverse-ACK retirement source.
+    - Embedded multi children still decode a trailing 32-bit header word, but
+      it is not a second transport ACK stream. The client assigns ACK state
+      from the outer reliable wrapper before `kkRUDPTopMultiMessageHandle`
+      dispatches children, and the multi-child `kkSetMessage` path leaves the
+      child `+0x0c` word uninitialized. In practice that inner `ack` field is
+      just raw copied/reused header bytes.
     - Retransmission is oldest-pending-per-session. The server retries every
       `200 ms`, up to four counted retransmits, which matches the client
       `kkSendOperation` cadence and retry gate.
