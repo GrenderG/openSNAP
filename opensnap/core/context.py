@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 from opensnap.config import AppConfig
+from opensnap.protocol import commands
 from opensnap.protocol.models import Endpoint, SnapMessage
 from opensnap.storage.interfaces import AccountStore, LobbyStore, RoomStore, SessionStore
 
@@ -34,10 +35,18 @@ class HandlerContext:
 
         outbound_endpoint = endpoint or request.endpoint
         outbound_session_id = request.session_id if session_id is None else session_id
-        sequence_number = self.sessions.allocate_sequence(outbound_session_id, type_flags)
 
         if acknowledge_number is None:
             acknowledge_number = request.sequence_number
+
+        if command == commands.CMD_ACK and not payload:
+            # Release and beta1 both build standalone transport ACKs as bare
+            # response packets with packet/sequence numbers cleared; only the
+            # ACK field carries state for reverse-ACK retirement.
+            sequence_number = 0
+            packet_number = 0
+        else:
+            sequence_number = self.sessions.allocate_sequence(outbound_session_id, type_flags)
 
         if packet_number is None:
             packet_number = request.packet_number

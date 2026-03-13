@@ -124,7 +124,7 @@ class SnapProtocolEngine:
             self._logger.debug(
                 (
                     'Handling command 0x%02x from %s:%d '
-                    '(type=0x%04x sess=0x%08x seq=%d ack=%d payload=%d).'
+                    '(type=0x%04x sess=0x%08x seq=%d ack=%s payload=%d).'
                 ),
                 message.command,
                 message.endpoint.host,
@@ -132,7 +132,7 @@ class SnapProtocolEngine:
                 message.type_flags,
                 message.session_id,
                 message.sequence_number,
-                message.acknowledge_number,
+                self._ack_for_log(message),
                 len(message.payload),
             )
             if message.wire_format == WIRE_FORMAT_SNAP:
@@ -521,22 +521,20 @@ class SnapProtocolEngine:
         else:
             return None
 
-        # `kkSendToTargetServer` builds standalone duplicate/retry ACKs as bare
-        # response packets with `sequence_number == 0`; the ACK field alone
-        # retires the peer's pending reliable send. Reusing `reply()` here would
-        # allocate a fresh server sequence and produce a packet shape the client
-        # does not emit for this path.
-        return SnapMessage(
-            endpoint=message.endpoint,
+        return self._context.reply(
+            message,
             type_flags=ack_type_flags,
-            packet_number=0,
             command=commands.CMD_ACK,
             session_id=message.session_id,
-            sequence_number=0,
-            acknowledge_number=message.sequence_number,
-            footer_bytes=message.footer_bytes,
-            wire_format=message.wire_format,
         )
+
+    @staticmethod
+    def _ack_for_log(message: SnapMessage) -> str:
+        """Return a readable ACK field for one decoded message log line."""
+
+        if message.embedded_in_multi:
+            return '<embedded>'
+        return str(message.acknowledge_number)
 
     def _drop_redundant_bare_acks(self, outbound: list[SnapMessage]) -> list[SnapMessage]:
         """Drop bare ACKs that are already covered by another response packet.

@@ -453,6 +453,9 @@ class EngineFlowTests(unittest.TestCase):
         self.assertFalse(result.errors)
         self.assertEqual(len(result.messages), 1)
         self.assertEqual(result.messages[0].command, commands.CMD_ACK)
+        self.assertEqual(result.messages[0].sequence_number, 0)
+        self.assertEqual(result.messages[0].packet_number, 0)
+        self.assertEqual(result.messages[0].acknowledge_number, 4)
         self.assertIn('short send-target payload', '\n'.join(captured.output))
 
     def test_lobby_query_returns_all_configured_lobbies(self) -> None:
@@ -592,6 +595,41 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(result.messages[0].acknowledge_number, 3)
         self.assertEqual(result.messages[0].payload, struct.pack('>L4sL', room_id, b'USER', 2))
         self.assertEqual(struct.unpack_from('>H', result.messages[0].payload, 10)[0], 2)
+
+    def test_multi_followup_logs_embedded_ack_marker(self) -> None:
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50004)
+        session_id = _create_session_via_login(engine, endpoint, 'test')
+
+        first = SnapMessage(
+            endpoint=endpoint,
+            type_flags=FLAG_CHANNEL_BITS | FLAG_MULTI | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_QUERY_ATTRIBUTE,
+            session_id=session_id,
+            sequence_number=2,
+            acknowledge_number=123,
+            payload=struct.pack('>L4s', 1, b'USER'),
+            size_word_override=(FLAG_CHANNEL_BITS | FLAG_MULTI | FLAG_RELIABLE) | 0x0018,
+        )
+        second = SnapMessage(
+            endpoint=endpoint,
+            type_flags=FLAG_CHANNEL_BITS | FLAG_RELIABLE,
+            packet_number=1,
+            command=commands.CMD_QUERY_ATTRIBUTE,
+            session_id=session_id,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=struct.pack('>L4s', 2, b'USER'),
+        )
+
+        with self.assertLogs('opensnap.engine', level='DEBUG') as captured:
+            engine.handle_datagram(_encode_many([first, second]), endpoint)
+
+        joined = '\n'.join(captured.output)
+        self.assertIn('seq=2 ack=123 payload=8', joined)
+        self.assertIn('seq=0 ack=<embedded> payload=8', joined)
 
     def test_lobby_chat_accepts_simplified_lobby_relay_type_word(self) -> None:
         config = self._config
@@ -1305,6 +1343,9 @@ class EngineFlowTests(unittest.TestCase):
         relay = game_result.messages[1]
         self.assertEqual(ack.command, commands.CMD_ACK)
         self.assertEqual(ack.endpoint, endpoint_one)
+        self.assertEqual(ack.sequence_number, 0)
+        self.assertEqual(ack.packet_number, 0)
+        self.assertEqual(ack.acknowledge_number, 5)
         self.assertEqual(relay.command, commands.CMD_SEND)
         self.assertEqual(relay.endpoint, endpoint_two)
         self.assertEqual(relay.session_id, receiver_session)
