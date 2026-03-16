@@ -12,23 +12,14 @@ openSNAP is designed with a strict separation between:
 
 This keeps core behavior reusable while allowing game integrations to be added independently.
 
-## Reverse Engineering Notes
-
-`SLUS_206.42` has been the primary reference for reverse engineering and protocol analysis because it contains debug symbols, which made the SNAP client flow and callback/state mapping significantly easier to trace.
-
-`SLUS_204.98` and `SLUS_280.31` also contain debug symbols.
-
-`SLUS_204.98` appears to use a slightly different protocol variant that is closer to the older SEGA KAGE server behavior, so `SLUS_206.42` has been the main authority for current implementation work.
-
 ## Project Status
 
-Current status:
+Currently supported games:
 
-- Fully functional and playable:
-  - Auto Modellista
-  - Auto Modellista Beta 2
-- Partially supported:
-  - Auto Modellista Beta 1 (additional research is still required)
+PlayStation 2:
+  - Auto Modellista Public Beta volume 1.0 (SLUS_204.98)
+  - Auto Modellista Public Beta volume 2.0 (SLUS_280.31)
+  - Auto Modellista NTSC-U/C (SLUS_206.42)
 
 ## SNAP History (Brief)
 
