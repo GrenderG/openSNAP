@@ -57,6 +57,12 @@ class GamePlugin:
         del context, session
         return []
 
+    def session_idle_limit(self, context: HandlerContext, session: Session) -> float | None:
+        """Seconds of client silence after which `session` is ended, or None for no limit."""
+
+        del context, session
+        return None
+
     def decode_datagram(self, payload: bytes, endpoint: Endpoint) -> list[SnapMessage]:
         """Decode one datagram for this plugin."""
 

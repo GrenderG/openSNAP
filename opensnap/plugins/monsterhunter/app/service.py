@@ -36,10 +36,9 @@ from opensnap.core.sessions import Session
 from opensnap.plugins.monsterhunter.app.content import EventCatalog, InformationPages, MarketState, NamedFiles
 from opensnap.plugins.monsterhunter.app.flows import AppFlowTracker, AppPhase
 from opensnap.plugins.monsterhunter.app.records import (
-    RECORD_PAGE_NA_PATH,
-    RECORD_PAGE_NAME,
-    build_record_page,
+    RecordPages,
     decode_quest_record,
+    load_quests,
     store_quest_record,
 )
 from opensnap.plugins.monsterhunter.directory import Directory, Land
@@ -189,7 +188,8 @@ class AppService:
         self._market = MarketState()
         self._events = EventCatalog(config.data_directory)
         self._information = InformationPages(config.data_directory)
-        self._files = NamedFiles(config.data_directory, self._generated_file)
+        self._record_pages = RecordPages(records, config.profile.identifier, load_quests(config.data_directory))
+        self._files = NamedFiles(config.data_directory, self._record_pages.render)
         self._listener: socket.socket | None = None
         self._stopped = threading.Event()
 
@@ -407,15 +407,6 @@ class AppService:
         if command == CMD_APP_QUEST_RECORD:
             self._store_quest_record(payload, connection)
             return b''
-        return None
-
-    def _generated_file(self, name: bytes) -> bytes | None:
-        """Render the Record page: NA `02/DATABASE.HTM`, EU `03/<language>/DATABASE.HTM`."""
-
-        parts = name.split(b'/')
-        eu_page = len(parts) == 3 and parts[0] == b'03' and parts[2] == RECORD_PAGE_NAME.encode()
-        if name == RECORD_PAGE_NA_PATH or eu_page:
-            return build_record_page(self._records, self._config.profile.identifier)
         return None
 
     def _store_quest_record(self, payload: bytes, connection: '_AppConnection') -> None:

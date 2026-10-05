@@ -65,36 +65,54 @@ class MarketState:
 
 @dataclass(frozen=True, slots=True)
 class EventResource:
-    """One downloadable Event quest resource."""
+    """One downloadable Event quest."""
 
+    quest_id: int
+    title: str
     catalog_key: bytes
     content: bytes
 
 
 class EventCatalog:
-    """Single Event resource described by `events/manifest.json`."""
+    """Event quests listed in `events/manifest.json`, one per day in index order.
 
-    def __init__(self, data_directory: Path) -> None:
-        self._event = _load_event(data_directory / EVENTS_DIRECTORY)
+    The rotation follows the Market's: the day of the year picks the entry, and
+    the list repeats.
+    """
+
+    def __init__(self, data_directory: Path, today: Callable[[], date] = date.today) -> None:
+        self._events = _load_events(data_directory / EVENTS_DIRECTORY)
+        self._today = today
 
     def availability(self) -> bytes:
         """Return the 6212 payload."""
 
-        return struct.pack('>L', int(self._event is not None))
+        return struct.pack('>L', int(bool(self._events)))
 
     def catalog(self, encode_field: Callable[[bytes], bytes]) -> bytes:
         """Return the 6203 payload."""
 
-        if self._event is None:
+        event = self.current()
+        if event is None:
             return b'\x00'
-        return b'\x01' + encode_field(self._event.catalog_key) + struct.pack('>HL', 1, len(self._event.content))
+        _LOGGER.info('Event of the day: #%d %r.', event.quest_id, event.title)
+        return b'\x01' + encode_field(event.catalog_key) + struct.pack('>HL', 1, len(event.content))
 
     def download(self, request: bytes, encode_field: Callable[[bytes], bytes]) -> bytes:
         """Return one 6204 chunk."""
 
-        if self._event is None:
+        event = self.current()
+        if event is None:
             raise ValueError('No Event is available.')
-        return _resource_chunk((self._event.content,), request, encode_field)
+        return _resource_chunk((event.content,), request, encode_field)
+
+    def current(self) -> EventResource | None:
+        """Return today's Event, if any."""
+
+        if not self._events:
+            return None
+        day_of_year = self._today().timetuple().tm_yday
+        return self._events[(day_of_year - 1) % len(self._events)]
 
 
 class InformationPages:
@@ -219,29 +237,51 @@ def _load_information(data_directory: Path) -> tuple[bytes, tuple[bytes, ...]]:
     return title, pages
 
 
-def _load_event(events_directory: Path) -> EventResource | None:
+def _load_events(events_directory: Path) -> tuple[EventResource, ...]:
     manifest_path = events_directory / EVENT_MANIFEST_FILE
     if not manifest_path.exists():
-        return None
+        return ()
     try:
-        manifest = json.loads(manifest_path.read_text(encoding='utf-8-sig'))
-        entries = manifest['event_catalog']
-        if manifest.get('event_availability') != 1 or not isinstance(entries, list) or len(entries) != 1:
-            raise ValueError('exactly one available Event is supported')
-        entry = entries[0]
+        entries = json.loads(manifest_path.read_text(encoding='utf-8-sig'))['events']
+        if sorted(entry['index'] for entry in entries) != list(range(len(entries))):
+            raise ValueError('indexes must be 0..N-1 without gaps')
         root = events_directory.resolve()
-        path = (root / entry['file']).resolve()
-        if root not in path.parents:
-            raise ValueError('Event resource path leaves the events directory')
-        content = path.read_bytes()
-        digest = hashlib.sha256(content).hexdigest()
-        if not 0 < len(content) <= EVENT_RESOURCE_MAX_SIZE or len(content) != entry['size']:
-            raise ValueError('Event resource size mismatch')
-        if digest != entry['sha256']:
-            raise ValueError('Event resource SHA-256 mismatch')
-        catalog_key = manifest['catalog_key'].encode('ascii')
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        events = []
+        for entry in sorted(entries, key=lambda item: item['index']):
+            path = (root / entry['file']).resolve()
+            if root not in path.parents:
+                raise ValueError(f'{entry["file"]} leaves the events directory')
+            content = path.read_bytes()
+            if not 0 < len(content) <= EVENT_RESOURCE_MAX_SIZE:
+                raise ValueError(f'{entry["file"]} must be 1..{EVENT_RESOURCE_MAX_SIZE} bytes')
+            quest_id = int(entry['quest_id'])
+            if _quest_number(content) != quest_id:
+                raise ValueError(f'{entry["file"]} holds quest {_quest_number(content)}, not {quest_id}')
+            events.append(EventResource(
+                quest_id=quest_id,
+                title=str(entry['title']),
+                catalog_key=_event_catalog_key(quest_id, content),
+                content=content,
+            ))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, struct.error) as exc:
         _LOGGER.warning('Event catalog disabled: %s', exc)
-        return None
-    _LOGGER.info('Event catalog: %r (%d bytes).', entry.get('title', ''), len(content))
-    return EventResource(catalog_key=catalog_key, content=content)
+        return ()
+    _LOGGER.info('Event catalog: %d quests in rotation.', len(events))
+    return tuple(events)
+
+
+def _quest_number(content: bytes) -> int:
+    """Return the quest number: u16 at quest information +0x1e (NA `0x006cb78c`)."""
+
+    (info,) = struct.unpack_from('<L', content, 0)
+    return struct.unpack_from('<H', content, info + 0x1E)[0]
+
+
+def _event_catalog_key(quest_id: int, content: bytes) -> bytes:
+    """Return a key unique to this quest file.
+
+    The client skips the download when the 6203 key matches the one it kept
+    from the last Event (NA `0x002afa50` compares 31 bytes with `0x0055299c`).
+    """
+
+    return f'{quest_id}-{hashlib.sha256(content).hexdigest()[:24]}'.encode('ascii')

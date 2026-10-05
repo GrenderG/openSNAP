@@ -89,6 +89,9 @@ class SessionStore(Protocol):
     def remove(self, session_id: int) -> None:
         """Remove one session and any direct endpoint binding."""
 
+    def all(self) -> list[Session]:
+        """Return every session."""
+
     def get(self, session_id: int) -> Session | None:
         """Get session by id."""
 

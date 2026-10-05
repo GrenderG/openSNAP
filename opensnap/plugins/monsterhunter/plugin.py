@@ -94,6 +94,9 @@ DEPARTURE_PREPARATION_SIZE = 16
 TOWN_CATEGORY_SHIFT = 24
 TOWN_CATEGORY_MASK = 0x7
 
+# Idle limits (see `MonsterHunterPlugin.session_idle_limit`).
+LOBBY_IDLE_LIMIT_SECONDS = 5 * 60
+QUEST_IDLE_LIMIT_SECONDS = (50 + 10) * 60
 # `kkSearchUsers` request (`0x00207d6c`): name16 padded with `-`.
 SEARCH_NAME_PADDING = '-'
 # Attribute searches (`CMD_QUERY_AREA` `0x0020873c`, `CMD_SEARCH_ROOMS`
@@ -245,13 +248,33 @@ class MonsterHunterPlugin(GamePlugin):
         self._forget_player(session.session_id)
         return messages + self._town_directory_updates(context, before)
 
+    def session_idle_limit(self, context: HandlerContext, session: Session) -> float | None:
+        """End a crashed player's session once its client has gone silent.
+
+        In an Area or Town the client sends a profile keepalive every 30 s
+        (longer gaps, up to about 2 minutes, while its browser is open). A
+        started quest runs in `game.bin`, which sends nothing until the quest
+        ends (at most 50 minutes in any quest file). On World and Land
+        selection the client talks only to the APP service, so no limit
+        applies there.
+        """
+
+        if self._in_started_quest(context, session):
+            return QUEST_IDLE_LIMIT_SECONDS
+        player = self._players.get(session.session_id)
+        if (player is not None and player.area_id is not None) or session.room_id > 0:
+            return LOBBY_IDLE_LIMIT_SECONDS
+        return None
+
     def _handle_login_to_kics(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         """Admit the player to the Land after the shared KICS login."""
 
+        handoff = context.handoffs.get(message.session_id) or context.handoffs.get_by_endpoint(message.endpoint)
         previous = context.sessions.get(message.session_id) or context.sessions.get_by_endpoint(message.endpoint)
-        if previous is not None:
+        if previous is not None and handoff is not None and previous.session_id == handoff.session_id:
             # The shared handler silently clears room state on a repeated
-            # login; also drop Monster Hunter Town listings.
+            # login; also drop Monster Hunter Town listings. A different
+            # (superseded) session is ended by the shared handler instead.
             self._detach(context, previous, keep_town_listing=False, notify=False)
 
         responses = game_handlers.handle_login_to_kics(context, message)
@@ -373,8 +396,12 @@ class MonsterHunterPlugin(GamePlugin):
             room = context.rooms.get(self._server_room_id(session, requested_id))
             member_ids = () if room is None else sorted(room.members)
         else:
+            # The Area roster feeds the hunter search, whose results can be
+            # registered as Friends; its filter (`0x00613f10`) never skips the
+            # searcher, and a Friend entry for oneself crashes the game later.
             member_ids = sorted(
-                player.session_id for player in tuple(self._players.values()) if player.area_id == requested_id
+                player.session_id for player in tuple(self._players.values())
+                if player.area_id == requested_id and player.session_id != session.session_id
             )
 
         entries = []
@@ -403,11 +430,16 @@ class MonsterHunterPlugin(GamePlugin):
         `0`, and resolves the room through `CMD_SEARCH_ROOMS`.
         """
 
+        session = resolve_session(context, message, _LOGGER)
         name = get_c_string(message.payload, 0)[:16].rstrip('\n').rstrip(SEARCH_NAME_PADDING)
         records = []
         for player in tuple(self._players.values()):
             member = context.sessions.get(player.session_id)
             if member is None or member.username != name:
+                continue
+            # Never report the searcher: a Friend entry for oneself shows as
+            # "not found" instead of leading into the player's own room.
+            if session is not None and member.session_id == session.session_id:
                 continue
             data = player.profile or bytes(PROFILE_SIZE)
             area = self.directory.area(player.area_id)

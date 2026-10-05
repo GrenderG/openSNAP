@@ -63,6 +63,21 @@ def handle_login_to_kics(context: HandlerContext, message: SnapMessage) -> list[
         )
         return []
 
+    # A console that crashed and logs in again reuses its endpoint (the PS2
+    # always sends from the same port) under a new session; end the old one
+    # properly, as a timeout would, so it does not linger in rooms and lists.
+    outbound: list[SnapMessage] = []
+    stale = context.sessions.get_by_endpoint(message.endpoint)
+    if stale is not None and stale.session_id != handoff.session_id:
+        LOGGER.info(
+            'Ending session 0x%08x of %s:%d: superseded by the new login of session 0x%08x.',
+            stale.session_id,
+            message.endpoint.host,
+            message.endpoint.port,
+            handoff.session_id,
+        )
+        outbound = context.end_session(stale)
+
     session = context.sessions.get(handoff.session_id)
     if session is not None:
         _reset_room_state_for_relogin(context, session)
@@ -105,7 +120,7 @@ def handle_login_to_kics(context: HandlerContext, message: SnapMessage) -> list[
             payload=payload,
             session_id=session.session_id,
         )
-    ]
+    ] + outbound
 
 
 def _reset_room_state_for_relogin(context: HandlerContext, session) -> None:

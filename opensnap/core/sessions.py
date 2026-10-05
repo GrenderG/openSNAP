@@ -5,7 +5,8 @@ each process keeps its own `Session` with the transport counters in memory.
 """
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import time
 
 from opensnap.core.accounts import Account
 from opensnap.protocol.constants import FLAG_RELIABLE
@@ -29,6 +30,8 @@ class Session:
     room_id: int = 0
     # Serial of the handoff this runtime session was built from.
     handoff_serial: int = 0
+    # `time.monotonic()` of the last datagram received for this session.
+    last_inbound_at: float = field(default_factory=time.monotonic)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +105,11 @@ class SessionRegistry:
         if session is None:
             return
         self._id_by_endpoint.pop(session.endpoint, None)
+
+    def all(self) -> list[Session]:
+        """Return every session."""
+
+        return list(self._by_id.values())
 
     def get(self, session_id: int) -> Session | None:
         """Get session by id."""

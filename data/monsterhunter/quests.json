@@ -1,0 +1,738 @@
+{
+  "1": {
+    "name": "Mushroom Picking",
+    "category": "gathering"
+  },
+  "2": {
+    "name": "The Sculptor's Errand",
+    "category": "gathering"
+  },
+  "3": {
+    "name": "It's Party Time!",
+    "category": "gathering"
+  },
+  "4": {
+    "name": "Attack of the Yian Kut-Ku",
+    "category": "hunt"
+  },
+  "5": {
+    "name": "Gypceros: Venomous Terror",
+    "category": "hunt"
+  },
+  "6": {
+    "name": "Velociprey Hunt",
+    "category": "hunt"
+  },
+  "7": {
+    "name": "The Velociprey Lords",
+    "category": "hunt"
+  },
+  "8": {
+    "name": "Raid the Wyvern's Nest",
+    "category": "gathering"
+  },
+  "9": {
+    "name": "Slay the Rathalos!",
+    "category": "hunt"
+  },
+  "10": {
+    "name": "Attack of the Rathian",
+    "category": "hunt"
+  },
+  "11": {
+    "name": "The Lady Gourmet",
+    "category": "gathering"
+  },
+  "12": {
+    "name": "Queen of the Desert",
+    "category": "hunt"
+  },
+  "13": {
+    "name": "The Land Shark",
+    "category": "hunt"
+  },
+  "14": {
+    "name": "Slay the Genprey!",
+    "category": "hunt"
+  },
+  "15": {
+    "name": "Leaders of the Genprey",
+    "category": "hunt"
+  },
+  "16": {
+    "name": "Apceros Egg Hunt",
+    "category": "gathering"
+  },
+  "17": {
+    "name": "The Runaway Diablos",
+    "category": "hunt"
+  },
+  "18": {
+    "name": "The Land Shark",
+    "category": "hunt"
+  },
+  "19": {
+    "name": "Trouble in the Swamp",
+    "category": "hunt"
+  },
+  "20": {
+    "name": "Crystal Hunting!",
+    "category": "gathering"
+  },
+  "21": {
+    "name": "Panning for Goldenfish",
+    "category": "gathering"
+  },
+  "22": {
+    "name": "Gypceros in the Swamp",
+    "category": "hunt"
+  },
+  "23": {
+    "name": "Get me Sootstone Ore!",
+    "category": "gathering"
+  },
+  "24": {
+    "name": "Slay the Gendrome!",
+    "category": "hunt"
+  },
+  "25": {
+    "name": "The Shadow in the Cave",
+    "category": "hunt"
+  },
+  "26": {
+    "name": "The Fearsome Gravios",
+    "category": "hunt"
+  },
+  "27": {
+    "name": "Slay the Rathian!",
+    "category": "hunt"
+  },
+  "28": {
+    "name": "Re-Supply the Dragonator",
+    "category": "gathering"
+  },
+  "29": {
+    "name": "Basarios: Unseen Peril",
+    "category": "hunt"
+  },
+  "30": {
+    "name": "Volcanic Valor",
+    "category": "hunt"
+  },
+  "31": {
+    "name": "Ioprey Hunting",
+    "category": "hunt"
+  },
+  "32": {
+    "name": "Leaders of the Ioprey",
+    "category": "hunt"
+  },
+  "33": {
+    "name": "Bring us Powderstone!",
+    "category": "gathering"
+  },
+  "34": {
+    "name": "Basarios: Invisible Terror",
+    "category": "hunt"
+  },
+  "35": {
+    "name": "Attack of the Giant Bugs",
+    "category": "hunt"
+  },
+  "36": {
+    "name": "Jungle Menace",
+    "category": "hunt"
+  },
+  "37": {
+    "name": "The Mushroom Hunt!",
+    "category": "gathering"
+  },
+  "38": {
+    "name": "Show me your Cooking Skills!",
+    "category": "gathering"
+  },
+  "39": {
+    "name": "Slay the Gypceros!",
+    "category": "hunt"
+  },
+  "40": {
+    "name": "More Coal Please",
+    "category": "gathering"
+  },
+  "41": {
+    "name": "Wyvern in the Darkness",
+    "category": "hunt"
+  },
+  "42": {
+    "name": "Slay the Iodrome!",
+    "category": "hunt"
+  },
+  "43": {
+    "name": "Water Wyvern in the Jungle",
+    "category": "hunt"
+  },
+  "44": {
+    "name": "Wyvern Egg Hunt",
+    "category": "gathering"
+  },
+  "45": {
+    "name": "Queen of the Jungle",
+    "category": "hunt"
+  },
+  "46": {
+    "name": "Catch a Rathalos",
+    "category": "capture"
+  },
+  "47": {
+    "name": "Catch a Yian Kut-Ku",
+    "category": "capture"
+  },
+  "48": {
+    "name": "Catch a Gypceros",
+    "category": "capture"
+  },
+  "49": {
+    "name": "Get me a Live Khezu!",
+    "category": "capture"
+  },
+  "50": {
+    "name": "Bring me a Plesioth!",
+    "category": "capture"
+  },
+  "51": {
+    "name": "Mushroom Picking",
+    "category": "gathering"
+  },
+  "52": {
+    "name": "The Sculptor's Errand",
+    "category": "gathering"
+  },
+  "53": {
+    "name": "It's Party Time!",
+    "category": "gathering"
+  },
+  "54": {
+    "name": "Attack of the Yian Kut-Ku",
+    "category": "hunt"
+  },
+  "55": {
+    "name": "Gypceros: Venomous Terror",
+    "category": "hunt"
+  },
+  "56": {
+    "name": "Velociprey Hunt",
+    "category": "hunt"
+  },
+  "57": {
+    "name": "The Velociprey Lords",
+    "category": "hunt"
+  },
+  "58": {
+    "name": "Raid the Wyvern's Nest",
+    "category": "gathering"
+  },
+  "59": {
+    "name": "Slay the Rathalos!",
+    "category": "hunt"
+  },
+  "60": {
+    "name": "Attack of the Rathian",
+    "category": "hunt"
+  },
+  "61": {
+    "name": "The Lady Gourmet",
+    "category": "gathering"
+  },
+  "62": {
+    "name": "Queen of the Desert",
+    "category": "hunt"
+  },
+  "63": {
+    "name": "The Land Shark",
+    "category": "hunt"
+  },
+  "64": {
+    "name": "Slay the Genprey!",
+    "category": "hunt"
+  },
+  "65": {
+    "name": "Leaders of the Genprey",
+    "category": "hunt"
+  },
+  "66": {
+    "name": "Apceros Egg Hunt",
+    "category": "gathering"
+  },
+  "67": {
+    "name": "The Runaway Diablos",
+    "category": "hunt"
+  },
+  "68": {
+    "name": "The Land Shark",
+    "category": "hunt"
+  },
+  "69": {
+    "name": "Trouble in the Swamp",
+    "category": "hunt"
+  },
+  "70": {
+    "name": "Crystal Hunting!",
+    "category": "gathering"
+  },
+  "71": {
+    "name": "Panning for Goldenfish",
+    "category": "gathering"
+  },
+  "72": {
+    "name": "Gypceros in the Swamp",
+    "category": "hunt"
+  },
+  "73": {
+    "name": "Quartz Ore Request",
+    "category": "gathering"
+  },
+  "74": {
+    "name": "Slay the Gendrome!",
+    "category": "hunt"
+  },
+  "75": {
+    "name": "The Shadow in the Cave",
+    "category": "hunt"
+  },
+  "76": {
+    "name": "The Fearsome Gravios",
+    "category": "hunt"
+  },
+  "77": {
+    "name": "Slay the Rathian!",
+    "category": "hunt"
+  },
+  "78": {
+    "name": "Re-Supply the Dragonator",
+    "category": "gathering"
+  },
+  "79": {
+    "name": "Basarios: Unseen Peril",
+    "category": "hunt"
+  },
+  "80": {
+    "name": "Volcanic Valor",
+    "category": "hunt"
+  },
+  "81": {
+    "name": "Ioprey Hunting",
+    "category": "hunt"
+  },
+  "82": {
+    "name": "Leaders of the Ioprey",
+    "category": "hunt"
+  },
+  "83": {
+    "name": "Bring us Powderstone!",
+    "category": "gathering"
+  },
+  "84": {
+    "name": "Basarios: Invisible Terror",
+    "category": "hunt"
+  },
+  "85": {
+    "name": "Attack of the Giant Bugs",
+    "category": "hunt"
+  },
+  "86": {
+    "name": "Jungle Menace",
+    "category": "hunt"
+  },
+  "87": {
+    "name": "The Mushroom Hunt!",
+    "category": "gathering"
+  },
+  "88": {
+    "name": "Show me your Cooking Skills!",
+    "category": "gathering"
+  },
+  "89": {
+    "name": "Slay the Gypceros!",
+    "category": "hunt"
+  },
+  "90": {
+    "name": "More Coal Please",
+    "category": "gathering"
+  },
+  "91": {
+    "name": "Wyvern in the Darkness",
+    "category": "hunt"
+  },
+  "92": {
+    "name": "Slay the Iodrome!",
+    "category": "hunt"
+  },
+  "93": {
+    "name": "Water Wyvern in the Jungle",
+    "category": "hunt"
+  },
+  "94": {
+    "name": "Wyvern Egg Hunt",
+    "category": "gathering"
+  },
+  "95": {
+    "name": "Queen of the Jungle",
+    "category": "hunt"
+  },
+  "96": {
+    "name": "A Troublesome Pair",
+    "category": "hunt"
+  },
+  "97": {
+    "name": "Four Horns",
+    "category": "hunt"
+  },
+  "98": {
+    "name": "Bring us Powderstone!",
+    "category": "gathering"
+  },
+  "99": {
+    "name": "Two Rock Wyverns",
+    "category": "hunt"
+  },
+  "100": {
+    "name": "Wyverns of Land and Sky",
+    "category": "hunt"
+  },
+  "101": {
+    "name": "A Giant Dragon Invades!",
+    "category": "hunt"
+  },
+  "103": {
+    "name": "The Legendary Black Dragon",
+    "category": "special"
+  },
+  "104": {
+    "name": "The Legendary Black Dragon",
+    "category": "special"
+  },
+  "105": {
+    "name": "The Legendary Black Dragon",
+    "category": "special"
+  },
+  "106": {
+    "name": "The Legendary Black Dragon",
+    "category": "special"
+  },
+  "107": {
+    "name": "A Giant Dragon Invades!",
+    "category": "hunt"
+  },
+  "108": {
+    "name": "Slay the Rathalos!",
+    "category": "hunt"
+  },
+  "131": {
+    "name": "Basics: Finding Raw Meat",
+    "category": "gathering"
+  },
+  "132": {
+    "name": "Basics: Preparing Meat",
+    "category": "gathering"
+  },
+  "133": {
+    "name": "Basics: Searching for Items",
+    "category": "gathering"
+  },
+  "134": {
+    "name": "Basics: Combining Items",
+    "category": "gathering"
+  },
+  "135": {
+    "name": "Basics: Fishing",
+    "category": "gathering"
+  },
+  "136": {
+    "name": "Your First Monster Hunt!",
+    "category": "hunt"
+  },
+  "137": {
+    "name": "The Formidable Velocidrome!",
+    "category": "hunt"
+  },
+  "138": {
+    "name": "Raid the Wyvern's Nest",
+    "category": "gathering"
+  },
+  "139": {
+    "name": "Attack of the Rathalos",
+    "category": "hunt"
+  },
+  "140": {
+    "name": "Catch a Rathalos",
+    "category": "capture"
+  },
+  "141": {
+    "name": "Mushroom Picking",
+    "category": "gathering"
+  },
+  "142": {
+    "name": "Present for the Armorer",
+    "category": "gathering"
+  },
+  "143": {
+    "name": "Help for the Festival",
+    "category": "gathering"
+  },
+  "144": {
+    "name": "Slay the Yian Kut-Ku!",
+    "category": "hunt"
+  },
+  "145": {
+    "name": "Slay the Velociprey!",
+    "category": "hunt"
+  },
+  "147": {
+    "name": "Liver of Legend!",
+    "category": "gathering"
+  },
+  "148": {
+    "name": "Jungle Menace",
+    "category": "hunt"
+  },
+  "149": {
+    "name": "The Mushroom Hunt!",
+    "category": "gathering"
+  },
+  "150": {
+    "name": "Catch a Yian Kut-Ku",
+    "category": "capture"
+  },
+  "151": {
+    "name": "Slay the Velociprey Pack!",
+    "category": "hunt"
+  },
+  "152": {
+    "name": "Velocidrome Redux!",
+    "category": "hunt"
+  },
+  "153": {
+    "name": "Find the Wyvern Eggs!",
+    "category": "gathering"
+  },
+  "154": {
+    "name": "The Land Shark",
+    "category": "hunt"
+  },
+  "157": {
+    "name": "Bring Me Eggs!",
+    "category": "gathering"
+  },
+  "158": {
+    "name": "Attack of the Giant Bugs!",
+    "category": "hunt"
+  },
+  "163": {
+    "name": "Deliver Three Wyvern Eggs",
+    "category": "gathering"
+  },
+  "164": {
+    "name": "Slay the Rathalos!",
+    "category": "hunt"
+  },
+  "166": {
+    "name": "Gendrome Redux!",
+    "category": "hunt"
+  },
+  "167": {
+    "name": "Fang of the Iodrome!",
+    "category": "hunt"
+  },
+  "169": {
+    "name": "Catch a Rathalos",
+    "category": "capture"
+  },
+  "170": {
+    "name": "A Troublesome Pair",
+    "category": "hunt"
+  },
+  "171": {
+    "name": "Horn of the Monoblos",
+    "category": "hunt"
+  },
+  "172": {
+    "name": "Terror of the Gravios",
+    "category": "hunt"
+  },
+  "174": {
+    "name": "The Runaway Diablos",
+    "category": "hunt"
+  },
+  "175": {
+    "name": "The Shadow in the Cave",
+    "category": "hunt"
+  },
+  "176": {
+    "name": "Raid the Wyvern's Nest",
+    "category": "gathering"
+  },
+  "177": {
+    "name": "Velociprey Hunt",
+    "category": "hunt"
+  },
+  "178": {
+    "name": "Trouble in the Forest",
+    "category": "hunt"
+  },
+  "179": {
+    "name": "Slay the Genprey!",
+    "category": "hunt"
+  },
+  "180": {
+    "name": "Slay the Gendrome!",
+    "category": "hunt"
+  },
+  "181": {
+    "name": "Ioprey Hunting",
+    "category": "hunt"
+  },
+  "182": {
+    "name": "Slay the Gypceros!",
+    "category": "hunt"
+  },
+  "183": {
+    "name": "Water Wyvern in the Desert",
+    "category": "hunt"
+  },
+  "184": {
+    "name": "Basarios: Unseen Peril",
+    "category": "hunt"
+  },
+  "185": {
+    "name": "Queen of the Desert",
+    "category": "hunt"
+  },
+  "186": {
+    "name": "Slay the Rathian!",
+    "category": "hunt"
+  },
+  "187": {
+    "name": "Handle With Care!",
+    "category": "gathering"
+  },
+  "188": {
+    "name": "Take down Rathalos!",
+    "category": "hunt"
+  },
+  "189": {
+    "name": "Take down Diablos!",
+    "category": "hunt"
+  },
+  "190": {
+    "name": "Take down Yian Kut-Ku!",
+    "category": "hunt"
+  },
+  "191": {
+    "name": "Take down Rathalos!",
+    "category": "hunt"
+  },
+  "192": {
+    "name": "Take down Diablos!",
+    "category": "hunt"
+  },
+  "193": {
+    "name": "Take down Yian Kut-Ku!",
+    "category": "hunt"
+  },
+  "201": {
+    "name": "Gathering - Forest and Hills",
+    "category": "event"
+  },
+  "202": {
+    "name": "Gathering - Jungle",
+    "category": "event"
+  },
+  "203": {
+    "name": "Gathering - Swamp",
+    "category": "event"
+  },
+  "204": {
+    "name": "Gravios Hunting!",
+    "category": "event"
+  },
+  "205": {
+    "name": "Gathering - Desert",
+    "category": "event"
+  },
+  "206": {
+    "name": "Stop the Giant Dragon!",
+    "category": "event"
+  },
+  "207": {
+    "name": "The Black Dragon's Return",
+    "category": "event"
+  },
+  "208": {
+    "name": "Repel the Giant!",
+    "category": "event"
+  },
+  "209": {
+    "name": "Felyne Hunting!",
+    "category": "event"
+  },
+  "210": {
+    "name": "Dengeki! BBQ Festival!",
+    "category": "event"
+  },
+  "211": {
+    "name": "The Legendary Kirin",
+    "category": "event"
+  },
+  "212": {
+    "name": "Velociprey Hunting!",
+    "category": "event"
+  },
+  "213": {
+    "name": "The BBQ Festival!",
+    "category": "event"
+  },
+  "214": {
+    "name": "The GMR Heavy Metal Crusade",
+    "category": "event"
+  },
+  "215": {
+    "name": "Capture a Yian Kut-Ku!",
+    "category": "event"
+  },
+  "216": {
+    "name": "Rulers of Heaven and Earth",
+    "category": "event"
+  },
+  "217": {
+    "name": "Capture a Khezu!",
+    "category": "event"
+  },
+  "218": {
+    "name": "On the Trail of the Beast!",
+    "category": "event"
+  },
+  "219": {
+    "name": "Gathering - Volcano",
+    "category": "event"
+  },
+  "220": {
+    "name": "Expeditious Assault!",
+    "category": "event"
+  },
+  "221": {
+    "name": "Raid the Wyvern's Nest",
+    "category": "event"
+  },
+  "222": {
+    "name": "New Year Madness",
+    "category": "event"
+  },
+  "223": {
+    "name": "The BBQ Festival!",
+    "category": "event"
+  },
+  "224": {
+    "name": "The Love Potion",
+    "category": "event"
+  }
+}

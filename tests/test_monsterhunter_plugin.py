@@ -1,9 +1,11 @@
 """Monster Hunter plugin flow tests."""
 
 from dataclasses import replace
+from datetime import date, timedelta
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import struct
 import tempfile
@@ -15,6 +17,7 @@ from opensnap.config import StorageConfig, UserConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.core.sessions import Session
 from opensnap.plugins.monsterhunter import MonsterHunterPlugin
+import opensnap.plugins.monsterhunter.plugin as plugin_module
 from opensnap.plugins.monsterhunter.app import AppFlowTracker, AppPhase, AppService, AppServiceConfig
 from opensnap.plugins.monsterhunter.app.codec import (
     app_frame,
@@ -26,7 +29,12 @@ from opensnap.plugins.monsterhunter.app.codec import (
     pop_app_frame,
 )
 from opensnap.plugins.monsterhunter.app.content import EventCatalog, InformationPages, MarketState
-from opensnap.plugins.monsterhunter.app.records import build_record_page
+from opensnap.plugins.monsterhunter.app.records import (
+    RECORD_PAGE_SAFE_CELLS,
+    RECORD_PAGE_SAFE_SIZE,
+    RecordPages,
+    load_quests,
+)
 from opensnap.plugins.monsterhunter.directory import Directory, read_directory
 from opensnap.plugins.monsterhunter.profile import MONSTER_HUNTER_NA
 from opensnap.protocol import commands
@@ -60,7 +68,7 @@ class MonsterHunterFlowTests(unittest.TestCase):
     def setUp(self) -> None:
         temp_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temp_directory.cleanup)
-        users = tuple(UserConfig(user_id=index + 1, username=f'hunter{index}', password='1111') for index in range(3))
+        users = tuple(UserConfig(user_id=index + 1, username=f'hunter{index}', password='1111') for index in range(4))
         self.config = replace(
             serving(default_app_config(), 'monsterhunter'),
             storage=StorageConfig(backend='sqlite', sqlite_path=f'{temp_directory.name}/mh.sqlite'),
@@ -233,6 +241,50 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self._join(guest, quest_id)
         self._stat(host, QUEST_STARTED_RULES)
         return quest_id
+
+    def _area_roster(self, player) -> list[bytes]:
+        reply = self._send(player, commands.CMD_QUERY_USER, struct.pack('>L', AREA_ID), FLAG_CHANNEL_BITS)[0]
+        count = struct.unpack_from('>3L', reply.payload)[1]
+        return [reply.payload[12 + index * 164:28 + index * 164].rstrip(b'\0') for index in range(count)]
+
+    def test_new_login_from_the_same_endpoint_ends_the_old_session(self) -> None:
+        # A console that crashed logs in again (here with another account) from
+        # the same address and port; its old hunter must leave the Area.
+        for index, player in enumerate(self.players):
+            self._publish(player, _profile(index + 1))
+        crashed_endpoint, crashed_id = self.players[0]
+        self.assertIn(b'hunter0', self._area_roster(self.players[1]))
+
+        relogged = self._login('hunter3', crashed_endpoint.host)
+        self.assertNotEqual(relogged[1], crashed_id)
+        self.assertIsNone(self.engine._sessions.get(crashed_id))  # noqa: SLF001
+        self._publish(relogged, _profile(4))
+        self.assertEqual(sorted(self._area_roster(self.players[1])), [b'hunter2', b'hunter3'])
+
+    def test_silent_sessions_end_after_their_idle_limit(self) -> None:
+        now = [1000.0]
+        self.engine._clock = lambda: now[0]  # noqa: SLF001
+        town_id = self._town_with_residents()
+        host, guest, waiting = self.players
+        self._depart(host, guest, town_id)
+        lobby_only = self._login('hunter3', '10.0.0.9')
+        self._send(lobby_only, commands.CMD_LEAVE, b'', FLAG_CHANNEL_BITS)
+
+        # In an Area: 5 minutes without a datagram.
+        now[0] += plugin_module.LOBBY_IDLE_LIMIT_SECONDS - 1
+        self.engine.tick()
+        self.assertIsNotNone(self.engine._sessions.get(waiting[1]))  # noqa: SLF001
+        now[0] += 2
+        self.engine.tick()
+        self.assertIsNone(self.engine._sessions.get(waiting[1]))  # noqa: SLF001
+        # On a started quest the client is silent until the quest ends.
+        self.assertIsNotNone(self.engine._sessions.get(host[1]))  # noqa: SLF001
+        now[0] += plugin_module.QUEST_IDLE_LIMIT_SECONDS
+        self.engine.tick()
+        self.assertIsNone(self.engine._sessions.get(host[1]))  # noqa: SLF001
+        self.assertIsNone(self.engine._sessions.get(guest[1]))  # noqa: SLF001
+        # Outside any Area (World/Land selection) no limit applies.
+        self.assertIsNotNone(self.engine._sessions.get(lobby_only[1]))  # noqa: SLF001
 
     def test_relays_carry_sender_header_and_recipient_transport_session(self) -> None:
         town_id = self._town_with_residents()
@@ -495,7 +547,9 @@ class MonsterHunterFlowTests(unittest.TestCase):
 
         roster = self._send(self.players[0], commands.CMD_QUERY_USER, struct.pack('>L', AREA_ID), FLAG_CHANNEL_BITS)[0]
         self.assertEqual(roster.type_flags, FLAG_CHANNEL_BITS | 0x4000)
-        self.assertEqual(struct.unpack_from('>3L', roster.payload), (AREA_ID, 2, 2))
+        # The searcher is left out of its own Area roster (the hunter search).
+        self.assertEqual(struct.unpack_from('>3L', roster.payload), (AREA_ID, 1, 1))
+        self.assertEqual(roster.payload[12:28], pack16('hunter1'))
 
     def test_friend_search_reports_area_and_room(self) -> None:
         town_id = self._town_with_residents()
@@ -513,6 +567,10 @@ class MonsterHunterFlowTests(unittest.TestCase):
         missing = self._send(searcher, commands.CMD_SEARCH_USERS_BY_NAME, pack16('nobody-') + struct.pack('>2L', 7, 1),
                              FLAG_CHANNEL_BITS | FLAG_RELIABLE)[0]
         self.assertEqual(missing.payload, struct.pack('>3L', 0, 0, 0))
+
+        itself = self._send(searcher, commands.CMD_SEARCH_USERS_BY_NAME, pack16('hunter0-') + struct.pack('>2L', 8, 1),
+                            FLAG_CHANNEL_BITS | FLAG_RELIABLE)[0]
+        self.assertEqual(itself.payload, struct.pack('>3L', 0, 0, 0))
 
     def test_unknown_area_join_is_rejected(self) -> None:
         reply = self._send(self.players[0], commands.CMD_JOIN, struct.pack('>L', 99), FLAG_CHANNEL_BITS)[0]
@@ -720,7 +778,6 @@ class AppContentTests(unittest.TestCase):
         self.root = Path(temp_directory.name)
 
     def test_market_follows_the_daily_rotation(self) -> None:
-        from datetime import date, timedelta
 
         start = date(2026, 1, 1)
         days = [
@@ -729,29 +786,60 @@ class AppContentTests(unittest.TestCase):
         ]
         self.assertEqual(days, [1, 0, 4, 0, 2, 0, 4, 0, 3, 0, 1, 0])
 
+    def _write_events(self, *quest_ids: int) -> dict[int, bytes]:
+        events = self.root / 'events'
+        events.mkdir()
+        contents = {}
+        entries = []
+        for index, quest_id in enumerate(quest_ids):
+            # Quest information at 0x40 with the number at +0x1e, then padding.
+            content = struct.pack('<L', 0x40) + bytes(0x40 - 4 + 0x1E) + struct.pack('<H', quest_id) + bytes(1000)
+            (events / f'{quest_id}.mib').write_bytes(content)
+            contents[quest_id] = content
+            entries.append({'index': index, 'quest_id': quest_id, 'title': f'Quest {quest_id}', 'file': f'{quest_id}.mib'})
+        (events / 'manifest.json').write_text(json.dumps({'events': entries}))
+        return contents
+
     def test_event_catalog_serves_754_byte_chunks(self) -> None:
         import hashlib
 
-        events = self.root / 'events'
-        events.mkdir()
-        content = bytes(range(256)) * 4
-        (events / 'event.bin').write_bytes(content)
-        (events / 'manifest.json').write_text(json.dumps({
-            'event_availability': 1,
-            'catalog_key': 'KEY',
-            'event_catalog': [{
-                'file': 'event.bin',
-                'size': len(content),
-                'sha256': hashlib.sha256(content).hexdigest(),
-            }],
-        }))
+        content = self._write_events(201)[201]
         catalog = EventCatalog(self.root)
+        key = f'201-{hashlib.sha256(content).hexdigest()[:24]}'.encode()
         self.assertEqual(catalog.availability(), struct.pack('>L', 1))
-        self.assertEqual(catalog.catalog(lambda data: data), b'\x01KEY' + struct.pack('>HL', 1, len(content)))
+        self.assertEqual(catalog.catalog(lambda data: data), b'\x01' + key + struct.pack('>HL', 1, len(content)))
         chunk = catalog.download(struct.pack('>HLH', 0, 754, 754), lambda data: data)
         self.assertEqual(chunk, struct.pack('>HL', 0, 754) + content[754:])
         with self.assertRaises(ValueError):
             catalog.download(struct.pack('>HLH', 0, 10, 754), lambda data: data)
+
+    def test_event_catalog_rotates_daily_in_index_order(self) -> None:
+        contents = self._write_events(201, 202, 203)
+        start = date(2026, 1, 1)
+        served = [
+            EventCatalog(self.root, lambda day=start + timedelta(days=offset): day).current().quest_id
+            for offset in range(5)
+        ]
+        self.assertEqual(served, [201, 202, 203, 201, 202])
+        catalog = EventCatalog(self.root, lambda: start + timedelta(days=1))
+        chunk = catalog.download(struct.pack('>HLH', 0, 0, 754), lambda data: data)
+        self.assertEqual(chunk, struct.pack('>HL', 0, 0) + contents[202][:754])
+
+    def test_event_catalog_keys_differ_per_quest(self) -> None:
+        self._write_events(201, 202)
+        start = date(2026, 1, 1)
+        keys = {
+            EventCatalog(self.root, lambda day=start + timedelta(days=offset): day).current().catalog_key
+            for offset in range(2)
+        }
+        self.assertEqual(len(keys), 2)
+        self.assertTrue(all(len(key) <= 31 for key in keys))
+
+    def test_event_catalog_rejects_a_mismatched_quest_id(self) -> None:
+        self._write_events(201)
+        manifest = self.root / 'events' / 'manifest.json'
+        manifest.write_text(manifest.read_text().replace('"quest_id": 201', '"quest_id": 299'))
+        self.assertEqual(EventCatalog(self.root).availability(), bytes(4))
 
     def test_information_defaults_to_one_empty_page(self) -> None:
         pages = InformationPages(self.root)
@@ -1046,6 +1134,8 @@ class AppServiceTests(unittest.TestCase):
 
         counts = [0] * 34
         counts[3], counts[10] = 2, 1
+        # Veggie Elder (index 9), Cart (17) and Poogie (31) can't be legally killed: not tracked.
+        counts[9], counts[17], counts[31] = 4, 1, 2
         hunts = struct.pack('>BBH', 1, 12, 0x0105) + b''.join(
             struct.pack('>BL', index, count) for index, count in enumerate(counts)
         )
@@ -1057,24 +1147,26 @@ class AppServiceTests(unittest.TestCase):
         boards = self.records.best_by_board('monsterhunter', 10)
         self.assertEqual(
             [(record.player, record.score, dict(record.details)) for record in boards['hunts-261']],
-            [('hunter', 3, {'hunter_rank': 12, 'monsters': {'3': 2, '10': 1}})],
+            [('hunter', 10, {'hunter_rank': 12, 'monsters': {'3': 2, '9': 4, '10': 1, '17': 1, '31': 2}})],
         )
         self.assertEqual(
             [(record.player, record.score, dict(record.details)) for record in boards['clear-261']],
             [('hunter', 754, {'weapon_class': 4})],
         )
+        # Record index k counts monster k + 1: Mosswine (4) and Rathalos (11).
+        self.assertEqual([(record.score, dict(record.details)) for record in boards['kills-04']], [(2, {'quest': 261})])
+        self.assertEqual([record.score for record in boards['kills-11']], [1])
+        self.assertNotIn('kills-10', boards)
+        self.assertNotIn('kills-18', boards)
+        self.assertNotIn('kills-32', boards)
 
-    def test_record_page_is_generated_from_the_records(self) -> None:
-        self.records.add(game='monsterhunter', board='hunts-261', user_id=7, player='hunter', score=3, details={})
-        self.records.add(game='monsterhunter', board='hunts-300', user_id=7, player='hunter', score=2, details={})
-        self.records.add(game='monsterhunter', board='hunts-261', user_id=8, player='o<b>', score=9, details={})
-        self.records.add(game='monsterhunter', board='clear-261', user_id=7, player='hunter', score=754, details={})
-        self.flows.arm_world(1, '127.0.0.1')
-        self.flows.advance('127.0.0.1', 1, AppPhase.LAND)
+    def _download_page(self, name: bytes, *, eu: bool) -> str:
         client, buffer = self._connect()
-        # EU lobby Information/Record: APP mode 3 asks for the path after `lbs://lbs/`.
-        self._open(client, buffer, build=3, flags=0x14)
-        name = b'03/04/DATABASE.HTM'
+        # Record menu: APP mode 3 asks for the path after `lbs://lbs/`.
+        if eu:
+            self._open(client, buffer, build=3, flags=0x14)
+        else:
+            self._open(client, buffer)
         info = self._exchange(client, buffer, 0x6101, bytes(4) + encode_app_field(name, 5))
         size = struct.unpack('>L', info[-4:])[0]
         field = encode_app_field(name, 5)
@@ -1082,39 +1174,118 @@ class AppServiceTests(unittest.TestCase):
         for offset in range(0, size, 722):
             chunk = self._exchange(client, buffer, 0x6102, field + struct.pack('>LH', offset, 722))
             page += decode_app_field(chunk[len(field) + 4:], 5)[0]
-        text = page.decode()
         self.assertEqual(len(page), size)
+        return page.decode()
+
+    def _write_quests(self, quests: dict[int, tuple[str, str]]) -> None:
+        (self.data_directory / 'quests.json').write_text(json.dumps(
+            {str(quest): {'name': name, 'category': category} for quest, (name, category) in quests.items()}
+        ))
+
+    def _pages(self) -> RecordPages:
+        return RecordPages(self.records, 'monsterhunter', load_quests(self.data_directory))
+
+    def test_eu_record_index_links_to_its_own_directory(self) -> None:
+        text = self._download_page(b'03/04/DATABASE.HTM', eu=True)
         self.assertTrue(text.startswith('<html>') and text.endswith('</html>\n'))
-        # Same dark style as the signup pages.
         self.assertIn('<body bgcolor="#101820"', text)
-        # Monsters hunted, summed over quests, most first; names are escaped.
-        self.assertIn('<tr><td>1</td><td>o&lt;b&gt;</td><td>9</td></tr>', text)
-        self.assertIn('<tr><td>2</td><td>hunter</td><td>5</td></tr>', text)
-        self.assertIn('Quest 261: fastest clears', text)
-        self.assertIn('<tr><td>1</td><td>hunter</td><td>12\'34"</td></tr>', text)
+        self.assertIn('<a href="lbs://lbs/03/04/RANK_MON_1.HTM">Most monsters hunted</a>', text)
+        self.assertIn('<a href="lbs://lbs/03/04/RANK_EVNT_1.HTM">Event quests</a> (0 quests)', text)
 
-    def test_na_record_menu_gets_the_same_page(self) -> None:
+    def test_record_index_counts_ranked_quests_per_category(self) -> None:
+        self._write_quests({27: ('Slay the Rathian!', 'hunt'), 201: ('Gathering - Forest and Hills', 'event')})
+        self.records.add(game='monsterhunter', board='clear-27', user_id=7, player='hunter', score=60, details={})
+        text = self._pages().render(b'03/04/DATABASE.HTM').decode()
+        self.assertIn('<a href="lbs://lbs/03/04/RANK_HUNT_1.HTM">Hunt quests</a> (1 quest)', text)
+        self.assertIn('<a href="lbs://lbs/03/04/RANK_EVNT_1.HTM">Event quests</a> (0 quests)', text)
+        self.assertNotIn('Other quests', text)
+        self.assertIn('so these rankings list EU players only.', text)
+        self.assertIn('<a href="AMUSA_MENU_BACK">Close</a>', text)
+
+    def test_na_record_pages_link_to_02(self) -> None:
         self.records.add(game='monsterhunter', board='clear-261', user_id=7, player='hunter', score=754, details={})
-        client, buffer = self._connect()
-        # NA Record menu: APP mode 3 opens with 6101 right after 1002 (no 6001).
-        self._open(client, buffer)
-        name = b'02/DATABASE.HTM'
-        info = self._exchange(client, buffer, 0x6101, bytes(4) + encode_app_field(name, 5))
-        page = build_record_page(self.records, 'monsterhunter')
-        self.assertEqual(struct.unpack('>L', info[-4:])[0], len(page))
-        field = encode_app_field(name, 5)
-        chunk = self._exchange(client, buffer, 0x6102, field + struct.pack('>LH', 0, 722))
-        self.assertEqual(decode_app_field(chunk[len(field) + 4:], 5)[0], page[:722])
+        text = self._download_page(b'02/DATABASE.HTM', eu=False)
+        self.assertIn('<a href="lbs://lbs/02/RANK_OTHR_1.HTM">Other quests</a> (1 quest)', text)
+        page = self._download_page(b'02/RANK_OTHR_1.HTM', eu=False)
+        self.assertIn('Quest 261', page)
+        self.assertIn('<tr><td>1</td><td>hunter</td><td>12\'34"</td></tr>', page)
 
-    def test_record_page_fits_the_lobby_buffer(self) -> None:
-        for quest in range(400):
-            for user in range(5):
+    def test_category_pages_hold_eight_quests_in_quest_order(self) -> None:
+        self._write_quests({quest: (f'Hunt {quest}', 'hunt') for quest in range(1, 11)})
+        for quest in range(10, 0, -1):
+            for user in range(6):
                 self.records.add(
-                    game='monsterhunter', board=f'clear-{quest}', user_id=user, player=f'p{user}', score=60, details={}
+                    game='monsterhunter', board=f'clear-{quest}', user_id=user, player=f'p{user}', score=60 + user,
+                    details={},
                 )
-        page = build_record_page(self.records, 'monsterhunter')
-        self.assertLessEqual(len(page), 0x8000 - 1)
-        self.assertTrue(page.endswith(b'</body>\n</html>\n'))
+        pages = self._pages()
+        first = pages.render(b'03/01/RANK_HUNT_1.HTM').decode()
+        self.assertIn('Page 1 of 2', first)
+        self.assertEqual(re.findall(r'#(\d+) Hunt', first), [str(quest) for quest in range(1, 9)])
+        # Top 4 per quest.
+        self.assertIn('<td>p3</td>', first)
+        self.assertNotIn('<td>p4</td>', first)
+        self.assertIn('<a href="lbs://lbs/03/01/RANK_HUNT_2.HTM">Next</a>', first)
+        self.assertNotIn('Previous', first)
+        second = pages.render(b'03/01/RANK_HUNT_2.HTM').decode()
+        self.assertEqual(re.findall(r'#(\d+) Hunt', second), ['9', '10'])
+        self.assertIn('<a href="lbs://lbs/03/01/RANK_HUNT_1.HTM">Previous</a>', second)
+        self.assertNotIn('Next', second)
+        self.assertIsNone(pages.render(b'03/01/RANK_HUNT_3.HTM'))
+
+    def test_monster_page_shows_the_top_three_per_monster(self) -> None:
+        for user, kills in enumerate((5, 9, 1, 7)):
+            self.records.add(game='monsterhunter', board='kills-11', user_id=user, player=f'p<{user}>', score=kills,
+                             details={})
+        self.records.add(game='monsterhunter', board='kills-11', user_id=0, player='p<0>', score=6, details={})
+        text = self._pages().render(b'02/RANK_MON_1.HTM').decode()
+        self.assertIn('Rathalos', text)
+        self.assertNotIn('Rathian', text)
+        self.assertEqual(
+            re.findall(r'<tr><td>(\d)</td><td>([^<]*)</td><td>(\d+)</td></tr>', text),
+            [('1', 'p&lt;0&gt;', '11'), ('2', 'p&lt;1&gt;', '9'), ('3', 'p&lt;3&gt;', '7')],
+        )
+        self.assertIn('<a href="lbs://lbs/02/DATABASE.HTM">Index</a>', text)
+
+    def test_monster_pages_hold_ten_monsters_in_id_order(self) -> None:
+        # Monsters 1-12 without Veggie Elder (10): 11 tracked monsters.
+        for monster in range(1, 13):
+            self.records.add(game='monsterhunter', board=f'kills-{monster:02d}', user_id=1, player='p', score=1,
+                             details={})
+        pages = self._pages()
+        first = pages.render(b'02/RANK_MON_1.HTM').decode()
+        self.assertIn('Page 1 of 2', first)
+        self.assertEqual(first.count('>Rank</font>'), 10)
+        self.assertIn('Rathian', first)
+        self.assertIn('<a href="lbs://lbs/02/RANK_MON_2.HTM">Next</a>', first)
+        second = pages.render(b'02/RANK_MON_2.HTM').decode()
+        self.assertIn('Aptonoth', second)
+        self.assertNotIn('Veggie Elder', first + second)
+        self.assertIsNone(pages.render(b'02/RANK_MON_3.HTM'))
+
+    def test_only_record_page_names_are_generated(self) -> None:
+        pages = self._pages()
+        for name in (b'04/DATABASE.HTM', b'03/4/DATABASE.HTM', b'02/RANK_XXXX_1.HTM', b'02/RANK_HUNT_0.HTM',
+                     b'02/RANK_MON.HTM', b'02/TOP_INFOR.HTM'):
+            self.assertIsNone(pages.render(name), name)
+
+    def test_record_pages_stay_within_what_the_browser_draws(self) -> None:
+        # Longest quest names, 10-character usernames, every quest and monster ranked.
+        longest = 'The GMR Heavy Metal Crusade!'
+        self._write_quests({quest: (longest, 'hunt') for quest in range(100, 400)})
+        for user in range(5):
+            player = f'Hunter_{user:03d}'
+            for quest in range(100, 400):
+                self.records.add(game='monsterhunter', board=f'clear-{quest}', user_id=user, player=player,
+                                 score=59999, details={})
+            for monster in range(1, 35):
+                self.records.add(game='monsterhunter', board=f'kills-{monster:02d}', user_id=user, player=player,
+                                 score=999999, details={})
+        pages = self._pages()
+        for name in (b'03/05/DATABASE.HTM', b'03/05/RANK_HUNT_1.HTM', b'03/05/RANK_MON_1.HTM', b'03/05/RANK_MON_4.HTM'):
+            page = pages.render(name)
+            self.assertLessEqual(len(page), RECORD_PAGE_SAFE_SIZE, name)
+            self.assertLessEqual(page.count(b'<td'), RECORD_PAGE_SAFE_CELLS, name)
 
     def test_quest_record_without_a_single_player_is_acknowledged_only(self) -> None:
         self.flows.arm_world(1, '127.0.0.1')

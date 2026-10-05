@@ -1,0 +1,16 @@
+{
+  "events": [
+    {
+      "index": 0,
+      "quest_id": 201,
+      "title": "Event Quest 1",
+      "file": "event_quest_1.mib"
+    },
+    {
+      "index": 1,
+      "quest_id": 202,
+      "title": "Event Quest 2",
+      "file": "event_quest_2.mib"
+    }
+  ]
+}

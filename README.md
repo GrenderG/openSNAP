@@ -285,7 +285,17 @@ Its settings are grouped under "Plugin-specific configuration" in `.env.dist`:
   an Area holds at most 63 Towns (3 categories of 21) of `OPENSNAP_MAX_PLAYERS_PER_ROOM` players, and the client
   creates every Town with a maximum of 8.
 - `OPENSNAP_DATA_DIR`: local data root (default: `data`). Monster Hunter reads `data/monsterhunter`:
-  - `events/manifest.json` plus its resource file: optional single downloadable Event;
+  - `events/manifest.json`: optional downloadable Event quests,
+    `{"events": [{"index": 0, "quest_id": 201, "title": "...", "file": "201.mib"}, ...]}`. One quest is
+    served per day in `index` order (by day of the year, like the Market), then the list repeats. Files are
+    NA/EU quest files of at most 32 KB, and `quest_id` must match the number inside the file.
+    `events/manifest.json.dist` is a sample; quest files (`*.mib`) and `manifest.json` are not in the
+    repository;
+  - `quests.json`: `{"<quest number>": {"name": "...", "category": "..."}}` for the Record pages (all NA/EU
+    disc quests and the Event quests, with the EU names). Categories: `hunt`, `gathering`, `capture`,
+    `special`, `event`. The Record menu opens an index that links to the monster page (top 3 hunters per
+    monster) and to each category's pages (10 quests per page by quest number, top 4 clears each). Quests
+    it does not list are shown by number under "Other quests";
   - `information.json`: optional `{"title": "...", "pages": ["page1.txt"]}` online Information pages
     (1-3 pages, 8192 bytes each, client page markup such as `<BODY>`). Without it one empty page is
     published, which the client needs to continue its online setup (Event, Market, connection timing).

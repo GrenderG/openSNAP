@@ -246,9 +246,11 @@ kageserver.cpp
 bomberman.cpp
 kage_server/
 
-# Local runtime game data (captured/ported resources are not redistributed).
-data/*
-!data/.nomedia
+# Local runtime game data: quest files and the live Event manifest are not
+# redistributed (see manifest.json.dist); TLS keys and certificates stay local.
+data/**/*.mib
+data/monsterhunter/events/manifest.json
+data/tls/
 
 # Local MCP configuration.
 .mcp.json

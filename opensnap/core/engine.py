@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from enum import IntEnum
 import logging
+import time
 from typing import Literal
 
 from opensnap.config import AppConfig
@@ -68,6 +69,7 @@ class SnapProtocolEngine:
         self._role = role
         self._logger = logging.getLogger('opensnap.engine')
         self._closed = False
+        self._clock = time.monotonic
 
         # Accounts, session handoffs and records are shared with other processes (and
         # possibly other machines); sessions, lobbies and rooms are this
@@ -89,6 +91,7 @@ class SnapProtocolEngine:
             lobbies=self._lobbies,
             rooms=self._rooms,
             identify_snap_title=identify_snap_title,
+            end_session=self._end_session,
         )
 
         self._register_core_handlers()
@@ -122,6 +125,10 @@ class SnapProtocolEngine:
         for message in messages:
             if message.wire_format == WIRE_FORMAT_SNAP:
                 self._normalize_session_for_message(message)
+            # Any datagram, bare ACKs included, shows the client is alive.
+            active = self._sessions.get(message.session_id)
+            if active is not None:
+                active.last_inbound_at = self._clock()
             prior_room_id = self._room_id_for_session(message.session_id)
             self._logger.debug(
                 (
@@ -290,11 +297,29 @@ class SnapProtocolEngine:
             self._plugin.start_services(self._context)
 
     def tick(self) -> list[SnapMessage]:
-        """Run periodic plugin tasks."""
+        """Run periodic plugin tasks and end sessions idle past their plugin's limit."""
 
         if self._plugin is None:
             return []
-        return self._plugin.on_tick(self._context)
+        return self._end_idle_sessions() + self._plugin.on_tick(self._context)
+
+    def _end_idle_sessions(self) -> list[SnapMessage]:
+        assert self._plugin is not None
+        now = self._clock()
+        messages: list[SnapMessage] = []
+        for session in self._sessions.all():
+            limit = self._plugin.session_idle_limit(self._context, session)
+            if limit is None or now - session.last_inbound_at < limit:
+                continue
+            self._logger.warning(
+                'Ending session 0x%08x of %s:%d: no datagram for %.0f s.',
+                session.session_id,
+                session.endpoint.host,
+                session.endpoint.port,
+                now - session.last_inbound_at,
+            )
+            messages.extend(self._end_session(session))
+        return messages
 
     def handle_transport_timeout(self, endpoint: Endpoint, session_id: int) -> list[SnapMessage]:
         """Tear down one timed-out session and return any cleanup callbacks."""
@@ -309,6 +334,11 @@ class SnapProtocolEngine:
             session.endpoint.host,
             session.endpoint.port,
         )
+
+        return self._end_session(session)
+
+    def _end_session(self, session: Session) -> list[SnapMessage]:
+        """Remove one session with its plugin, room and handoff state."""
 
         messages: list[SnapMessage] = []
         if self._plugin is not None:
