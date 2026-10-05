@@ -1,4 +1,8 @@
-"""Session lifecycle and counters."""
+"""Session lifecycle and counters.
+
+A login is shared between processes as a `SessionHandoff` (shared store);
+each process keeps its own `Session` with the transport counters in memory.
+"""
 
 import hashlib
 from dataclasses import dataclass
@@ -22,6 +26,28 @@ class Session:
     last_incoming_sequence: int = -1
     lobby_id: int = 0
     room_id: int = 0
+    # Serial of the handoff this runtime session was built from.
+    handoff_serial: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class SessionHandoff:
+    """One bootstrap login, shared with the game server through the shared store.
+
+    The client keeps one SN@P application from bootstrap to game server and
+    drops unreliable packets numbered below the last one it accepted
+    (`kkReceiveExtentCheck`), so the game server continues unreliable
+    numbering from `sequence_number`, the bootstrap's last unreliable sequence.
+    `serial` changes with every new login.
+    """
+
+    serial: int
+    session_id: int
+    user_id: int
+    username: str
+    endpoint: Endpoint
+    game_identifier: str
+    sequence_number: int = 0
 
 
 class SessionRegistry:
@@ -31,29 +57,28 @@ class SessionRegistry:
         self._by_id: dict[int, Session] = {}
         self._id_by_endpoint: dict[Endpoint, int] = {}
 
-    def create_or_replace(
-        self,
-        endpoint: Endpoint,
-        account: Account,
-        *,
-        game_identifier: str = '',
-    ) -> Session:
-        """Create or replace session for a user endpoint."""
+    def adopt(self, handoff: SessionHandoff) -> Session:
+        """Create or replace the runtime session of one handoff."""
 
-        session_id = create_session_id(endpoint.host, account)
-        existing = self._by_id.get(session_id)
+        existing = self._by_id.get(handoff.session_id)
         if existing is not None:
             self._id_by_endpoint.pop(existing.endpoint, None)
+        # A new login from the same client endpoint supersedes its old session.
+        superseded = self._id_by_endpoint.pop(handoff.endpoint, None)
+        if superseded is not None:
+            self._by_id.pop(superseded, None)
 
         session = Session(
-            session_id=session_id,
-            user_id=account.user_id,
-            username=account.username,
-            endpoint=endpoint,
-            game_plugin=game_identifier,
+            session_id=handoff.session_id,
+            user_id=handoff.user_id,
+            username=handoff.username,
+            endpoint=handoff.endpoint,
+            game_plugin=handoff.game_identifier,
+            sequence_number=handoff.sequence_number,
+            handoff_serial=handoff.serial,
         )
-        self._by_id[session_id] = session
-        self._id_by_endpoint[endpoint] = session_id
+        self._by_id[session.session_id] = session
+        self._id_by_endpoint[session.endpoint] = session.session_id
         return session
 
     def rebind_endpoint(self, session_id: int, endpoint: Endpoint) -> Session | None:

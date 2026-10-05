@@ -55,15 +55,29 @@ class AppConfigTests(unittest.TestCase):
 
         self.assertEqual(config.storage.backend, 'sqlite')
 
-    def test_runtime_reset_flag_can_be_overridden(self) -> None:
+    def test_mariadb_storage_settings_are_read(self) -> None:
         with patch.dict(
             os.environ,
-            {'OPENSNAP_RESET_RUNTIME_ON_STARTUP': 'false'},
+            {
+                'OPENSNAP_STORAGE_BACKEND': 'MariaDB',
+                'OPENSNAP_MARIADB_HOST': 'db.example',
+                'OPENSNAP_MARIADB_PORT': '3307',
+                'OPENSNAP_MARIADB_USER': 'opensnap',
+                'OPENSNAP_MARIADB_PASSWORD': ' secret ',
+                'OPENSNAP_MARIADB_DATABASE': 'snap',
+                'OPENSNAP_MARIADB_SSL_CA': '/etc/ssl/ca.pem',
+            },
             clear=True,
         ):
-            config = default_app_config()
+            storage = default_app_config().storage
 
-        self.assertFalse(config.storage.reset_runtime_on_startup)
+        self.assertEqual(
+            (storage.backend, storage.mariadb_host, storage.mariadb_port, storage.mariadb_user),
+            ('mariadb', 'db.example', 3307, 'opensnap'),
+        )
+        # Passwords are taken verbatim.
+        self.assertEqual(storage.mariadb_password, ' secret ')
+        self.assertEqual((storage.mariadb_database, storage.mariadb_ssl_ca), ('snap', '/etc/ssl/ca.pem'))
 
     def test_game_advertise_host_can_use_compatibility_env_names(self) -> None:
         with patch.dict(
@@ -110,21 +124,19 @@ class AppConfigTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                'OPENSNAP_GAME_IDENTIFIER': 'automodellista-release',
-                'OPENSNAP_BOOTSTRAP_DEFAULT_GAME_IDENTIFIER': 'monsterhunter',
+                'OPENSNAP_GAME_PLUGIN': 'automodellista',
                 'OPENSNAP_GAME_SERVER_MAP': (
                     '{"monsterhunter":{"host":"203.0.113.90","port":10090},'
-                    '"automodellista-release":"203.0.113.20:10070"}'
+                    '"automodellista":"203.0.113.20:10070"}'
                 ),
             },
             clear=True,
         ):
             config = default_app_config()
 
-        self.assertEqual(config.server.game_identifier, 'automodellista-release')
-        self.assertEqual(config.server.default_bootstrap_game_identifier, 'monsterhunter')
         monsterhunter_target = config.server.resolve_game_target('monsterhunter')
-        automodellista_target = config.server.resolve_game_target('automodellista-release')
+        # The map entry wins over this process's own game endpoint.
+        automodellista_target = config.server.resolve_game_target('automodellista')
         assert monsterhunter_target is not None
         assert automodellista_target is not None
         self.assertEqual(monsterhunter_target.host, '203.0.113.90')
@@ -132,11 +144,23 @@ class AppConfigTests(unittest.TestCase):
         self.assertEqual(automodellista_target.host, '203.0.113.20')
         self.assertEqual(automodellista_target.port, 10070)
 
+    def test_bootstrap_games_default_to_generic(self) -> None:
+        for value in ('', 'generic', ' Generic '):
+            with patch.dict(os.environ, {'OPENSNAP_BOOTSTRAP_GAMES': value}, clear=True):
+                self.assertEqual(default_app_config().server.bootstrap_games, ())
+
+    def test_bootstrap_games_limit_accepted_games(self) -> None:
+        with patch.dict(os.environ, {'OPENSNAP_BOOTSTRAP_GAMES': 'monsterhunter, AutoModellista'}, clear=True):
+            self.assertEqual(default_app_config().server.bootstrap_games, ('monsterhunter', 'automodellista'))
+        with patch.dict(os.environ, {'OPENSNAP_BOOTSTRAP_GAMES': 'generic,monsterhunter'}, clear=True):
+            with self.assertRaises(ValueError):
+                default_app_config()
+
     def test_game_server_map_accepts_game_to_host_port_strings(self) -> None:
         with patch.dict(
             os.environ,
             {
-                'OPENSNAP_GAME_IDENTIFIER': 'automodellista',
+                'OPENSNAP_GAME_PLUGIN': 'automodellista',
                 'OPENSNAP_GAME_SERVER_MAP': (
                     '{"automodellista":"192.168.1.151:9091",'
                     '"monsterhunter":"192.168.1.152:10070"}'

@@ -147,6 +147,13 @@ def derive_password_material(password: str, seed: str) -> tuple[str, bytes]:
     return verifier, digest.digest()
 
 
+def verify_password(account: Account, password: str) -> bool:
+    """Check a cleartext password against the account verifier."""
+
+    verifier, _ = derive_password_material(password, account.seed)
+    return verifier == account.password_verifier
+
+
 def _is_hex(value: str, expected_length: int) -> bool:
     """Return whether value has expected hex shape."""
 

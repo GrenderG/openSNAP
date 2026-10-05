@@ -11,6 +11,7 @@ from opensnap.core.context import HandlerContext
 from opensnap.core.game import handlers as game_handlers
 from opensnap.core.router import CommandRouter
 from opensnap.plugins.base import GamePlugin
+from opensnap.plugins.registry import identify_snap_title
 from opensnap.protocol import commands
 from opensnap.protocol.codec import PacketDecodeError, decode_datagram
 from opensnap.protocol.constants import (
@@ -27,7 +28,9 @@ from opensnap.protocol.constants import (
 )
 from opensnap.protocol.models import Endpoint, SnapMessage, WIRE_FORMAT_SNAP
 from opensnap.storage.factory import create_storage
-from opensnap.core.sessions import Session
+from opensnap.core.lobbies import LobbyRegistry
+from opensnap.core.rooms import RoomRegistry
+from opensnap.core.sessions import Session, SessionRegistry
 
 
 @dataclass(slots=True)
@@ -66,27 +69,26 @@ class SnapProtocolEngine:
         self._logger = logging.getLogger('opensnap.engine')
         self._closed = False
 
-        reset_mode: Literal['full', 'game', 'none']
-        if role == 'combined':
-            reset_mode = 'full'
-        elif role == 'game':
-            reset_mode = 'game'
-        else:
-            reset_mode = 'none'
-
-        self._storage = create_storage(config, reset_mode=reset_mode)
+        # Accounts, session handoffs and records are shared with other processes (and
+        # possibly other machines); sessions, lobbies and rooms are this
+        # process's connection state and stay in memory.
+        self._storage = create_storage(config)
         self._accounts = self._storage.accounts
-        self._sessions = self._storage.sessions
-        self._lobbies = self._storage.lobbies
-        self._rooms = self._storage.rooms
+        self._handoffs = self._storage.handoffs
+        self._sessions = SessionRegistry()
+        self._lobbies = LobbyRegistry(config.lobbies)
+        self._rooms = RoomRegistry()
         self._router = CommandRouter()
 
         self._context = HandlerContext(
             config=config,
             accounts=self._accounts,
+            handoffs=self._handoffs,
+            records=self._storage.records,
             sessions=self._sessions,
             lobbies=self._lobbies,
             rooms=self._rooms,
+            identify_snap_title=identify_snap_title,
         )
 
         self._register_core_handlers()
@@ -146,9 +148,14 @@ class SnapProtocolEngine:
                     continue
 
                 # Track highest inbound sequence per session so direct fanout ACKs can
-                # mirror client-side flow control state.
-                accepted = self._sessions.accept_incoming(message.session_id, message.sequence_number)
-                duplicate_reason = self._duplicate_ack_only_reason(message, accepted)
+                # mirror client-side flow control state. Only top-level packets
+                # carry a transport sequence (embedded children decode as 0, see
+                # the codec), so children never touch the session sequence.
+                if message.embedded_in_multi:
+                    duplicate_reason = DuplicateAckPolicy.NONE
+                else:
+                    accepted = self._sessions.accept_incoming(message.session_id, message.sequence_number)
+                    duplicate_reason = self._duplicate_ack_only_reason(message, accepted)
                 if duplicate_reason is not DuplicateAckPolicy.NONE:
                     if (
                         duplicate_reason is DuplicateAckPolicy.DUPLICATE_RELIABLE
@@ -272,6 +279,12 @@ class SnapProtocolEngine:
 
         return encode_messages(messages, footer_bytes=footer_bytes)
 
+    def start_plugin_services(self) -> None:
+        """Start auxiliary services owned by the configured game plugin."""
+
+        if self._role in {'combined', 'game'} and self._plugin is not None:
+            self._plugin.start_services(self._context)
+
     def tick(self) -> list[SnapMessage]:
         """Run periodic plugin tasks."""
 
@@ -300,6 +313,7 @@ class SnapProtocolEngine:
             self._rooms.leave(session.room_id, session.session_id)
 
         self._sessions.remove(session.session_id)
+        self._handoffs.remove(session.session_id)
         return messages
 
     def _room_id_for_session(self, session_id: int) -> int:
@@ -332,6 +346,8 @@ class SnapProtocolEngine:
 
         if self._closed:
             return
+        if self._plugin is not None:
+            self._plugin.stop_services()
         self._storage.close()
         self._closed = True
 
@@ -346,7 +362,7 @@ class SnapProtocolEngine:
     def _register_core_handlers(self) -> None:
         """Register game-independent handlers."""
 
-        self._router.register(commands.CMD_SEND_ECHO, self._handle_echo)
+        self._router.register(commands.CMD_SEND_ECHO, game_handlers.handle_send_echo)
         if self._role in {'combined', 'bootstrap'}:
             self._router.register(commands.CMD_LOGIN_CLIENT, bootstrap_handlers.handle_login_client)
             self._router.register(
@@ -387,28 +403,6 @@ class SnapProtocolEngine:
             )
             message.session_id = session.session_id
 
-    def _handle_echo(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        """Respond to keepalive/echo packets by mirroring full payload bytes.
-
-        `SLUS_206.42` `kkSendEchoPacket` copies the caller-provided payload
-        length verbatim (observed 8-byte and 64-byte calls), and the echo
-        callback variants only clear local state flags.
-        """
-
-        payload = message.payload
-        channel = message.type_flags & FLAG_CHANNEL_BITS
-        if channel == 0:
-            channel = FLAG_ROOM
-
-        return [
-            context.reply(
-                message,
-                type_flags=channel | FLAG_RESPONSE,
-                command=message.command,
-                payload=payload,
-            )
-        ]
-
     def _handle_logout(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         """Handle `kkLogout` as a no-op, matching observed game behavior."""
 
@@ -420,11 +414,6 @@ class SnapProtocolEngine:
         """Check whether this reliable duplicate should return transport ACK only."""
 
         if (message.type_flags & FLAG_RELIABLE) == 0:
-            return False
-        # Embedded follow-up messages from multi datagrams can legally carry
-        # sequence 0 while the outer reliable entry carries the real sequence.
-        # Treating those as duplicates drops valid relays in game-loading flow.
-        if message.embedded_in_multi and message.sequence_number == 0:
             return False
         return message.command in {commands.CMD_SEND, commands.CMD_SEND_TARGET}
 
@@ -452,11 +441,10 @@ class SnapProtocolEngine:
 
     @staticmethod
     def _should_suppress_embedded_send_after_duplicate_multi(message: SnapMessage) -> bool:
-        """Suppress duplicate multi embedded room relays that piggyback sequence 0.
+        """Suppress embedded room relays of a duplicate reliable multi.
 
         Duplicate outer reliable multi retransmits can replay embedded `CMD_SEND`
-        sequence-zero entries that are semantically tied to the outer transport
-        sequence. Re-broadcasting those embedded room relays to peers can
+        entries, which are tied to the outer transport sequence. Re-broadcasting those embedded room relays to peers can
         perturb race-start synchronization. Keep replay behavior for other
         embedded command families (`CMD_SEND_TARGET`, `CMD_CHANGE_ATTRIBUTE`)
         unchanged.
@@ -466,9 +454,7 @@ class SnapProtocolEngine:
             return False
         if message.command != commands.CMD_SEND:
             return False
-        if (message.type_flags & FLAG_RELIABLE) == 0:
-            return False
-        return message.sequence_number == 0
+        return (message.type_flags & FLAG_RELIABLE) != 0
 
     def _should_ack_stale_duplicate_leave_only(self, message: SnapMessage) -> bool:
         """ACK-only stale duplicate leave requests once a newer request is accepted.
@@ -483,10 +469,6 @@ class SnapProtocolEngine:
         if message.command != commands.CMD_LEAVE:
             return False
         if (message.type_flags & FLAG_RELIABLE) == 0:
-            return False
-        # Embedded leave commands inside reliable multi datagrams can legally
-        # carry sequence 0 while the outer packet owns transport sequencing.
-        if message.embedded_in_multi and message.sequence_number == 0:
             return False
 
         session = self._sessions.get(message.session_id)

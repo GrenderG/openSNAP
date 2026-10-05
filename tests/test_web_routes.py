@@ -53,10 +53,18 @@ class WebRouteTests(unittest.TestCase):
         self.assertTrue(text.endswith('<!--INPUT-IDS-->alpha_9\n'))
 
     def test_signup_route_accepts_maximum_length_credentials(self) -> None:
-        response = self._client.get('/amweb/create_id.html?username=alpha_beta_1234&password=123456789012345')
-        self.assertEqual(response.status_code, 200)
-        text = response.get_data(as_text=True)
-        self.assertIn('<!--INPUT-IDS-->alpha_beta_1234', text)
+        # The browser keeps 10 ID characters; clients type up to 15 password characters.
+        response = self._client.get('/amweb/create_id.html?username=grender_12&password=123456789012345')
+        self.assertIn('<!--INPUT-IDS-->grender_12', response.get_data(as_text=True))
+        response = self._client.get('/amweb/create_id.html?username=grender_123&password=abcd')
+        self.assertIn('Invalid username.', response.get_data(as_text=True))
+
+    def test_monster_hunter_signup_uses_the_same_limits(self) -> None:
+        app = create_web_app(WebServerConfig(host='127.0.0.1', port=18080, game_plugin='monsterhunter'))
+        client = app.test_client()
+        created = client.get('/mhweb/create_id.html?username=hunter_123&password=abcd')
+        self.assertIn('<!--INPUT-IDS-->hunter_123', created.get_data(as_text=True))
+        self.assertIn('maxlength="10"', client.get('/mhweb/index.jsp').get_data(as_text=True))
 
     def test_query_signup_route_supports_post(self) -> None:
         response = self._client.post('/amweb/create_id.html', data={'username': 'alpha_9', 'password': 'abc123'})
@@ -143,7 +151,8 @@ class WebRouteTests(unittest.TestCase):
         text = response.get_data(as_text=True)
         self.assertIn('name="username"', text)
         self.assertIn('name="password"', text)
-        self.assertIn('maxlength="15"', text)
+        self.assertIn('name="username" size="10" maxlength="10"', text)
+        self.assertIn('name="password" size="15" maxlength="15"', text)
         self.assertIn('action="create_id.html"', text)
         self.assertIn('type="submit"', text)
 
@@ -187,7 +196,7 @@ class WebRouteTests(unittest.TestCase):
         page_expectations = {
             '/amusa/am_info.html': 'AM-USA-INFORMATION',
             '/amusa/am_rule.html': 'AM-USA-GAME-RULE',
-            '/amusa/am_rank.html': 'am_rank',
+            '/amusa/am_rank.html': 'AM-USA-RANKING',
             '/amusa/am_taboo.html': 'am_taboo',
         }
 
@@ -199,35 +208,42 @@ class WebRouteTests(unittest.TestCase):
         upload_response = self._client.post('/amusa/am_up.php', data={'crs': 'D'})
         self.assertEqual(upload_response.status_code, 200)
 
-    def test_patch1_route_is_available(self) -> None:
-        response = self._client.get('/amusa/patch1.html')
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('This is test patch1.html file', response.get_data(as_text=True))
+    def test_ranking_uploads_fill_the_ranking_page_best_first(self) -> None:
+        def utl(login: str, team: str, lap_ms: int) -> str:
+            return f'{login:<15}{team:<15}{lap_ms:010d}'
 
-    def test_patch_v2_alias_route_is_available(self) -> None:
-        response = self._client.get('/amusa/patch/2/am_patch1.html')
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('This is test patch1.html file', response.get_data(as_text=True))
+        self._client.get('/amweb/create_id.html?username=racer&password=abc123')
+        uploads = [
+            ('D', utl('test', 'TEAM"A', 83_456)),
+            ('D', utl('racer', '', 81_002)),
+            # A slower lap does not replace the player's best.
+            ('D', utl('racer', '', 90_000)),
+            ('R', utl('test', 'TEAM"A', 125_007)),
+            # Ignored: unknown account, club meeting (no lap), lap 0, malformed.
+            ('D', utl('nobody', '', 1)),
+            ('S', utl('test', '', 0)),
+            ('A', utl('test', '', 0)),
+            ('A', 'short'),
+        ]
+        for course, value in uploads:
+            response = self._client.post('/amusa/am_up.php', data={'crs': course, 'utl': value, 'opt': '-' * 32})
+            self.assertEqual(response.status_code, 200)
 
-    def test_patch2_route_is_available(self) -> None:
-        response = self._client.get('/amusa/patch2.html')
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('This is test patch2.html file', response.get_data(as_text=True))
+        page = self._client.get('/amusa/am_rank.html').get_data(as_text=True)
+        self.assertEqual(
+            page,
+            '<html><head>\n<!--AM-USA-RANKING-->\n</head>\n<!--\n<CSV>\n'
+            '"D","racer","","0121002",\n'
+            '"D","test","TEAMA","0123456",\n'
+            '"R","test","TEAMA","0205007"\n'
+            '</CSV>\n-->\n</html>\n',
+        )
 
-    def test_patch3_route_is_available(self) -> None:
-        response = self._client.get('/amusa/patch3.html')
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('This is test patch3.html file', response.get_data(as_text=True))
-
-    def test_patch4_route_is_available(self) -> None:
-        response = self._client.get('/amusa/patch4.html')
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('This is test patch4.html file', response.get_data(as_text=True))
-
-    def test_patch5_route_is_available(self) -> None:
-        response = self._client.get('/amusa/patch5.html')
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('This is test patch5.html file', response.get_data(as_text=True))
+    def test_patch_routes_serve_empty_pages(self) -> None:
+        for number in range(1, 6):
+            for path in (f'/amusa/patch{number}.html', f'/amusa/patch/2/am_patch{number}.html'):
+                response = self._client.get(path)
+                self.assertEqual((response.status_code, response.data), (200, b''), path)
 
     def test_unknown_game_plugin_raises_value_error(self) -> None:
         with self.assertRaises(ValueError):
@@ -288,7 +304,7 @@ class WebRouteTests(unittest.TestCase):
         self.assertEqual(rule_response.status_code, 200)
         rule_page = rule_response.get_data(as_text=True)
         self.assertIn('AM-USA-GAME-RULE', rule_page)
-        self.assertIn('"00000a0000080000010000000000000000240000000000000000"', rule_page)
+        self.assertIn('"00000a0000080f00010000000000000000280000000000000000"', rule_page)
 
         taboo_response = client.get('/amusa/taboo.html')
         self.assertEqual(taboo_response.status_code, 404)
@@ -308,14 +324,14 @@ class WebRouteTests(unittest.TestCase):
         self.assertEqual(release_rule.status_code, 200)
         self.assertIn('AM-USA-GAME-RULE', release_rule.get_data(as_text=True))
         self.assertIn(
-            '"00000a00000800000100000000000000000000280000000000000000"',
+            '"00000a0000080f000100000000000000000000280000000000000000"',
             release_rule.get_data(as_text=True),
         )
 
         beta_rule = client.get('/amusa/rule.html')
         self.assertEqual(beta_rule.status_code, 200)
         self.assertIn(
-            '"00000a0000080000010000000000000000240000000000000000"',
+            '"00000a0000080f00010000000000000000280000000000000000"',
             beta_rule.get_data(as_text=True),
         )
 

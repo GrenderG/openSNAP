@@ -28,6 +28,9 @@ CMD_ASK_START_VOICE_CHAT = 0x12  # Common packet context: 0x2000.
 CMD_FINISH_VOICE_CHAT = 0x13  # Common packet context: 0x2000.
 CMD_SEND_ECHO = 0x14
 CMD_SEARCH_USERS = 0x18
+# `kkSearchUsers` request and result (`SearchUsersSwap`, callback slot 41):
+# `SLUS_208.96` sender `0x00207d6c`.
+CMD_SEARCH_USERS_BY_NAME = 0x25
 CMD_RESULT_WRAPPER = 0x28  # Special-case result command.
 CMD_RESULT_LOGIN_TO_KICS = 0x29  # KICS login result command.
 CMD_LOGIN_CLIENT = 0x2C  # Bootstrap login start.
@@ -40,6 +43,13 @@ CMD_SEND_EMERGENCY_MESSAGE = 0x3E
 CMD_TARGET_SEND_EMERGENCY_MESSAGE = 0x3F
 CMD_BOOTSTRAP_LOGIN_SWAN = 0x40
 CMD_BOOTSTRAP_LOGIN_SWAN_CHECK = 0x41
+# Area query request and result (`kkQueryGameRoomSwap` layout, callback slot 49):
+# `SLUS_208.96` sender `0x0020873c`. Not dispatched by `SLUS_206.42`.
+CMD_QUERY_AREA = 0x48
+# Room search by attribute conditions (for example `OID` = room id); result
+# records use the `0x00200ab0` swap, callback slot 50. `SLUS_208.96` sender
+# `0x00208cc8`.
+CMD_SEARCH_ROOMS = 0x49
 
 # identified via 003AC280 jpt_kkCommand and 002E9C70 kkSetCallBackFunction
 # those are the commands the game is able to receive

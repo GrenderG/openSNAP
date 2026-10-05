@@ -1,5 +1,6 @@
 """Bootstrap-side login, verification, and redirect handlers."""
 
+from collections.abc import Callable
 import logging
 import socket
 import struct
@@ -16,22 +17,33 @@ from opensnap.protocol.constants import (
     FLAG_CHANNEL_BITS,
     FLAG_RESPONSE,
     FOOTER_BYTES_KAGE,
+    FOOTER_SIZE,
 )
-from opensnap.protocol.fields import get_c_string
+from opensnap.protocol.fields import get_c_string, get_u32
 from opensnap.protocol.models import SnapMessage
 
 LOGGER = logging.getLogger('opensnap.core.bootstrap')
+# `kkLoginClient` stores the game's title code at this payload offset.
+LOGIN_CLIENT_TITLE_CODE_OFFSET = 100
 
 
 def handle_login_client(context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
     """Handle `kkLoginClient` on the bootstrap endpoint."""
 
+    game_identifier = detect_game_identifier(message=message, identify_snap_title=context.identify_snap_title)
+    if game_identifier is None:
+        return []
+    accepted_games = context.config.server.bootstrap_games
+    if accepted_games and game_identifier not in accepted_games:
+        LOGGER.warning(
+            'Dropping login from %s:%d: game %r is not served here (OPENSNAP_BOOTSTRAP_GAMES).',
+            message.endpoint.host,
+            message.endpoint.port,
+            game_identifier,
+        )
+        return []
     raw_login = _get_login_client_raw_name(message.payload)
     login = _parse_login_client_name(raw_login)
-    game_identifier = detect_game_identifier(
-        message=message,
-        default_game_identifier=context.config.server.default_bootstrap_game_identifier,
-    )
     if not login:
         LOGGER.warning(
             'Rejecting login-client from %s:%d: could not parse username from payload len=%d.',
@@ -74,11 +86,8 @@ def handle_login_client(context: HandlerContext, message: SnapMessage) -> list[S
             )
         ]
 
-    session = context.sessions.create_or_replace(
-        message.endpoint,
-        account,
-        game_identifier=game_identifier,
-    )
+    handoff = context.handoffs.issue(message.endpoint, account, game_identifier=game_identifier)
+    session = context.sessions.adopt(handoff)
 
     if _is_kage_bootstrap_variant(message):
         kage_key = _resolve_kage_bootstrap_key(raw_login=raw_login, account=account)
@@ -102,15 +111,7 @@ def handle_login_client(context: HandlerContext, message: SnapMessage) -> list[S
             server_port=game_target.port,
             key_material=kage_key,
         )
-        return [
-            context.reply(
-                message,
-                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
-                command=commands.CMD_BOOTSTRAP_LOGIN_SUCCESS,
-                payload=success_payload,
-                session_id=session.session_id,
-            )
-        ]
+        return [_login_success(context, message, session.session_id, success_payload)]
 
     else:
         challenge_payload = _build_bootstrap_login_payload(
@@ -235,33 +236,71 @@ def handle_bootstrap_check(context: HandlerContext, message: SnapMessage) -> lis
         server_port=game_target.port,
         bootstrap_key=context.config.server.bootstrap_key,
     )
-    return [
-        context.reply(
-            message,
-            type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
-            command=commands.CMD_BOOTSTRAP_LOGIN_SUCCESS,
-            payload=success_payload,
-            session_id=session.session_id,
-        )
-    ]
+    return [_login_success(context, message, session.session_id, success_payload)]
 
 
-def detect_game_identifier(*, message: SnapMessage, default_game_identifier: str) -> str:
-    """Return the bootstrap-selected game id for one login attempt.
+def _login_success(context: HandlerContext, message: SnapMessage, session_id: int, payload: bytes) -> SnapMessage:
+    """Build the login success reply and hand its sequence over to the game server.
 
-    Intentionally *not* treated as discriminators:
-    - the legacy KAGE footer (`0xBA476610`);
-    - the primary footer (`0xBA476611`);
-    - the secondary `@cei-auth` login string copy.
-
-    TODO: Recover a game-specific bootstrap discriminator that is not tied to
-    footer bytes alone. The KAGE footer currently cannot be assigned directly
-    to Auto Modellista beta1 because that variant may be shared by other SN@P
-    titles.
+    The client drops unreliable packets numbered below the last one it
+    accepted, across the move to the game server, so the game server continues
+    from this reply's sequence (see `SessionHandoff`).
     """
 
-    _ = message
-    return default_game_identifier
+    reply = context.reply(
+        message,
+        type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
+        command=commands.CMD_BOOTSTRAP_LOGIN_SUCCESS,
+        payload=payload,
+        session_id=session_id,
+    )
+    context.handoffs.set_sequence(session_id, reply.sequence_number)
+    return reply
+
+
+def detect_game_identifier(
+    *,
+    message: SnapMessage,
+    identify_snap_title: Callable[[int, int], tuple[str, str] | None],
+) -> str | None:
+    """Return the game a bootstrap login belongs to, or None for an unknown build.
+
+    Every SN@P title connects to the same bootstrap port (the SDK's
+    `kkLoginClient` hardcodes 9090), so the login itself must identify the
+    game: the title code the game passes to `kkLoginClient` (payload offset
+    100) together with the SDK footer generation.
+    """
+
+    if len(message.payload) < LOGIN_CLIENT_TITLE_CODE_OFFSET + 4 or len(message.footer_bytes) != FOOTER_SIZE:
+        LOGGER.warning(
+            'Dropping login from %s:%d: no SN@P title code (payload %d bytes, footer %d bytes).',
+            message.endpoint.host,
+            message.endpoint.port,
+            len(message.payload),
+            len(message.footer_bytes),
+        )
+        return None
+    title_code = get_u32(message.payload, LOGIN_CLIENT_TITLE_CODE_OFFSET)
+    footer_marker = struct.unpack('>L', message.footer_bytes)[0]
+    identified = identify_snap_title(title_code, footer_marker)
+    if identified is None:
+        LOGGER.warning(
+            'Dropping login from %s:%d: unknown SN@P title 0x%04x (footer 0x%08x).',
+            message.endpoint.host,
+            message.endpoint.port,
+            title_code,
+            footer_marker,
+        )
+        return None
+    game_identifier, title_name = identified
+    LOGGER.info(
+        'Login from %s:%d identified as %s; routing to game %r.',
+        message.endpoint.host,
+        message.endpoint.port,
+        title_name,
+        game_identifier,
+    )
+    return game_identifier
 
 
 def _get_login_client_raw_name(payload: bytes) -> str:
@@ -414,7 +453,7 @@ def _resolve_game_target_host(
     if configured_host and configured_host not in {'0.0.0.0', '::'}:
         return configured_host
 
-    if game_identifier == context.config.server.game_identifier:
+    if game_identifier == context.config.server.game_plugin:
         return _resolve_advertise_host(
             configured_host=context.config.server.game.advertise_host,
             bind_host=context.config.server.game.host,

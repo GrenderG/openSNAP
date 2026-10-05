@@ -70,7 +70,13 @@ def decode_datagram(data: bytes, endpoint: Endpoint) -> list[SnapMessage]:
             packet_number=packet_number,
             command=command,
             session_id=session_id,
-            sequence_number=seq,
+            # Only the outer packet carries a transport sequence: the client runs
+            # `kkReceiveExtentCheck` on it once and `kkRUDPTopMultiMessageHandle`
+            # dispatches the children without reading their `+0x08` (`SLUS_206.42`
+            # `0x002f4ce0` -> `0x002f4edc`). Auto Modellista's `kkSetMessage`
+            # writes 0 there (`0x002f3eb4`); Monster Hunter leaves stale bytes
+            # (e.g. `05 00 00 00`). Children decode as sequence 0 for every game.
+            sequence_number=0 if multi_command_seen else seq,
             acknowledge_number=ack,
             payload=payload,
             size_word_override=size_word if type_flags & FLAG_MULTI else None,
@@ -111,7 +117,7 @@ def encode_messages(messages: Sequence[SnapMessage], *, footer_bytes: bytes | No
                 '>2H3L',
                 size_word,
                 packet_and_command,
-                message.session_id,
+                message.session_id if message.source_session_id is None else message.source_session_id,
                 message.sequence_number,
                 message.acknowledge_number,
             )

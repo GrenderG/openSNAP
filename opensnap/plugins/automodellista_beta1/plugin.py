@@ -6,11 +6,11 @@ import struct
 from opensnap.core.context import HandlerContext
 from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.plugins.automodellista.plugin import (
-    USER_ATTRIBUTE_TOKEN,
-    _ack_for_session,
     _is_allowed_lobby_id,
     _prune_stale_room_members,
 )
+from opensnap.plugins.base import SnapTitle
+from opensnap.plugins.common import USER_ATTRIBUTE_TOKEN, ack_for_session
 from opensnap.protocol import commands
 from opensnap.protocol.codec import (
     PacketDecodeError,
@@ -22,6 +22,7 @@ from opensnap.protocol.constants import (
     FLAG_MULTI,
     FLAG_RESPONSE,
     FLAG_ROOM,
+    FOOTER_MARKER_KAGE,
 )
 from opensnap.protocol.fields import get_len_prefixed_string, get_u16, get_u32
 from opensnap.protocol.models import (
@@ -45,6 +46,9 @@ class AutoModellistaBeta1Plugin(AutoModellistaPlugin):
     """Auto Modellista beta1 behavior layered on top of shared SNAP handlers."""
 
     name = 'automodellista_beta1'
+    # `SLUS_204.98` (`0x0035de34`) shares 0xCAAD with release but builds the
+    # legacy footer.
+    snap_titles = (SnapTitle(title_code=0xCAAD, footer_marker=FOOTER_MARKER_KAGE, name='Auto Modellista beta1'),)
 
     def register_handlers(self, router, context: HandlerContext) -> None:
         super().register_handlers(router, context)
@@ -52,16 +56,38 @@ class AutoModellistaBeta1Plugin(AutoModellistaPlugin):
 
     def _handle_join(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         room_id = _room_id_from_join_message(message)
+        session = context.sessions.get(message.session_id)
+        # Room members get a room `USER` count refresh on joins: `SLUS_204.98`
+        # `kkDispatchingOperation` (`0x002e7cb0`) hands every room
+        # `CMD_QUERY_ATTRIBUTE` reply to callback slot 22 without matching a
+        # pending query, and `lbc_in_room_00` registers
+        # `BgCallBackGetJoinUserRoom` (`0x0035e270`) there, which stores
+        # `lhu +8` of the swapped payload (`kkPAttributeSwap`) as the room count.
+        #
+        # An exact reliable retry replays the cached bundle, this callback
+        # included, with its original sequence numbers. The callbacks are
+        # unreliable and `kkReceiveExtentCheck` (`0x002ebf10`) drops sequences
+        # below the last accepted + 1, so a member that already got them
+        # ignores the replay and one that lost them recovers.
+        already_member = session is not None and room_id != 0 and session.room_id == room_id
         result = super()._handle_join(context, message)
 
-        if room_id == 0 or not _produced_peer_membership_callback(result, commands.CMD_JOIN, message.endpoint):
+        if (
+            room_id == 0
+            or already_member
+            or not _produced_peer_membership_callback(result, commands.CMD_JOIN, message.endpoint)
+        ):
             return result
 
-        return result + _build_room_user_count_callbacks(
+        result = result + _build_room_user_count_callbacks(
             context=context,
             room_id=room_id,
             excluding_endpoint=message.endpoint,
         )
+        session = context.sessions.get(message.session_id)
+        if session is not None:
+            self._remember_reliable_join_result(message, session, room_id, result)
+        return result
 
     def _handle_leave(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         room_id = _room_id_before_leave(context, message)
@@ -285,7 +311,7 @@ def _build_room_user_count_callbacks(
                 type_flags=FLAG_ROOM | FLAG_RESPONSE,
                 command=commands.CMD_QUERY_ATTRIBUTE,
                 payload=payload,
-                acknowledge_number=_ack_for_session(member),
+                acknowledge_number=ack_for_session(member),
             )
         )
     return messages

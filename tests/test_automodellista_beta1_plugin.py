@@ -9,8 +9,16 @@ from opensnap.config import StorageConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.plugins.automodellista_beta1 import AutoModellistaBeta1Plugin
 from opensnap.protocol import commands
-from opensnap.protocol.constants import FLAG_CHANNEL_BITS, FLAG_MULTI, FLAG_RELIABLE, FLAG_RESPONSE, FLAG_ROOM
+from opensnap.protocol.constants import (
+    FLAG_CHANNEL_BITS,
+    FLAG_MULTI,
+    FLAG_RELIABLE,
+    FLAG_RESPONSE,
+    FLAG_ROOM,
+    FOOTER_BYTES_KAGE,
+)
 from opensnap.protocol.models import Endpoint, SnapMessage, WIRE_FORMAT_AM_BETA1_LEGACY
+from tests.support import login_client_payload, serving
 
 LEGACY_ROOM_ENTRY_COMMAND = 0x6406
 
@@ -21,13 +29,12 @@ class AutoModellistaBeta1PluginTests(unittest.TestCase):
     def setUp(self) -> None:
         self._temp_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self._temp_directory.cleanup)
-        base_config = default_app_config()
+        base_config = serving(default_app_config(), 'automodellista_beta1')
         self._config = replace(
             base_config,
             server=replace(
                 base_config.server,
                 game_plugin='automodellista_beta1',
-                game_identifier='automodellista_beta1',
             ),
             storage=StorageConfig(
                 backend='sqlite',
@@ -248,7 +255,7 @@ class AutoModellistaBeta1PluginTests(unittest.TestCase):
         )
         self.assertEqual(host_user_callback.payload, struct.pack('>L4sL', room_id, b'USER', 2))
 
-    def test_duplicate_reliable_room_join_returns_wrapper_only_after_first_host_callback(self) -> None:
+    def test_duplicate_reliable_room_join_replays_original_bundle_with_user_count(self) -> None:
         endpoint_one = Endpoint(host='127.0.0.1', port=51126)
         endpoint_two = Endpoint(host='127.0.0.2', port=51127)
         host_session = _create_session_via_login(self._engine, endpoint_one, 'test')
@@ -292,14 +299,17 @@ class AutoModellistaBeta1PluginTests(unittest.TestCase):
             message for message in first_result.messages if message.endpoint == endpoint_two
         )
 
+        # An exact reliable retry replays the original bundle, USER count
+        # callback included, with the original sequence numbers (as release).
         duplicate_result = self._engine.handle_datagram(_encode(self._engine, request), endpoint_two)
         self.assertFalse(duplicate_result.errors)
-        self.assertEqual(len(duplicate_result.messages), 1)
-        duplicate_wrapper = next(
-            message for message in duplicate_result.messages if message.endpoint == endpoint_two
+        self.assertEqual(
+            [(message.endpoint, message.command, message.sequence_number, message.payload)
+             for message in duplicate_result.messages],
+            [(message.endpoint, message.command, message.sequence_number, message.payload)
+             for message in first_result.messages],
         )
-        self.assertGreater(duplicate_wrapper.sequence_number, first_wrapper.sequence_number)
-        self.assertEqual(duplicate_wrapper.payload, first_wrapper.payload)
+        self.assertEqual(first_wrapper.endpoint, endpoint_two)
         self.assertEqual(first_host_callback.command, commands.CMD_JOIN)
         self.assertEqual(first_host_user_callback.payload, struct.pack('>L4sL', room_id, b'USER', 2))
 
@@ -372,9 +382,10 @@ def _create_session_via_login(engine: SnapProtocolEngine, endpoint: Endpoint, us
         session_id=0,
         sequence_number=0,
         acknowledge_number=0,
-        payload=f'{username}\n\x00'.encode('utf-8'),
+        payload=login_client_payload(f'{username}\n'.encode('utf-8')),
     )
-    result = engine.handle_datagram(_encode(engine, request), endpoint)
+    # Beta1 builds its SN@P packets with the legacy footer, which identifies it.
+    result = engine.handle_datagram(engine.encode_messages([request], footer_bytes=FOOTER_BYTES_KAGE), endpoint)
     assert not result.errors
     assert result.messages
     return result.messages[0].session_id

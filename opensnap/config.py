@@ -13,8 +13,8 @@ DEFAULT_BOOTSTRAP_PORT = 9090
 DEFAULT_GAME_HOST = '0.0.0.0'
 DEFAULT_GAME_ADVERTISE_HOST = ''
 DEFAULT_GAME_PORT = 9091
-DEFAULT_GAME_IDENTIFIER = 'automodellista'
 DEFAULT_GAME_PLUGIN = 'automodellista'
+BOOTSTRAP_GAMES_GENERIC = 'generic'
 DEFAULT_SERVER_SECRET = 'Totally secret server secret!'
 DEFAULT_BOOTSTRAP_KEY = 'SNAP-SWAN'
 DEFAULT_TICK_INTERVAL_SECONDS = 10.0
@@ -24,7 +24,8 @@ DEFAULT_MAX_PLAYERS_PER_ROOM = 8
 DEFAULT_STORAGE_BACKEND = 'sqlite'
 DEFAULT_SQLITE_PATH = 'opensnap.db'
 DEFAULT_SQLITE_USERS = 'test:1111'
-DEFAULT_RESET_RUNTIME_ON_STARTUP = True
+DEFAULT_MARIADB_PORT = 3306
+DEFAULT_MARIADB_DATABASE = 'opensnap'
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,9 +94,12 @@ class ServerConfig:
 
     bootstrap: ServiceEndpointConfig = field(default_factory=_default_bootstrap_endpoint)
     game: ServiceEndpointConfig = field(default_factory=_default_game_endpoint)
-    game_identifier: str = DEFAULT_GAME_IDENTIFIER
+    # Game this game server process runs; the bootstrap routes logins of that
+    # game to its own game endpoint unless OPENSNAP_GAME_SERVER_MAP says otherwise.
     game_plugin: str = DEFAULT_GAME_PLUGIN
-    default_bootstrap_game_identifier: str = DEFAULT_GAME_IDENTIFIER
+    # Games whose logins the bootstrap accepts; empty (`generic`) accepts every
+    # known SN@P title. Logins from unknown or other titles are dropped.
+    bootstrap_games: tuple[str, ...] = ()
     game_targets: tuple[GameServerTargetConfig, ...] = ()
     server_secret: str = DEFAULT_SERVER_SECRET
     bootstrap_key: bytes = DEFAULT_BOOTSTRAP_KEY.encode('utf-8')
@@ -133,11 +137,16 @@ class ServerConfig:
 
 @dataclass(frozen=True, slots=True)
 class StorageConfig:
-    """Storage backend configuration."""
+    """Shared storage backend (`sqlite` or `mariadb`) configuration."""
 
     backend: str = DEFAULT_STORAGE_BACKEND
     sqlite_path: str = DEFAULT_SQLITE_PATH
-    reset_runtime_on_startup: bool = DEFAULT_RESET_RUNTIME_ON_STARTUP
+    mariadb_host: str = ''
+    mariadb_port: int = DEFAULT_MARIADB_PORT
+    mariadb_user: str = ''
+    mariadb_password: str = ''
+    mariadb_database: str = DEFAULT_MARIADB_DATABASE
+    mariadb_ssl_ca: str = ''
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,14 +190,7 @@ def default_app_config() -> AppConfig:
         DEFAULT_GAME_PORT,
     )
     game_plugin = os.getenv('OPENSNAP_GAME_PLUGIN', DEFAULT_GAME_PLUGIN).strip().lower() or DEFAULT_GAME_PLUGIN
-    game_identifier = _read_text_env(
-        ('OPENSNAP_GAME_IDENTIFIER',),
-        game_plugin or DEFAULT_GAME_IDENTIFIER,
-    ).lower()
-    default_bootstrap_game_identifier = _read_text_env(
-        ('OPENSNAP_BOOTSTRAP_DEFAULT_GAME_IDENTIFIER',),
-        game_identifier or game_plugin,
-    ).lower()
+    bootstrap_games = _read_bootstrap_games(os.getenv('OPENSNAP_BOOTSTRAP_GAMES', ''))
     server_secret = os.getenv('OPENSNAP_SERVER_SECRET', DEFAULT_SERVER_SECRET) or DEFAULT_SERVER_SECRET
     bootstrap_key = (
         os.getenv('OPENSNAP_BOOTSTRAP_KEY', DEFAULT_BOOTSTRAP_KEY).strip() or DEFAULT_BOOTSTRAP_KEY
@@ -206,15 +208,11 @@ def default_app_config() -> AppConfig:
         ('OPENSNAP_MAX_PLAYERS_PER_ROOM',),
         DEFAULT_MAX_PLAYERS_PER_ROOM,
     )
-    storage_backend = DEFAULT_STORAGE_BACKEND
+    storage_backend = _read_text_env(('OPENSNAP_STORAGE_BACKEND',), DEFAULT_STORAGE_BACKEND).lower()
     sqlite_path = os.getenv('OPENSNAP_SQLITE_PATH', DEFAULT_SQLITE_PATH).strip() or DEFAULT_SQLITE_PATH
-    reset_runtime_on_startup = _read_bool_env(
-        'OPENSNAP_RESET_RUNTIME_ON_STARTUP',
-        DEFAULT_RESET_RUNTIME_ON_STARTUP,
-    )
     game_targets = _read_game_targets_from_env(
         os.getenv('OPENSNAP_GAME_SERVER_MAP', ''),
-        current_game_identifier=game_identifier or game_plugin,
+        current_game_identifier=game_plugin,
         current_game_advertise_host=game_advertise_host,
         current_game_bind_host=game_host,
         current_game_port=game_port,
@@ -232,9 +230,8 @@ def default_app_config() -> AppConfig:
                 advertise_host=game_advertise_host,
                 port=game_port,
             ),
-            game_identifier=game_identifier or game_plugin,
             game_plugin=game_plugin,
-            default_bootstrap_game_identifier=default_bootstrap_game_identifier,
+            bootstrap_games=bootstrap_games,
             game_targets=game_targets,
             server_secret=server_secret,
             bootstrap_key=bootstrap_key,
@@ -246,7 +243,12 @@ def default_app_config() -> AppConfig:
         storage=StorageConfig(
             backend=storage_backend,
             sqlite_path=sqlite_path,
-            reset_runtime_on_startup=reset_runtime_on_startup,
+            mariadb_host=_read_text_env(('OPENSNAP_MARIADB_HOST',), ''),
+            mariadb_port=_read_positive_int_env(('OPENSNAP_MARIADB_PORT',), DEFAULT_MARIADB_PORT),
+            mariadb_user=_read_text_env(('OPENSNAP_MARIADB_USER',), ''),
+            mariadb_password=os.getenv('OPENSNAP_MARIADB_PASSWORD', ''),
+            mariadb_database=_read_text_env(('OPENSNAP_MARIADB_DATABASE',), DEFAULT_MARIADB_DATABASE),
+            mariadb_ssl_ca=_read_text_env(('OPENSNAP_MARIADB_SSL_CA',), ''),
         ),
         users=_read_default_users(),
         # Lobby naming keeps three game groups plus event and club-meeting groups.
@@ -323,6 +325,17 @@ def _parse_default_users(raw: str) -> tuple[UserConfig, ...]:
         )
 
     return tuple(users)
+
+
+def _read_bootstrap_games(value: str) -> tuple[str, ...]:
+    """Parse `OPENSNAP_BOOTSTRAP_GAMES`: `generic` (default) or comma-separated game identifiers."""
+
+    games = tuple(game.strip().lower() for game in value.split(',') if game.strip())
+    if games in ((), (BOOTSTRAP_GAMES_GENERIC,)):
+        return ()
+    if BOOTSTRAP_GAMES_GENERIC in games:
+        raise ValueError('OPENSNAP_BOOTSTRAP_GAMES is either "generic" or a list of game identifiers.')
+    return games
 
 
 def _read_text_env(keys: tuple[str, ...], default: str, *, allow_empty: bool = False) -> str:
@@ -516,18 +529,3 @@ def _read_float_env(key: str, default: float) -> float:
         return float(raw.strip())
     except ValueError:
         return default
-
-
-def _read_bool_env(key: str, default: bool) -> bool:
-    """Read boolean environment value with fallback."""
-
-    raw = os.getenv(key)
-    if raw is None:
-        return default
-
-    normalized = raw.strip().lower()
-    if normalized in {'1', 'true', 'yes', 'on'}:
-        return True
-    if normalized in {'0', 'false', 'no', 'off'}:
-        return False
-    return default

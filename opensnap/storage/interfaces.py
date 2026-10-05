@@ -1,18 +1,27 @@
-"""Storage backend protocols."""
+"""Storage backend protocols.
 
+Shared stores (accounts, session handoffs, records) live in the configured
+backend and may be shared by the web, bootstrap and game servers across
+machines. Runtime
+stores (sessions with transport counters, lobbies, rooms) belong to one
+process and are kept in memory.
+"""
+
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Callable
 from typing import Protocol
 
 from opensnap.core.accounts import Account
 from opensnap.core.lobbies import Lobby
+from opensnap.core.records import PlayerTotal, Record
 from opensnap.core.rooms import GameRoom
-from opensnap.core.sessions import Session
+from opensnap.core.sessions import Session, SessionHandoff
 from opensnap.protocol.models import Endpoint
 
 
 class AccountStore(Protocol):
-    """Account store interface."""
+    """Shared account store interface."""
 
     def get_by_name(self, username: str) -> Account | None:
         """Get account by username."""
@@ -23,18 +32,56 @@ class AccountStore(Protocol):
     def set_team(self, user_id: int, team: str) -> None:
         """Set user team."""
 
+    def create_user(self, username: str, password: str) -> Account:
+        """Create an account; raises `DuplicateAccountError` if the name exists."""
+
+
+class SessionHandoffStore(Protocol):
+    """Shared bootstrap-to-game session handoff interface."""
+
+    def issue(self, endpoint: Endpoint, account: Account, *, game_identifier: str) -> SessionHandoff:
+        """Record a new login, replacing earlier handoffs of the session or endpoint."""
+
+    def set_sequence(self, session_id: int, sequence_number: int) -> None:
+        """Record the bootstrap's last unreliable sequence for one session."""
+
+    def get(self, session_id: int) -> SessionHandoff | None:
+        """Get handoff by session id."""
+
+    def get_by_endpoint(self, endpoint: Endpoint) -> SessionHandoff | None:
+        """Get handoff by client endpoint."""
+
+    def remove(self, session_id: int) -> None:
+        """Remove one handoff."""
+
+
+class RecordStore(Protocol):
+    """Shared game records interface; every submission is kept."""
+
+    def add(
+        self,
+        *,
+        game: str,
+        board: str,
+        user_id: int,
+        player: str,
+        score: int,
+        details: Mapping[str, object],
+    ) -> Record:
+        """Store one submitted record."""
+
+    def best_by_board(self, game: str, limit: int) -> dict[str, list[Record]]:
+        """Return each board's lowest score per player, best first, at most `limit` players."""
+
+    def totals(self, game: str, board_prefix: str, limit: int) -> list[PlayerTotal]:
+        """Return players by summed score over the boards starting with `board_prefix`, highest first."""
+
 
 class SessionStore(Protocol):
-    """Session store interface."""
+    """Runtime (in-process) session store interface."""
 
-    def create_or_replace(
-        self,
-        endpoint: Endpoint,
-        account: Account,
-        *,
-        game_identifier: str = '',
-    ) -> Session:
-        """Create or replace session."""
+    def adopt(self, handoff: SessionHandoff) -> Session:
+        """Create or replace the runtime session of one handoff."""
 
     def rebind_endpoint(self, session_id: int, endpoint: Endpoint) -> Session | None:
         """Bind an existing session id to a new endpoint."""
@@ -113,15 +160,21 @@ class RoomStore(Protocol):
     def leave(self, room_id: int, session_id: int) -> None:
         """Leave room."""
 
+    def set_rules(self, room_id: int, rules: int) -> None:
+        """Replace the room rules word (`CMD_CHANGE_ATTRIBUTE` `STAT`)."""
+
+
+class DuplicateAccountError(Exception):
+    """Raised when creating an account whose username already exists."""
+
 
 @dataclass(slots=True)
 class StorageBundle:
-    """Resolved storage backend set."""
+    """Resolved shared storage backend."""
 
     accounts: AccountStore
-    sessions: SessionStore
-    lobbies: LobbyStore
-    rooms: RoomStore
+    handoffs: SessionHandoffStore
+    records: RecordStore
     _close: Callable[[], None]
 
     def close(self) -> None:

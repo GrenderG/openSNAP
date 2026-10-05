@@ -4,6 +4,7 @@ from dataclasses import replace
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.decrepit.ciphers import algorithms as decrepit_algorithms
@@ -13,8 +14,9 @@ from opensnap.config import StorageConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.protocol import commands
-from opensnap.protocol.constants import FLAG_CHANNEL_BITS
+from opensnap.protocol.constants import FLAG_CHANNEL_BITS, FLAG_RELIABLE
 from opensnap.protocol.models import Endpoint, SnapMessage
+from tests.support import login_client_payload, serving
 
 
 class SqliteBackendTests(unittest.TestCase):
@@ -24,7 +26,7 @@ class SqliteBackendTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_directory:
             database_path = f'{temp_directory}/opensnap.sqlite'
             config = replace(
-                default_app_config(),
+                serving(default_app_config(), 'automodellista'),
                 storage=StorageConfig(backend='sqlite', sqlite_path=database_path),
             )
             engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
@@ -40,7 +42,7 @@ class SqliteBackendTests(unittest.TestCase):
                         session_id=0,
                         sequence_number=0,
                         acknowledge_number=0,
-                        payload=b'test\n\x00',
+                        payload=login_client_payload(b'test\n'),
                     )
                 ),
                 endpoint,
@@ -100,26 +102,27 @@ class SqliteBackendTests(unittest.TestCase):
             self.assertTrue(str(row[1]).startswith('v1$'))
             self.assertNotEqual(row[1], '1111')
 
-    def test_sqlite_seed_is_stable_for_lobbies(self) -> None:
+    def test_legacy_runtime_tables_are_dropped(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             database_path = f'{temp_directory}/opensnap.sqlite'
+            with sqlite3.connect(database_path) as connection:
+                for table in ('lobbies', 'sessions', 'rooms', 'room_members'):
+                    connection.execute(f'CREATE TABLE {table} (id INTEGER)')
             config = replace(
-                default_app_config(),
+                serving(default_app_config(), 'automodellista'),
                 storage=StorageConfig(backend='sqlite', sqlite_path=database_path),
             )
-            SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
-            SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+            SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin()).close()
 
             with sqlite3.connect(database_path) as connection:
-                row = connection.execute('SELECT COUNT(*) FROM lobbies').fetchone()
-            self.assertIsNotNone(row)
-            self.assertEqual(row[0], len(config.lobbies))
+                tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            self.assertEqual(tables - {'sqlite_sequence'}, {'users', 'session_handoffs', 'records'})
 
     def test_sqlite_generates_non_empty_per_account_seeds(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             database_path = f'{temp_directory}/opensnap.sqlite'
             config = replace(
-                default_app_config(),
+                serving(default_app_config(), 'automodellista'),
                 storage=StorageConfig(backend='sqlite', sqlite_path=database_path),
             )
             SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
@@ -133,50 +136,120 @@ class SqliteBackendTests(unittest.TestCase):
             if len(seeds) > 1:
                 self.assertGreater(len(set(seeds)), 1)
 
-    def test_sqlite_resets_runtime_tables_on_startup(self) -> None:
+    def test_split_bootstrap_and_game_servers_continue_unreliable_numbering(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
-            database_path = f'{temp_directory}/opensnap.sqlite'
             config = replace(
-                default_app_config(),
-                storage=StorageConfig(backend='sqlite', sqlite_path=database_path),
+                serving(default_app_config(), 'automodellista'),
+                storage=StorageConfig(backend='sqlite', sqlite_path=f'{temp_directory}/opensnap.sqlite'),
             )
-            SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+            # Separate processes (or machines) sharing only the shared store.
+            bootstrap = SnapProtocolEngine(config=config, role='bootstrap')
+            game = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin(), role='game')
+            other_game_config = replace(config, server=replace(config.server, game_plugin='othergame'))
+            other_game = SnapProtocolEngine(config=other_game_config, plugin=AutoModellistaPlugin(), role='game')
+            for engine in (bootstrap, game, other_game):
+                self.addCleanup(engine.close)
+            endpoint = Endpoint(host='127.0.0.1', port=2000)
 
-            with sqlite3.connect(database_path) as connection:
-                connection.execute(
-                    (
-                        'INSERT INTO sessions '
-                        '(session_id, user_id, username, host, port, request_number, sequence_number, '
-                        'last_incoming_sequence, lobby_id, room_id) '
-                        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-                    ),
-                    (123, 1, 'test', '127.0.0.1', 2000, 0, 0, -1, 1, 1),
-                )
-                connection.execute(
-                    (
-                        'INSERT INTO rooms '
-                        '(name, password, rules, max_players, lobby_id, host_session_id) '
-                        'VALUES (?, ?, ?, ?, ?, ?)'
-                    ),
-                    ('stale', 'pw', 1, 4, 1, 123),
-                )
-                room_id = int(connection.execute('SELECT last_insert_rowid()').fetchone()[0])
-                connection.execute(
-                    'INSERT INTO room_members (room_id, session_id) VALUES (?, ?)',
-                    (room_id, 123),
-                )
-                connection.commit()
+            session_id, success_sequence = _bootstrap_login(bootstrap, config, endpoint)
+            self.assertEqual(success_sequence, 2)
+            self.assertEqual(other_game.handle_datagram(_kics(endpoint, session_id), endpoint).messages, [])
 
-            SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+            # The game server continues after the bootstrap's login success.
+            first = game.handle_datagram(_kics(endpoint, session_id), endpoint).messages[0]
+            self.assertEqual((first.command, first.sequence_number), (0x29, 3))
+            # A repeated KICS of the same login keeps the counters.
+            again = game.handle_datagram(_kics(endpoint, session_id), endpoint).messages[0]
+            self.assertEqual(again.sequence_number, 4)
 
-            with sqlite3.connect(database_path) as connection:
-                sessions_count = int(connection.execute('SELECT COUNT(*) FROM sessions').fetchone()[0])
-                rooms_count = int(connection.execute('SELECT COUNT(*) FROM rooms').fetchone()[0])
-                members_count = int(connection.execute('SELECT COUNT(*) FROM room_members').fetchone()[0])
+            # A new bootstrap login starts again from its own login success.
+            session_id, _ = _bootstrap_login(bootstrap, config, endpoint)
+            relogin = game.handle_datagram(_kics(endpoint, session_id), endpoint).messages[0]
+            self.assertEqual(relogin.sequence_number, 3)
 
-            self.assertEqual(sessions_count, 0)
-            self.assertEqual(rooms_count, 0)
-            self.assertEqual(members_count, 0)
+    def test_game_traffic_does_not_touch_the_shared_store(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            config = replace(
+                serving(default_app_config(), 'automodellista'),
+                storage=StorageConfig(backend='sqlite', sqlite_path=f'{temp_directory}/opensnap.sqlite'),
+            )
+            engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+            self.addCleanup(engine.close)
+            endpoint = Endpoint(host='127.0.0.1', port=2000)
+            session_id, _ = _bootstrap_login(engine, config, endpoint)
+            engine.handle_datagram(_kics(endpoint, session_id), endpoint)
+
+            connection = engine._storage.handoffs._connection  # noqa: SLF001
+            with (
+                patch.object(connection, 'execute', wraps=connection.execute) as execute,
+                patch.object(connection, 'query_one', wraps=connection.query_one) as query_one,
+                patch.object(connection, 'query_all', wraps=connection.query_all) as query_all,
+            ):
+                for sequence in range(1, 21):
+                    request = SnapMessage(
+                        endpoint=endpoint,
+                        type_flags=FLAG_CHANNEL_BITS | FLAG_RELIABLE,
+                        packet_number=0,
+                        command=commands.CMD_QUERY_LOBBIES,
+                        session_id=session_id,
+                        sequence_number=sequence,
+                        acknowledge_number=0,
+                        payload=b'',
+                    )
+                    self.assertTrue(engine.handle_datagram(_encode(request), endpoint).messages)
+            self.assertEqual((execute.call_count, query_one.call_count, query_all.call_count), (0, 0, 0))
+
+
+def _bootstrap_login(engine: SnapProtocolEngine, config, endpoint: Endpoint) -> tuple[int, int]:
+    """Run login-client + SWAN check; return the session id and login-success sequence."""
+
+    login = engine.handle_datagram(
+        _encode(
+            SnapMessage(
+                endpoint=endpoint,
+                type_flags=FLAG_CHANNEL_BITS,
+                packet_number=0,
+                command=commands.CMD_LOGIN_CLIENT,
+                session_id=0,
+                sequence_number=0,
+                acknowledge_number=0,
+                payload=login_client_payload(b'test\n'),
+            )
+        ),
+        endpoint,
+    ).messages[0]
+    success = engine.handle_datagram(
+        _encode(
+            SnapMessage(
+                endpoint=endpoint,
+                type_flags=FLAG_CHANNEL_BITS,
+                packet_number=0,
+                command=commands.CMD_BOOTSTRAP_LOGIN_SWAN_CHECK,
+                session_id=login.session_id,
+                sequence_number=0,
+                acknowledge_number=0,
+                payload=_build_valid_bootstrap_check_payload(config.server.bootstrap_key, config.server.server_secret),
+            )
+        ),
+        endpoint,
+    ).messages[0]
+    assert success.command == commands.CMD_BOOTSTRAP_LOGIN_SUCCESS
+    return login.session_id, success.sequence_number
+
+
+def _kics(endpoint: Endpoint, session_id: int) -> bytes:
+    return _encode(
+        SnapMessage(
+            endpoint=endpoint,
+            type_flags=FLAG_CHANNEL_BITS,
+            packet_number=0,
+            command=commands.CMD_LOGIN_TO_KICS,
+            session_id=session_id,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=bytes(0x130),
+        )
+    )
 
 
 def _encode(message: SnapMessage) -> bytes:

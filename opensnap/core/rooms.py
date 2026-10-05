@@ -83,3 +83,10 @@ class RoomRegistry:
         room.members.discard(session_id)
         if not room.members:
             self._rooms.pop(room_id, None)
+
+    def set_rules(self, room_id: int, rules: int) -> None:
+        """Replace the room rules word."""
+
+        room = self._rooms.get(room_id)
+        if room is not None:
+            room.rules = rules

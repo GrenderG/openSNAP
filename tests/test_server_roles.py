@@ -13,6 +13,7 @@ from opensnap.protocol.codec import encode_messages
 from opensnap.protocol.constants import FLAG_CHANNEL_BITS
 from opensnap.protocol.fields import get_u32
 from opensnap.protocol.models import Endpoint, SnapMessage
+from tests.support import MONSTER_HUNTER_NA_TITLE_CODE, login_client_payload, serving
 
 
 class ServerRoleTests(unittest.TestCase):
@@ -22,7 +23,7 @@ class ServerRoleTests(unittest.TestCase):
         self._temp_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self._temp_directory.cleanup)
         self._config = replace(
-            default_app_config(),
+            serving(default_app_config(), 'automodellista'),
             storage=StorageConfig(
                 backend='sqlite',
                 sqlite_path=f'{self._temp_directory.name}/server-roles.sqlite',
@@ -41,7 +42,7 @@ class ServerRoleTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=b'test\n\x00',
+            payload=login_client_payload(b'test\n'),
         )
         login_result = bootstrap_engine.handle_datagram(_encode(login_request), bootstrap_endpoint)
         self.assertFalse(login_result.errors)
@@ -127,7 +128,7 @@ class ServerRoleTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=b'test\n\x00',
+            payload=login_client_payload(b'test\n'),
         )
 
         result = engine.handle_datagram(_encode(request), endpoint)
@@ -141,7 +142,6 @@ class ServerRoleTests(unittest.TestCase):
             self._config,
             server=replace(
                 self._config.server,
-                default_bootstrap_game_identifier='monsterhunter',
                 game_targets=(
                     GameServerTargetConfig(
                         game_identifier='monsterhunter',
@@ -162,7 +162,7 @@ class ServerRoleTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=b'test\n\x00',
+            payload=login_client_payload(b'test\n', MONSTER_HUNTER_NA_TITLE_CODE),
         )
         login_result = engine.handle_datagram(_encode(login_request), endpoint)
         self.assertFalse(login_result.errors)
@@ -189,15 +189,14 @@ class ServerRoleTests(unittest.TestCase):
         self.assertEqual(get_u32(clear, 44), 10090)
         self.assertEqual(get_u32(clear, 48), 10090)
 
-    def test_bootstrap_login_fails_when_default_game_target_is_not_explicitly_mapped(self) -> None:
+    def test_bootstrap_login_fails_when_identified_game_has_no_target(self) -> None:
         config = replace(
             self._config,
             server=replace(
                 self._config.server,
-                default_bootstrap_game_identifier='monsterhunter',
                 game_targets=(
                     GameServerTargetConfig(
-                        game_identifier=self._config.server.game_identifier,
+                        game_identifier=self._config.server.game_plugin,
                         host=self._config.server.game.advertise_host or self._config.server.game.host,
                         port=self._config.server.game.port,
                     ),
@@ -214,7 +213,7 @@ class ServerRoleTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=b'test\n\x00',
+            payload=login_client_payload(b'test\n', MONSTER_HUNTER_NA_TITLE_CODE),
         )
 
         result = engine.handle_datagram(_encode(request), endpoint)
@@ -222,6 +221,43 @@ class ServerRoleTests(unittest.TestCase):
         self.assertFalse(result.errors)
         self.assertEqual(len(result.messages), 1)
         self.assertEqual(result.messages[0].command, commands.CMD_BOOTSTRAP_LOGIN_FAIL)
+
+
+    def test_bootstrap_drops_logins_from_unknown_titles(self) -> None:
+        engine = SnapProtocolEngine(config=self._config, role='bootstrap')
+        endpoint = Endpoint(host='127.0.0.1', port=50016)
+        request = _login_request(endpoint, login_client_payload(b'test\n', 0x1234))
+
+        with self.assertLogs('opensnap.core.bootstrap', 'WARNING') as captured:
+            result = engine.handle_datagram(_encode(request), endpoint)
+
+        self.assertFalse(result.errors)
+        self.assertFalse(result.messages)
+        self.assertIn('unknown SN@P title 0x1234', '\n'.join(captured.output))
+
+    def test_bootstrap_games_drop_logins_from_other_games(self) -> None:
+        config = replace(self._config, server=replace(self._config.server, bootstrap_games=('monsterhunter',)))
+        engine = SnapProtocolEngine(config=config, role='bootstrap')
+        endpoint = Endpoint(host='127.0.0.1', port=50017)
+
+        with self.assertLogs('opensnap.core.bootstrap', 'WARNING') as captured:
+            result = engine.handle_datagram(_encode(_login_request(endpoint, login_client_payload(b'test\n'))), endpoint)
+
+        self.assertFalse(result.messages)
+        self.assertIn("game 'automodellista' is not served here", '\n'.join(captured.output))
+
+
+def _login_request(endpoint: Endpoint, payload: bytes) -> SnapMessage:
+    return SnapMessage(
+        endpoint=endpoint,
+        type_flags=FLAG_CHANNEL_BITS,
+        packet_number=0,
+        command=commands.CMD_LOGIN_CLIENT,
+        session_id=0,
+        sequence_number=0,
+        acknowledge_number=0,
+        payload=payload,
+    )
 
 
 def _encode(message: SnapMessage) -> bytes:

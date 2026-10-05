@@ -86,7 +86,7 @@ class DnsConfigTests(unittest.TestCase):
 
         self.assertEqual(config.entries['regweb.mh.capcom.sf.yav4.com'], '192.168.1.151')
         self.assertEqual(config.entries['bootstrap01.sf.yav4.com'], '192.168.1.151')
-        self.assertEqual(config.entries['bootstrap01.mheu-beta.capcom.sf.yav.com'], '192.168.1.151')
+        self.assertEqual(config.entries['bootstrap01.mheu-beta.capcom.sf.yav4.com'], '192.168.1.151')
         self.assertEqual(config.entries['regweb.reo.capcom.sf.yav4.com'], '192.168.1.151')
         self.assertEqual(config.entries['snap01.reo.capcom.sf.yav4.com'], '192.168.1.151')
 

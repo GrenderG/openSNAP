@@ -1,8 +1,8 @@
-"""Auto Modellista Beta1 web routes and AM-USA-GAME-RULE serializer."""
+"""Auto Modellista Beta1 `AM-USA-GAME-RULE` page (`SLUS_204.98`)."""
 
 from collections.abc import Mapping
 
-from opensnap_web.games.automodellista import (
+from opensnap_web.games.automodellista.rules import (
     AM_RULE_COURSE_MODE_SEED_STOCK,
     AM_RULE_DEFAULT_INDEX_STANDARD_MAX_PEOPLE,
     AM_RULE_DEFAULT_INDEX_STANDARD_NEEDED_PLAYERS,
@@ -10,16 +10,15 @@ from opensnap_web.games.automodellista import (
     AM_RULE_FINISH_GRACE_SECONDS_STOCK,
     AM_RULE_LAP_SEED_STOCK,
     AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE,
-    AutoModellistaWebModule,
-    _apply_byte_overrides,
-    _coerce_max_people_default_count,
-    _coerce_rule_byte,
-    _coerce_rule_nibble,
-    _pack_players_packed,
-    _required_config_sequence,
-    _required_rule_profile_int,
-    _required_rule_profile_str,
-    _rule_profile_mapping,
+    apply_byte_overrides,
+    coerce_max_people_default_count,
+    coerce_rule_byte,
+    coerce_rule_nibble,
+    pack_players_packed,
+    required_config_sequence,
+    required_rule_profile_int,
+    required_rule_profile_str,
+    rule_profile_mapping,
 )
 
 # ---------------------------------------------------------------------------
@@ -321,30 +320,30 @@ def _apply_ambeta1_semantic_rule_fields(
 
     for name, value in fields.items():
         if name == AM_BETA1_RULE_PACKED_FIELD_PLAYERS:
-            row[AM_BETA1_RULE_OFFSET_PLAYERS_PACKED] = _coerce_rule_byte(
+            row[AM_BETA1_RULE_OFFSET_PLAYERS_PACKED] = coerce_rule_byte(
                 value,
                 label=f'{row_label} {AM_BETA1_RULE_PACKED_FIELD_PLAYERS}',
             )
             continue
         if name == AM_BETA1_RULE_PACKED_FIELD_NEEDED_PLAYERS_DEFAULT:
-            needed_players_default = _coerce_rule_nibble(value, label=f'{row_label} {name}')
+            needed_players_default = coerce_rule_nibble(value, label=f'{row_label} {name}')
             continue
         if name == AM_BETA1_RULE_PACKED_FIELD_MAX_PEOPLE_DEFAULT:
-            max_people_default = _coerce_rule_nibble(value, label=f'{row_label} {name}')
+            max_people_default = coerce_rule_nibble(value, label=f'{row_label} {name}')
             continue
         if name == AM_BETA1_RULE_PACKED_FIELD_MAX_PEOPLE_DEFAULT_COUNT:
-            max_people_default = _coerce_max_people_default_count(value, label=f'{row_label} {name}')
+            max_people_default = coerce_max_people_default_count(value, label=f'{row_label} {name}')
             continue
         if name not in AM_BETA1_RULE_SCALAR_FIELD_OFFSETS:
             raise ValueError(f'Unknown {row_label} field: {name}')
-        row[AM_BETA1_RULE_SCALAR_FIELD_OFFSETS[name]] = _coerce_rule_byte(
+        row[AM_BETA1_RULE_SCALAR_FIELD_OFFSETS[name]] = coerce_rule_byte(
             value,
             label=f'{row_label} field {name}',
         )
 
     if needed_players_default is not None or max_people_default is not None:
         existing_packed = row[AM_BETA1_RULE_OFFSET_PLAYERS_PACKED]
-        row[AM_BETA1_RULE_OFFSET_PLAYERS_PACKED] = _pack_players_packed(
+        row[AM_BETA1_RULE_OFFSET_PLAYERS_PACKED] = pack_players_packed(
             needed_players_default=(
                 (existing_packed >> 4) if needed_players_default is None else needed_players_default
             ),
@@ -372,7 +371,7 @@ def serialize_ambeta1_rule_row(
         fields.update(field_overrides)
 
     _apply_ambeta1_semantic_rule_fields(row, fields, row_label='beta1_rule')
-    _apply_byte_overrides(
+    apply_byte_overrides(
         row,
         byte_overrides,
         row_size=AM_BETA1_RULE_ROW_SIZE,
@@ -386,7 +385,7 @@ def build_ambeta1_rule_csv_rows(
 ) -> tuple[str, ...]:
     """Build Beta1 AM-USA-GAME-RULE CSV rows (3 rows x 26 bytes)."""
 
-    rule_profiles = tuple(_required_config_sequence(config, 'rule_profiles'))
+    rule_profiles = tuple(required_config_sequence(config, 'rule_profiles'))
     if len(rule_profiles) != AM_BETA1_RULE_PROFILE_ROW_COUNT:
         raise ValueError(
             'Beta1 rule config must define exactly '
@@ -394,11 +393,11 @@ def build_ambeta1_rule_csv_rows(
         )
     rows: list[str] = []
     for profile in rule_profiles:
-        template = _required_rule_profile_str(profile, 'template')
+        template = required_rule_profile_str(profile, 'template')
         row = serialize_ambeta1_rule_row(
             template=template,
-            field_overrides=_rule_profile_mapping(profile, 'field_overrides'),
-            byte_overrides=_rule_profile_mapping(profile, 'byte_overrides'),
+            field_overrides=rule_profile_mapping(profile, 'field_overrides'),
+            byte_overrides=rule_profile_mapping(profile, 'byte_overrides'),
         )
         rows.append(row.hex())
     return tuple(rows)
@@ -409,7 +408,7 @@ def build_ambeta1_rule_page(
 ) -> str:
     """Build full Beta1 AM-USA-GAME-RULE page payload."""
 
-    rule_profiles = _required_config_sequence(config, 'rule_profiles')
+    rule_profiles = required_config_sequence(config, 'rule_profiles')
     csv_rows = build_ambeta1_rule_csv_rows(config)
     lines = [
         '<html><head>',
@@ -417,8 +416,8 @@ def build_ambeta1_rule_page(
         '</head>',
     ]
     for profile in rule_profiles:
-        index = _required_rule_profile_int(profile, 'index')
-        label = _required_rule_profile_str(profile, 'label')
+        index = required_rule_profile_int(profile, 'index')
+        label = required_rule_profile_str(profile, 'label')
         lines.append(f'<!-- {index} {label} -->')
     lines.extend(
         (
@@ -441,18 +440,3 @@ def build_ambeta1_rule_page(
 
 
 AM_BETA1_RULE_PAGE = build_ambeta1_rule_page()
-
-
-class AutoModellistaBeta1WebModule(AutoModellistaWebModule):
-    """Auto Modellista Beta1 web profile using the Beta1 AM-USA-GAME-RULE format."""
-
-    name = 'automodellista_beta1'
-    # Beta1 canonical AM-USA paths.
-    info_path = '/amusa/info.html'
-    rule_path = '/amusa/rule.html'
-    rank_path = '/amusa/rank.html'
-    taboo_path = '/amusa/taboo.html'
-    upload_path = '/amusa/up.php'
-    rule_page = AM_BETA1_RULE_PAGE
-    # `ambeta1_bin/browser.bin` does not expose `AM-USA-GAME-TABOO`.
-    taboo_page = None

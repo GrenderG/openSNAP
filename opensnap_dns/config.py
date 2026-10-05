@@ -27,12 +27,15 @@ AUTO_MODELLISTA_DNS_ENTRIES: dict[str, str] = {
 MONSTER_HUNTER_USA_DNS_ENTRIES: dict[str, str] = {
     'regweb.mh.capcom.sf.yav4.com': '@default',
     'bootstrap01.sf.yav4.com': '@default',
+    # `SLUS_208.96` bootstrap host.
+    'bootstrap01.mh-beta.capcom.sf.yav4.com': '@default',
     'app01.reo.capcom.sf.yav4.com': '@default',
 }
 
 # Monster Hunter PAL (and Demo)
 MONSTER_HUNTER_PAL_AND_DEMO_DNS_ENTRIES: dict[str, str] = {
-    'bootstrap01.mheu-beta.capcom.sf.yav.com': '@default',
+    # `SLES_527.07` bootstrap host; its APP and regweb hosts are the USA ones.
+    'bootstrap01.mheu-beta.capcom.sf.yav4.com': '@default',
 }
 
 # Monster Hunter USA Public Beta

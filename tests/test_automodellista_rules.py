@@ -2,14 +2,14 @@
 
 import unittest
 
-from opensnap_web.games.automodellista import (
+from opensnap_web.games.automodellista.rules import (
     AM_RULE_MENU_METADATA,
     build_am_rule_csv_rows,
     build_am_rule_page,
     serialize_am_performance_row,
     serialize_am_rule_row,
 )
-from opensnap_web.games.automodellista_beta1 import (
+from opensnap_web.games.automodellista.rules_beta1 import (
     AM_BETA1_RULE_MENU_METADATA,
     build_ambeta1_rule_csv_rows,
     build_ambeta1_rule_page,

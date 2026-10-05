@@ -1,25 +1,9 @@
-"""Auto Modellista web routes."""
+"""Auto Modellista release `AM-USA-GAME-RULE` page (browser CSV parser mode 9).
 
-import re
-from collections.abc import Callable, Mapping, Sequence
-
-from flask import Flask, Response, request
-
-from opensnap_web.config import WebServerConfig
-from opensnap_web.games.base import WebRouteTools
-from opensnap_web.signup import SignupResult, SqliteSignupService
-
-AM_INFO_PAGE = """<html><head>
-<!--AM-USA-INFORMATION-->
-</head>
-<!--
-<CSV>
-"INFO_TAG = openSNAP",
-"INFO_MSG = <BODY>Welcome to openSNAP!<END>",
-</CSV>
--->
-</html>
+The row helpers are shared with the Beta1 serializer (`rules_beta1`).
 """
+
+from collections.abc import Mapping, Sequence
 
 # AM-USA-GAME-RULE parser contract recovered from `browser.bin` mode-9 path.
 #
@@ -536,76 +520,6 @@ AM_GAME_RULE_CONFIG = {
     },
 }
 
-AM_RANK_PAGE = '<html><body>am_rank</body></html>\n'
-# `am_taboo.html` is not a human-facing release page.
-#
-# Reverse-engineered release mechanism:
-# - `amus_bin/browser.bin` maps `AM-USA-GAME-TABOO` to special-tag type `0x27`,
-#   then `special_tag_check` arms parser mode `12`.
-# - after a `<CSV>` marker, `get_crs_shadow_data(12)` decodes the page into the
-#   `Net_Kinshi_buff` table used by `cmn_mongon_check` as an extra downloadable
-#   taboo-word list layered on top of the game's built-in word filters.
-# - the decoded table uses the same packed `check_mongon` layout as the retail
-#   static list: `14` text bytes per slot plus metadata/continuation state in
-#   byte `15`, allowing long taboo phrases to span multiple `16`-byte records.
-#
-# So the original server-side contract is effectively:
-# - `<!--AM-USA-GAME-TABOO-->`
-# - one multi-line quoted `<CSV>` field containing taboo phrases in that packed
-#   transport format.
-#
-# This placeholder intentionally omits that contract. It keeps the fetch path
-# live without populating the downloadable taboo table, so only the game's
-# built-in filters remain active in openSNAP for now.
-AM_TABOO_PAGE = '<html><body>am_taboo</body></html>\n'
-# `patch*.html` is not a cosmetic page family in either Beta1 or release.
-#
-# Reverse-engineered browser contract:
-# - `AM-USA-GAME-PROG` is special-tag type `0x26` in both overlays.
-# - `special_tag_check` maps that to parser mode `11`.
-# - once the page also exposes a `<CSV>` block, `get_crs_shadow_data(11)`
-#   decodes the numeric payload directly into the same `0x20000` patch buffer
-#   later executed by main-ELF `PatchExec`.
-# - the first CSV byte is a fixed chunk id `'1'..'5'`; chunks 1..4 fill
-#   `0x7000` bytes each and chunk 5 fills the final `0x4000`.
-#
-# So:
-# - Beta1 `/amusa/patch1.html` .. `/amusa/patch5.html`
-# - Release `/amusa/patch/2/am_patch1.html` .. `/amusa/patch/2/am_patch5.html`
-# are five transport shards of one runtime patch program, not patch notes.
-#
-# These placeholder pages are intentionally inert because they do not provide
-# the original `<!--AM-USA-GAME-PROG-->` + `<CSV>` payload contract.
-AM_PATCH1_PAGE = '<html><body>This is test patch1.html file</body></html>\n'
-AM_PATCH2_PAGE = '<html><body>This is test patch2.html file</body></html>\n'
-AM_PATCH3_PAGE = '<html><body>This is test patch3.html file</body></html>\n'
-AM_PATCH4_PAGE = '<html><body>This is test patch4.html file</body></html>\n'
-AM_PATCH5_PAGE = '<html><body>This is test patch5.html file</body></html>\n'
-MIN_USERNAME_LENGTH = 4
-MAX_USERNAME_LENGTH = 15
-MIN_PASSWORD_LENGTH = 4
-MAX_PASSWORD_LENGTH = 15
-USERNAME_PATTERN = re.compile(r'^[A-Za-z0-9_]{4,15}$')
-SIGNUP_INDEX_PAGE = (
-    '<html>\n'
-    '<body>\n'
-    'openSNAP signup service<br>\n'
-    '<br>\n'
-    'Choose the username to save on your memory card.<br>\n'
-    '<br>\n'
-    '<form action="create_id.html" method="post">\n'
-    'Username: '
-    f'<input type="text" name="username" size="{MAX_USERNAME_LENGTH}" maxlength="{MAX_USERNAME_LENGTH}">\n'
-    '<br>\n'
-    'Password: '
-    f'<input type="password" name="password" size="{MAX_PASSWORD_LENGTH}" maxlength="{MAX_PASSWORD_LENGTH}">\n'
-    '<br>\n'
-    '<input type="submit" value="Create/Login ID">\n'
-    '</form>\n'
-    '</body>\n'
-    '</html>\n'
-)
-
 
 def serialize_am_rule_row(
     *,
@@ -636,7 +550,7 @@ def serialize_am_rule_row(
         row_label='rule',
     )
 
-    _apply_byte_overrides(
+    apply_byte_overrides(
         row,
         byte_overrides,
         row_size=AM_RULE_ROW_SIZE,
@@ -670,7 +584,7 @@ def serialize_am_performance_row(
         row_label='performance',
         allow_event_flag=False,
     )
-    _apply_byte_overrides(
+    apply_byte_overrides(
         row,
         byte_overrides,
         row_size=AM_PERFORMANCE_ROW_SIZE,
@@ -691,23 +605,23 @@ def build_am_rule_csv_rows(
     - 1x terminator row ("00").
     """
 
-    rule_profiles = _required_config_sequence(config, 'rule_profiles')
+    rule_profiles = required_config_sequence(config, 'rule_profiles')
     performance_profile = _required_config_mapping(config, 'performance_profile')
     rows: list[str] = []
     for profile in rule_profiles:
-        template = _required_rule_profile_str(profile, 'template')
-        field_overrides = _rule_profile_mapping(profile, 'field_overrides')
-        byte_overrides = _rule_profile_mapping(profile, 'byte_overrides')
+        template = required_rule_profile_str(profile, 'template')
+        field_overrides = rule_profile_mapping(profile, 'field_overrides')
+        byte_overrides = rule_profile_mapping(profile, 'byte_overrides')
         rule_blob = serialize_am_rule_row(
             template=template,
             field_overrides=field_overrides,
             byte_overrides=byte_overrides,
         )
         rows.append(rule_blob.hex())
-    performance_field_overrides = _rule_profile_mapping(performance_profile, 'field_overrides')
+    performance_field_overrides = rule_profile_mapping(performance_profile, 'field_overrides')
     performance_row = serialize_am_performance_row(
         field_overrides=performance_field_overrides,
-        byte_overrides=_rule_profile_mapping(performance_profile, 'byte_overrides'),
+        byte_overrides=rule_profile_mapping(performance_profile, 'byte_overrides'),
     )
     rows.append(performance_row.hex())
     rows.append(AM_RULE_CSV_TERMINATOR)
@@ -719,7 +633,7 @@ def build_am_rule_page(
 ) -> str:
     """Build the full AM-USA-GAME-RULE HTML payload from rule profiles."""
 
-    rule_profiles = _required_config_sequence(config, 'rule_profiles')
+    rule_profiles = required_config_sequence(config, 'rule_profiles')
     performance_profile = _required_config_mapping(config, 'performance_profile')
     csv_rows = build_am_rule_csv_rows(config)
     lines = [
@@ -728,11 +642,11 @@ def build_am_rule_page(
         '</head>',
     ]
     for profile in rule_profiles:
-        index = _required_rule_profile_int(profile, 'index')
-        label = _required_rule_profile_str(profile, 'label')
+        index = required_rule_profile_int(profile, 'index')
+        label = required_rule_profile_str(profile, 'label')
         lines.append(f'<!-- {index} {label} -->')
-    perf_index = _required_rule_profile_int(performance_profile, 'index')
-    perf_label = _required_rule_profile_str(performance_profile, 'label')
+    perf_index = required_rule_profile_int(performance_profile, 'index')
+    perf_label = required_rule_profile_str(performance_profile, 'label')
     lines.append(f'<!-- {perf_index} {perf_label} -->')
     lines.extend(
         (
@@ -754,7 +668,7 @@ def build_am_rule_page(
     return '\n'.join(lines)
 
 
-def _coerce_rule_byte(value: int, *, label: str) -> int:
+def coerce_rule_byte(value: int, *, label: str) -> int:
     """Validate a byte value used in AM-USA-GAME-RULE rows."""
 
     if not isinstance(value, int):
@@ -764,7 +678,7 @@ def _coerce_rule_byte(value: int, *, label: str) -> int:
     return value
 
 
-def _coerce_rule_nibble(value: int, *, label: str) -> int:
+def coerce_rule_nibble(value: int, *, label: str) -> int:
     """Validate a 4-bit value used in packed AM rule defaults."""
 
     if not isinstance(value, int):
@@ -774,10 +688,10 @@ def _coerce_rule_nibble(value: int, *, label: str) -> int:
     return value
 
 
-def _coerce_max_people_default_count(value: int, *, label: str) -> int:
+def coerce_max_people_default_count(value: int, *, label: str) -> int:
     """Validate editable max-people default count for standard race profiles."""
 
-    nibble = _coerce_rule_nibble(value, label=label)
+    nibble = coerce_rule_nibble(value, label=label)
     if nibble < AM_RULE_STANDARD_MAX_PEOPLE_MIN or nibble > AM_RULE_STANDARD_MAX_PEOPLE_MAX:
         raise ValueError(
             f'Rule {label} must be in range '
@@ -786,7 +700,7 @@ def _coerce_max_people_default_count(value: int, *, label: str) -> int:
     return nibble
 
 
-def _pack_players_packed(
+def pack_players_packed(
     *,
     needed_players_default: int,
     max_people_default: int,
@@ -794,8 +708,8 @@ def _pack_players_packed(
 ) -> int:
     """Pack `needed_players_default` and `max_people_default` into byte +19."""
 
-    needed_nibble = _coerce_rule_nibble(needed_players_default, label=f'{label} needed_players_default')
-    max_nibble = _coerce_rule_nibble(max_people_default, label=f'{label} max_people_default')
+    needed_nibble = coerce_rule_nibble(needed_players_default, label=f'{label} needed_players_default')
+    max_nibble = coerce_rule_nibble(max_people_default, label=f'{label} max_people_default')
     return (needed_nibble << 4) | max_nibble
 
 
@@ -817,30 +731,30 @@ def _apply_semantic_rule_fields(
 
     for name, value in fields.items():
         if name == AM_RULE_PACKED_FIELD_PLAYERS:
-            row[AM_RULE_OFFSET_PLAYERS_PACKED] = _coerce_rule_byte(
+            row[AM_RULE_OFFSET_PLAYERS_PACKED] = coerce_rule_byte(
                 value,
                 label=f'{row_label} {AM_RULE_PACKED_FIELD_PLAYERS}',
             )
             continue
         if name == AM_RULE_PACKED_FIELD_NEEDED_PLAYERS_DEFAULT:
-            needed_players_default = _coerce_rule_nibble(value, label=f'{row_label} {name}')
+            needed_players_default = coerce_rule_nibble(value, label=f'{row_label} {name}')
             continue
         if name == AM_RULE_PACKED_FIELD_MAX_PEOPLE_DEFAULT:
-            max_people_default = _coerce_rule_nibble(value, label=f'{row_label} {name}')
+            max_people_default = coerce_rule_nibble(value, label=f'{row_label} {name}')
             continue
         if name == AM_RULE_PACKED_FIELD_MAX_PEOPLE_DEFAULT_COUNT:
-            max_people_default = _coerce_max_people_default_count(value, label=f'{row_label} {name}')
+            max_people_default = coerce_max_people_default_count(value, label=f'{row_label} {name}')
             continue
         if name == 'event_flag' and not allow_event_flag:
             raise ValueError(f'{row_label} does not support event_flag')
         if name not in AM_RULE_SCALAR_FIELD_OFFSETS:
             raise ValueError(f'Unknown {row_label} field: {name}')
         offset = AM_RULE_SCALAR_FIELD_OFFSETS[name]
-        row[offset] = _coerce_rule_byte(value, label=f'{row_label} field {name}')
+        row[offset] = coerce_rule_byte(value, label=f'{row_label} field {name}')
 
     if needed_players_default is not None or max_people_default is not None:
         existing_packed = row[AM_RULE_OFFSET_PLAYERS_PACKED]
-        row[AM_RULE_OFFSET_PLAYERS_PACKED] = _pack_players_packed(
+        row[AM_RULE_OFFSET_PLAYERS_PACKED] = pack_players_packed(
             needed_players_default=(
                 (existing_packed >> 4) if needed_players_default is None else needed_players_default
             ),
@@ -851,7 +765,7 @@ def _apply_semantic_rule_fields(
         )
 
 
-def _apply_byte_overrides(
+def apply_byte_overrides(
     row: bytearray,
     byte_overrides: Mapping[int, int] | None,
     *,
@@ -867,10 +781,10 @@ def _apply_byte_overrides(
             raise ValueError(f'{row_label} byte offset must be int, got {offset!r}')
         if offset < 0 or offset >= row_size:
             raise ValueError(f'{row_label} byte offset out of range: {offset}')
-        row[offset] = _coerce_rule_byte(value, label=f'{row_label} offset {offset}')
+        row[offset] = coerce_rule_byte(value, label=f'{row_label} offset {offset}')
 
 
-def _required_rule_profile_str(profile: Mapping[str, object], key: str) -> str:
+def required_rule_profile_str(profile: Mapping[str, object], key: str) -> str:
     """Read a required string key from a rule profile."""
 
     value = profile.get(key)
@@ -879,7 +793,7 @@ def _required_rule_profile_str(profile: Mapping[str, object], key: str) -> str:
     return value
 
 
-def _required_rule_profile_int(profile: Mapping[str, object], key: str) -> int:
+def required_rule_profile_int(profile: Mapping[str, object], key: str) -> int:
     """Read a required integer key from a rule profile."""
 
     value = profile.get(key)
@@ -888,7 +802,7 @@ def _required_rule_profile_int(profile: Mapping[str, object], key: str) -> int:
     return value
 
 
-def _rule_profile_mapping(profile: Mapping[str, object], key: str) -> Mapping:
+def rule_profile_mapping(profile: Mapping[str, object], key: str) -> Mapping:
     """Read an optional mapping key from a rule profile."""
 
     value = profile.get(key)
@@ -899,7 +813,7 @@ def _rule_profile_mapping(profile: Mapping[str, object], key: str) -> Mapping:
     return value
 
 
-def _required_config_sequence(config: Mapping[str, object], key: str) -> Sequence[Mapping[str, object]]:
+def required_config_sequence(config: Mapping[str, object], key: str) -> Sequence[Mapping[str, object]]:
     """Read a required sequence of rule-profile mappings from config."""
 
     value = config.get(key)
@@ -921,304 +835,3 @@ def _required_config_mapping(config: Mapping[str, object], key: str) -> Mapping[
 
 
 AM_RULE_PAGE = build_am_rule_page()
-
-
-def register_signup_routes(
-    app: Flask,
-    *,
-    tools: WebRouteTools,
-    signup_service: SqliteSignupService,
-    route_prefixes: tuple[str, ...],
-    include_root_aliases: bool,
-    host: str | None = None,
-    endpoint_namespace: str = '',
-) -> None:
-    """Register SNAP signup/create-id routes for one or more path prefixes."""
-
-    normalized_prefixes = tuple(prefix.strip('/') for prefix in route_prefixes if prefix.strip('/'))
-    if not normalized_prefixes:
-        return
-    endpoint_prefix = f'{endpoint_namespace}_' if endpoint_namespace else ''
-
-    if include_root_aliases:
-        app.add_url_rule(
-            '/',
-            endpoint=f'{endpoint_prefix}signup_root_index',
-            methods=['GET'],
-            view_func=_make_signup_index_view(tools),
-            host=host,
-        )
-        app.add_url_rule(
-            '/login.php',
-            endpoint=f'{endpoint_prefix}signup_login_index',
-            methods=['GET'],
-            view_func=_make_signup_index_view(tools),
-            host=host,
-        )
-
-    for prefix in normalized_prefixes:
-        path_prefix = prefix.replace('/', '_')
-        app.add_url_rule(
-            f'/{prefix}/',
-            endpoint=f'{endpoint_prefix}signup_{path_prefix}_index_root',
-            methods=['GET'],
-            view_func=_make_signup_index_view(tools),
-            host=host,
-        )
-        app.add_url_rule(
-            f'/{prefix}/index.jsp',
-            endpoint=f'{endpoint_prefix}signup_{path_prefix}_index',
-            methods=['GET'],
-            view_func=_make_signup_index_view(tools),
-            host=host,
-        )
-        app.add_url_rule(
-            f'/{prefix}/create_id.html',
-            endpoint=f'{endpoint_prefix}signup_{path_prefix}_create_id_query',
-            methods=['GET', 'POST'],
-            view_func=_make_signup_query_view(signup_service),
-            host=host,
-        )
-        app.add_url_rule(
-            f'/{prefix}/create_id_<username>.html',
-            endpoint=f'{endpoint_prefix}signup_{path_prefix}_create_id_dynamic',
-            methods=['GET'],
-            view_func=_make_signup_dynamic_view(signup_service),
-            host=host,
-        )
-
-
-def _make_signup_index_view(tools: WebRouteTools) -> Callable[[], Response]:
-    """Build one index handler for the original signup pages."""
-
-    def _signup_index(**_kwargs: str) -> Response:
-        return tools.html_response(SIGNUP_INDEX_PAGE)
-
-    return _signup_index
-
-
-def _make_signup_query_view(signup_service: SqliteSignupService) -> Callable[[], Response]:
-    """Build query/create-id handler using username from request values."""
-
-    def _signup_query(**_kwargs: str) -> Response:
-        username = (request.values.get('username') or '').strip()
-        password = (request.values.get('password') or '').strip()
-        return _build_signup_response(
-            username=username,
-            password=password,
-            signup_service=signup_service,
-        )
-
-    return _signup_query
-
-
-def _make_signup_dynamic_view(signup_service: SqliteSignupService) -> Callable[[str], Response]:
-    """Build dynamic create-id handler using username from route path."""
-
-    def _signup_dynamic(username: str, **_kwargs: str) -> Response:
-        password = (request.values.get('password') or '').strip()
-        return _build_signup_response(
-            username=username.strip(),
-            password=password,
-            signup_service=signup_service,
-        )
-
-    return _signup_dynamic
-
-
-def _make_static_page_view(tools: WebRouteTools, page: str) -> Callable[[], Response]:
-    """Build a static HTML response view for a pre-rendered page payload."""
-
-    def _static_page(**_kwargs: str) -> Response:
-        return tools.html_response(page)
-
-    return _static_page
-
-
-def _make_upload_view(tools: WebRouteTools) -> Callable[[], Response]:
-    """Build the ranking upload stub handler used by AM clients."""
-
-    def _upload(**_kwargs: str) -> Response:
-        # `nwPBRanking` uses the embedded `/amusa/am_up.php` path after the
-        # post-game room transition. Keep this stub endpoint available until
-        # the exact upload and response body are fully decoded.
-        tools.dump_request('Handled Auto Modellista ranking upload request.')
-        return Response('', mimetype='text/plain')
-
-    return _upload
-
-
-class AutoModellistaWebModule:
-    """Web endpoints used by Auto Modellista clients."""
-
-    name = 'automodellista'
-    signup_route_prefixes = ('amweb', 'ftpublicbeta/reg')
-    include_signup_root_aliases = True
-    # Release/Beta2 canonical AM-USA paths.
-    info_path = '/amusa/am_info.html'
-    rule_path = '/amusa/am_rule.html'
-    rank_path = '/amusa/am_rank.html'
-    taboo_path = '/amusa/am_taboo.html'
-    upload_path = '/amusa/am_up.php'
-    info_page = AM_INFO_PAGE
-    rule_page = AM_RULE_PAGE
-    rank_page = AM_RANK_PAGE
-    taboo_page = AM_TABOO_PAGE
-    patch_pages = {
-        1: AM_PATCH1_PAGE,
-        2: AM_PATCH2_PAGE,
-        3: AM_PATCH3_PAGE,
-        4: AM_PATCH4_PAGE,
-        5: AM_PATCH5_PAGE,
-    }
-
-    def _static_page_specs(self) -> tuple[tuple[str, str, str], ...]:
-        """Return core static endpoint/page route specs with singular paths."""
-
-        specs: list[tuple[str, str, str]] = [
-            ('info', self.info_path, self.info_page),
-            ('rule', self.rule_path, self.rule_page),
-            ('rank', self.rank_path, self.rank_page),
-        ]
-        if self.taboo_page:
-            specs.append(('taboo', self.taboo_path, self.taboo_page))
-        return tuple(specs)
-
-    def register_routes(
-        self,
-        app: Flask,
-        config: WebServerConfig,
-        tools: WebRouteTools,
-        *,
-        host: str | None = None,
-    ) -> None:
-        """Register Auto Modellista-specific web endpoints."""
-
-        del config
-        signup_service = SqliteSignupService()
-        register_signup_routes(
-            app,
-            tools=tools,
-            signup_service=signup_service,
-            route_prefixes=self.signup_route_prefixes,
-            include_root_aliases=self.include_signup_root_aliases,
-            host=host,
-            endpoint_namespace=self.name,
-        )
-        for spec_index, (slug, path, page) in enumerate(self._static_page_specs()):
-            view = _make_static_page_view(tools, page)
-            app.add_url_rule(
-                path,
-                endpoint=f'{self.name}_{slug}_{spec_index}',
-                methods=['GET'],
-                view_func=view,
-                host=host,
-            )
-
-        # Keep both patch URL families alive.
-        #
-        # Binary-backed purpose:
-        # - Beta1 fetches `/amusa/patchN.html`
-        # - release fetches `/amusa/patch/2/am_patchN.html`
-        # - both are aliases for the `AM-USA-GAME-PROG` runtime patch transport
-        #   consumed by browser parser mode 11 and executed later by `PatchExec`
-        # - page number `N` is meaningful: it selects chunk `'1'..'5'` of the
-        #   five-piece `0x20000` patch buffer layout.
-        for patch_index in sorted(self.patch_pages):
-            page = self.patch_pages[patch_index]
-            view = _make_static_page_view(tools, page)
-            patch_paths = (
-                f'/amusa/patch{patch_index}.html',
-                f'/amusa/patch/2/am_patch{patch_index}.html',
-            )
-            for alias_index, patch_path in enumerate(patch_paths):
-                app.add_url_rule(
-                    patch_path,
-                    endpoint=f'{self.name}_patch{patch_index}_{alias_index}',
-                    methods=['GET'],
-                    view_func=view,
-                    host=host,
-                )
-
-        upload_view = _make_upload_view(tools)
-        app.add_url_rule(
-            self.upload_path,
-            endpoint=f'{self.name}_upload',
-            methods=['GET', 'POST'],
-            view_func=upload_view,
-            host=host,
-        )
-
-
-def _build_signup_response(
-    *,
-    username: str,
-    password: str,
-    signup_service: SqliteSignupService,
-) -> Response:
-    """Build PS2 signup response payload for a selected username."""
-
-    if not _is_valid_username(username):
-        return _error_response('Invalid username.')
-    if not _is_valid_password(password):
-        return _error_response('Invalid password.')
-
-    result = signup_service.create_or_login(username=username, password=password)
-    if not result.ok:
-        return _error_response(result.error_message)
-
-    payload = _build_signup_payload(result)
-    return Response(payload, mimetype='text/html')
-
-
-def _is_valid_username(username: str) -> bool:
-    """Validate signup username format and length."""
-
-    if not USERNAME_PATTERN.fullmatch(username):
-        return False
-    if username.startswith('_') or username.endswith('_'):
-        return False
-    return re.search(r'_{2,}', username) is None
-
-
-def _is_valid_password(password: str) -> bool:
-    """Validate password format and length."""
-
-    encoded_length = len(password.encode('utf-8'))
-    if encoded_length < MIN_PASSWORD_LENGTH:
-        return False
-    if encoded_length > MAX_PASSWORD_LENGTH:
-        return False
-    return True
-
-
-def _build_signup_payload(result: SignupResult) -> str:
-    """Build successful COMP-SIGNUP payload."""
-
-    # The browser-side client consumes `INPUT-IDS` as a newline-terminated line.
-    # Keep the terminator because it is part of the expected protocol payload.
-    return (
-        '<html>\n'
-        '<body>\n'
-        'Profile successfully retrieved.<br>\n'
-        'Press the Select button and then "End Browser" to save it to the memory card.\n'
-        '</body>\n'
-        '</html>\n'
-        '<!--COMP-SIGNUP-->\n'
-        f'<!--INPUT-IDS-->{result.username}\n'
-    )
-
-
-def _error_response(message: str) -> Response:
-    """Build generic HTML error response."""
-
-    page = (
-        '<html>\n'
-        '<body>\n'
-        '<h3>Login error</h3>\n'
-        f'{message}<br>\n'
-        'Please go back and retry.\n'
-        '</body>\n'
-        '</html>\n'
-    )
-    return Response(page, mimetype='text/html')

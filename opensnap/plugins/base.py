@@ -1,5 +1,7 @@
 """Shared plugin base behavior."""
 
+from dataclasses import dataclass
+
 from opensnap.core.context import HandlerContext
 from opensnap.core.router import CommandRouter
 from opensnap.core.sessions import Session
@@ -8,15 +10,40 @@ from opensnap.protocol.enums import GameTags, PostGameReportMask, RoomSubcommand
 from opensnap.protocol.models import Endpoint, SnapMessage
 
 
+@dataclass(frozen=True, slots=True)
+class SnapTitle:
+    """One SN@P client build, as identified by the bootstrap service.
+
+    Every title passes a fixed title code to the SDK's `kkLoginClient`, which
+    sends it at login payload offset 100; the footer marker tells the SDK
+    generation apart (legacy `0xBA476610`, release `0xBA476611`).
+    """
+
+    title_code: int
+    footer_marker: int
+    name: str
+
+
 class GamePlugin:
     """Base class for game-specific SNAP plugins."""
 
     name = ''
+    # Client builds served by this plugin; the bootstrap service routes their
+    # logins to this plugin's game server.
+    snap_titles: tuple[SnapTitle, ...] = ()
 
     def register_handlers(self, router: CommandRouter, context: HandlerContext) -> None:
         """Register game-specific command handlers."""
 
         del router, context
+
+    def start_services(self, context: HandlerContext) -> None:
+        """Start plugin-owned auxiliary services that live in the game process."""
+
+        del context
+
+    def stop_services(self) -> None:
+        """Stop plugin-owned auxiliary services."""
 
     def on_tick(self, context: HandlerContext) -> list[SnapMessage]:
         """Run periodic plugin work."""

@@ -1,11 +1,19 @@
 """Handler context and response helpers."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from opensnap.config import AppConfig
 from opensnap.protocol import commands
 from opensnap.protocol.models import Endpoint, SnapMessage
-from opensnap.storage.interfaces import AccountStore, LobbyStore, RoomStore, SessionStore
+from opensnap.storage.interfaces import (
+    AccountStore,
+    LobbyStore,
+    RecordStore,
+    RoomStore,
+    SessionHandoffStore,
+    SessionStore,
+)
 
 
 @dataclass(slots=True)
@@ -14,9 +22,14 @@ class HandlerContext:
 
     config: AppConfig
     accounts: AccountStore
+    handoffs: SessionHandoffStore
+    records: RecordStore
     sessions: SessionStore
     lobbies: LobbyStore
     rooms: RoomStore
+    # `(title code, footer marker)` -> `(game identifier, title name)` for
+    # bootstrap logins, or None for an unknown client build.
+    identify_snap_title: Callable[[int, int], tuple[str, str] | None]
 
     def reply(
         self,
@@ -74,8 +87,13 @@ class HandlerContext:
         packet_number: int = 0,
         acknowledge_number: int = 0,
         size_word_override: int | None = None,
+        source_session_id: int | None = None,
     ) -> SnapMessage:
-        """Create message that is not tied to one request endpoint."""
+        """Create message that is not tied to one request endpoint.
+
+        `session_id` is the recipient connection; `source_session_id` optionally
+        overrides the header session word for relays that identify a peer.
+        """
 
         sequence_number = self.sessions.allocate_sequence(session_id, type_flags)
         return SnapMessage(
@@ -88,4 +106,5 @@ class HandlerContext:
             acknowledge_number=acknowledge_number,
             payload=payload,
             size_word_override=size_word_override,
+            source_session_id=source_session_id,
         )

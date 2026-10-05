@@ -36,5 +36,15 @@ class SnapMessage:
     payload: bytes = b''
     size_word_override: int | None = None
     embedded_in_multi: bool = False
+    # Outbound-only header session id override. `session_id` always names the
+    # recipient connection that owns sequence allocation, reliable tracking,
+    # and ACK retirement: clients keep one RUDP window per server connection
+    # (`kkReceiveExtentCheck` never reads the header session word) and build
+    # bare ACKs from their own connection id (`SLUS_206.42` `0x002eac64`,
+    # `SLUS_208.96` `0x001fe224`). The header word itself is surfaced to game
+    # callbacks as the packet source (`kkDispatchingOperation` info `+8`:
+    # `SLUS_206.42` `0x002ed0e0`, `SLUS_208.96` `0x00201d90`), so peer relays
+    # that must identify their originator set it here.
+    source_session_id: int | None = None
     footer_bytes: bytes = FOOTER_BYTES
     wire_format: str = WIRE_FORMAT_SNAP

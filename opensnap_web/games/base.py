@@ -1,32 +1,16 @@
-"""Contracts for game-specific web routes."""
+"""Contract for game web modules."""
 
-from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Protocol
 
-from flask import Flask, Response
+from flask import Blueprint
 
-from opensnap_web.config import WebServerConfig
-
-
-@dataclass(frozen=True, slots=True)
-class WebRouteTools:
-    """Shared helpers injected into game web modules."""
-
-    dump_request: Callable[[str], None]
-    html_response: Callable[[str], Response]
+from opensnap.storage.interfaces import StorageBundle
 
 
 class GameWebModule(Protocol):
-    """Interface implemented by game-specific web modules."""
+    """One game's web routes, built as a Flask blueprint over the shared store."""
 
     name: str
 
-    def register_routes(
-        self,
-        app: Flask,
-        config: WebServerConfig,
-        tools: WebRouteTools,
-        *,
-        host: str | None = None,
-    ) -> None:
-        """Register game-specific HTTP routes."""
+    def blueprint(self, storage: StorageBundle) -> Blueprint:
+        """Return the game's routes."""

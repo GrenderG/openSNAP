@@ -29,6 +29,7 @@ from opensnap.protocol.constants import (
 )
 from opensnap.protocol.fields import get_c_string, get_u32
 from opensnap.protocol.models import Endpoint, SnapMessage
+from tests.support import login_client_payload, serving
 
 
 class EngineFlowTests(unittest.TestCase):
@@ -38,7 +39,7 @@ class EngineFlowTests(unittest.TestCase):
         self._temp_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self._temp_directory.cleanup)
         self._config = replace(
-            default_app_config(),
+            serving(default_app_config(), 'automodellista'),
             storage=StorageConfig(
                 backend='sqlite',
                 sqlite_path=f'{self._temp_directory.name}/engine-flow.sqlite',
@@ -58,7 +59,7 @@ class EngineFlowTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=b'test\n\x00',
+            payload=login_client_payload(b'test\n'),
         )
         login_result = engine.handle_datagram(_encode(login_request), endpoint)
         self.assertFalse(login_result.errors)
@@ -122,7 +123,7 @@ class EngineFlowTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=b'test\n\x00',
+            payload=login_client_payload(b'test\n'),
         )
         login_result = engine.handle_datagram(_encode(login_request), endpoint)
         self.assertFalse(login_result.errors)
@@ -178,7 +179,7 @@ class EngineFlowTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=b'test\n\x00',
+            payload=login_client_payload(b'test\n'),
         )
         login_result = engine.handle_datagram(_encode(login_request), endpoint)
         self.assertFalse(login_result.errors)
@@ -218,7 +219,7 @@ class EngineFlowTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=duplicated_login + (b'\x00' * (120 - len(duplicated_login))),
+            payload=login_client_payload(duplicated_login),
         )
         login_result = engine.handle_datagram(_encode(login_request), endpoint)
 
@@ -252,7 +253,7 @@ class EngineFlowTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=raw_login + b'\x00',
+            payload=login_client_payload(raw_login),
         )
 
         with patch(
@@ -297,7 +298,7 @@ class EngineFlowTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=b'test\x00',
+            payload=login_client_payload(b'test'),
         )
 
         login_result = engine.handle_datagram(_encode(login_request), endpoint)
@@ -375,7 +376,7 @@ class EngineFlowTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=b'no-such-user\n\x00',
+            payload=login_client_payload(b'no-such-user\n'),
         )
 
         with self.assertLogs('opensnap.core.bootstrap', level='WARNING') as captured:
@@ -2129,7 +2130,7 @@ class EngineFlowTests(unittest.TestCase):
 
         session_id = _create_session_via_login(engine, endpoint, 'test')
         _join_lobby(engine, endpoint, session_id, lobby_id=1, sequence=3)
-        room_id = _create_room(engine, endpoint, session_id, sequence=4, room_name='room-exit')
+        _create_room(engine, endpoint, session_id, sequence=4, room_name='room-exit')
 
         outer = SnapMessage(
             endpoint=endpoint,
@@ -2493,6 +2494,8 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(second_result.messages), 1)
         _, second_room_id = struct.unpack_from('>2L', second_result.messages[0].payload)
         self.assertEqual(first_room_id, second_room_id)
+        # Original sequence: the client drops it if the first result arrived.
+        self.assertEqual(second_result.messages[0].sequence_number, first_result.messages[0].sequence_number)
 
     def test_create_room_normalizes_event_no_password_sentinel(self) -> None:
         config = self._config
@@ -3091,7 +3094,7 @@ def _create_session_via_login(engine: SnapProtocolEngine, endpoint: Endpoint, us
         session_id=0,
         sequence_number=0,
         acknowledge_number=0,
-        payload=f'{username}\n\x00'.encode('utf-8'),
+        payload=login_client_payload(f'{username}\n'.encode('utf-8')),
     )
     result = engine.handle_datagram(_encode(login_request), endpoint)
     assert not result.errors

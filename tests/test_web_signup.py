@@ -6,11 +6,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from opensnap_web.signup import SqliteSignupService
+from opensnap.config import default_app_config
+from opensnap.storage.factory import create_storage
+from opensnap_web.signup import SignupService
 
 
-class SqliteSignupServiceTests(unittest.TestCase):
-    """Verify create/login behavior backed by SQLite."""
+class SignupServiceTests(unittest.TestCase):
+    """Verify create/login behavior backed by the shared store."""
 
     def test_create_then_login_then_wrong_password(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -23,7 +25,9 @@ class SqliteSignupServiceTests(unittest.TestCase):
                 },
                 clear=True,
             ):
-                service = SqliteSignupService()
+                storage = create_storage(default_app_config())
+                self.addCleanup(storage.close)
+                service = SignupService(storage.accounts)
 
                 created = service.create_or_login(username='alice', password='pass123')
                 self.assertTrue(created.ok)
@@ -57,7 +61,9 @@ class SqliteSignupServiceTests(unittest.TestCase):
                 },
                 clear=True,
             ):
-                service = SqliteSignupService()
+                storage = create_storage(default_app_config())
+                self.addCleanup(storage.close)
+                service = SignupService(storage.accounts)
                 result = service.create_or_login(username='test', password='1111')
                 self.assertTrue(result.ok)
                 self.assertFalse(result.created)

@@ -33,6 +33,7 @@ def main() -> None:
         plugin.name,
     )
     try:
+        engine.start_plugin_services()
         server.run()
     except KeyboardInterrupt:
         logger.info('Received keyboard interrupt, shutting down game service.')

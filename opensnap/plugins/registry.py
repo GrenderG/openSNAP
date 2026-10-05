@@ -1,16 +1,14 @@
 """Plugin registry and resolution helpers."""
 
-from collections.abc import Callable
-
 from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.plugins.automodellista_beta1 import AutoModellistaBeta1Plugin
 from opensnap.plugins.base import GamePlugin
+from opensnap.plugins.monsterhunter import MonsterHunterPlugin
 
-PluginFactory = Callable[[], GamePlugin]
-
-PLUGIN_FACTORIES: dict[str, PluginFactory] = {
+PLUGIN_FACTORIES: dict[str, type[GamePlugin]] = {
     'automodellista': AutoModellistaPlugin,
     'automodellista_beta1': AutoModellistaBeta1Plugin,
+    'monsterhunter': MonsterHunterPlugin,
 }
 
 
@@ -32,3 +30,13 @@ def create_game_plugin(plugin_name: str) -> GamePlugin:
             f'Supported plugins: {supported}.'
         )
     return factory()
+
+
+def identify_snap_title(title_code: int, footer_marker: int) -> tuple[str, str] | None:
+    """Return `(plugin name, title name)` for one bootstrap login's title code and footer."""
+
+    for plugin_name, plugin_class in PLUGIN_FACTORIES.items():
+        for title in plugin_class.snap_titles:
+            if (title.title_code, title.footer_marker) == (title_code, footer_marker):
+                return plugin_name, title.name
+    return None

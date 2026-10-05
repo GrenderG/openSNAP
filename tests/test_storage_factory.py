@@ -9,15 +9,19 @@ from opensnap.storage.factory import create_storage
 
 
 class StorageFactoryTests(unittest.TestCase):
-    """Verify SQLite-only storage behavior."""
+    """Verify shared-store backend selection."""
 
-    def test_create_storage_rejects_non_sqlite_backend(self) -> None:
-        config = replace(
-            default_app_config(),
-            storage=StorageConfig(backend='memory', sqlite_path='opensnap.db'),
-        )
+    def test_create_storage_rejects_unknown_backend(self) -> None:
+        config = replace(default_app_config(), storage=StorageConfig(backend='memory'))
 
         with self.assertRaises(ValueError):
+            create_storage(config)
+
+    def test_mariadb_backend_requires_connection_settings(self) -> None:
+        config = replace(default_app_config(), storage=StorageConfig(backend='mariadb'))
+
+        # Without PyMySQL installed this is a RuntimeError naming the package.
+        with self.assertRaises((ValueError, RuntimeError)):
             create_storage(config)
 
     def test_create_storage_accepts_sqlite_backend(self) -> None:
@@ -30,9 +34,7 @@ class StorageFactoryTests(unittest.TestCase):
             self.addCleanup(bundle.close)
 
         self.assertIsNotNone(bundle.accounts)
-        self.assertIsNotNone(bundle.sessions)
-        self.assertIsNotNone(bundle.lobbies)
-        self.assertIsNotNone(bundle.rooms)
+        self.assertIsNotNone(bundle.handoffs)
 
 
 if __name__ == '__main__':

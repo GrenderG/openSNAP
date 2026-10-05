@@ -7,7 +7,16 @@ import struct
 from opensnap.core.context import HandlerContext
 from opensnap.core.router import CommandRouter
 from opensnap.core.sessions import Session
-from opensnap.plugins.base import GamePlugin
+from opensnap.plugins.base import GamePlugin, SnapTitle
+from opensnap.plugins.common import (
+    USER_ATTRIBUTE_TOKEN,
+    ack_for_request,
+    ack_for_session,
+    build_room_leave_callbacks,
+    build_send_target_payload,
+    pack_fixed,
+    resolve_session,
+)
 from opensnap.protocol import (
     GameTags,
     PostGameReportMask,
@@ -19,6 +28,7 @@ from opensnap.protocol.constants import (
     FLAG_CHANNEL_BITS,
     FLAG_ROOM,
     FLAG_MULTI,
+    FOOTER_MARKER,
     FLAG_RELIABLE,
     FLAG_RESPONSE,
     RELAY_CONTEXT_MASK,
@@ -32,9 +42,6 @@ from opensnap.protocol.fields import get_c_string, get_u16, get_u32
 from opensnap.protocol.models import SnapMessage
 
 _LOGGER = logging.getLogger('opensnap.plugins.automodellista')
-# Binary-verified attribute selector used by kkQueryLobbyAttribute/kkQueryGameRoomAttribute:
-# SLUS_206.42 cpnGetJoinUserLobby/cpnGetJoinUserRoom load 0x55534552 ("USER").
-USER_ATTRIBUTE_TOKEN = b'USER'
 PENDING_ROOM_JOIN_RETRY_TICKS = 3
 PENDING_ROOM_JOIN_MAX_RETRIES = 3
 # Event create-race uses this client-side sentinel when password is disabled.
@@ -55,10 +62,12 @@ class AutoModellistaPlugin(GamePlugin):
     """Command handlers for Auto Modellista behavior."""
 
     name = 'automodellista'
+    # `SLUS_206.42` (`0x00278a34`) and `SLUS_280.31` pass title code 0xCAAD.
+    snap_titles = (SnapTitle(title_code=0xCAAD, footer_marker=FOOTER_MARKER, name='Auto Modellista'),)
 
     def __init__(self) -> None:
         # Retransmitted reliable create-room packets reuse sequence numbers.
-        self._create_room_results: dict[tuple[int, int], int] = {}
+        self._create_room_results: dict[tuple[int, int], SnapMessage] = {}
         # Exact reliable room-join retries must replay the original wrapper and
         # host callback sequence numbers so the client can recover from a lost
         # first callback without double-inserting the guest.
@@ -161,7 +170,7 @@ class AutoModellistaPlugin(GamePlugin):
             if member.session_id != session.session_id
         ]
         context.rooms.leave(room_id, session.session_id)
-        return _build_room_leave_callbacks(
+        return build_room_leave_callbacks(
             context=context,
             leaving_session_id=session.session_id,
             recipients=recipients,
@@ -171,7 +180,7 @@ class AutoModellistaPlugin(GamePlugin):
         entries = []
         for lobby in context.lobbies.list()[: context.config.server.max_lobbies]:
             users_in = context.sessions.count_users_in_lobby(lobby.lobby_id)
-            entries.append(struct.pack('>16s3L', _pack_fixed(lobby.name, 16), users_in, 0, lobby.lobby_id))
+            entries.append(struct.pack('>16s3L', pack_fixed(lobby.name, 16), users_in, 0, lobby.lobby_id))
 
         payload = struct.pack('>3L', 0, 1, len(entries)) + b''.join(entries)
         return [
@@ -242,7 +251,7 @@ class AutoModellistaPlugin(GamePlugin):
             entries.append(
                 struct.pack(
                     '>16s5L',
-                    _pack_fixed(room.name, 16),
+                    pack_fixed(room.name, 16),
                     len(room.members),
                     0,
                     room.rules,
@@ -280,10 +289,10 @@ class AutoModellistaPlugin(GamePlugin):
             entries.append(
                 struct.pack(
                     '>16s2L32s',
-                    _pack_fixed(_network_username(session.username), 16),
+                    pack_fixed(_network_username(session.username), 16),
                     session.session_id,
                     32,
-                    _pack_fixed(team, 32),
+                    pack_fixed(team, 32),
                 )
             )
 
@@ -298,34 +307,24 @@ class AutoModellistaPlugin(GamePlugin):
         ]
 
     def _handle_create_game_room(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        session = _resolve_session(context, message)
+        session = resolve_session(context, message, _LOGGER)
         if session is None:
             return []
 
+        # An exact reliable retry replays the original result with its original
+        # sequence number. Both clients drop an unreliable sequence they already
+        # accepted (`kkReceiveExtentCheck`: release `0x002f5028`, Beta1
+        # `0x002ec0a8`, `app+16 = seq + 1`), so the replay only lands if the
+        # first result was lost. A fresh sequence would be accepted again, and
+        # `ResultCreateGameRoomCallBack` (`0x00288480`, Beta1 `0x002ca360`) would
+        # clear the room member table and re-enter the room.
         cache_key = (session.session_id, message.sequence_number)
         cached_result = self._create_room_results.get(cache_key)
         if cached_result is not None:
-            return [
-                context.reply(
-                    message,
-                    type_flags=FLAG_ROOM | FLAG_RESPONSE,
-                    command=commands.CMD_RESULT_WRAPPER,
-                    payload=struct.pack('>2L', GameTags.START_OK, cached_result),
-                    session_id=session.session_id,
-                )
-            ]
+            return [replace(cached_result, endpoint=message.endpoint)]
 
         if not _is_allowed_lobby_id(context, session.lobby_id):
-            self._create_room_results[cache_key] = RESULT_WRAPPER_STATUS_ERROR_DIALOG
-            return [
-                context.reply(
-                    message,
-                    type_flags=FLAG_ROOM | FLAG_RESPONSE,
-                    command=commands.CMD_RESULT_WRAPPER,
-                    payload=struct.pack('>2L', GameTags.START_OK, RESULT_WRAPPER_STATUS_ERROR_DIALOG),
-                    session_id=session.session_id,
-                )
-            ]
+            return [self._create_room_result(context, message, session, cache_key, RESULT_WRAPPER_STATUS_ERROR_DIALOG)]
 
         _prune_stale_rooms_in_lobby(context, session.lobby_id)
         room_name = get_c_string(message.payload, 0)
@@ -336,16 +335,7 @@ class AutoModellistaPlugin(GamePlugin):
 
         room_count = len(context.rooms.list_for_lobby(session.lobby_id))
         if room_count >= context.config.server.max_rooms_per_lobby:
-            self._create_room_results[cache_key] = RESULT_WRAPPER_STATUS_ERROR_DIALOG
-            return [
-                context.reply(
-                    message,
-                    type_flags=FLAG_ROOM | FLAG_RESPONSE,
-                    command=commands.CMD_RESULT_WRAPPER,
-                    payload=struct.pack('>2L', GameTags.START_OK, RESULT_WRAPPER_STATUS_ERROR_DIALOG),
-                    session_id=session.session_id,
-                )
-            ]
+            return [self._create_room_result(context, message, session, cache_key, RESULT_WRAPPER_STATUS_ERROR_DIALOG)]
 
         room = context.rooms.create_room(
             name=room_name,
@@ -357,21 +347,30 @@ class AutoModellistaPlugin(GamePlugin):
         )
         context.sessions.set_room(session.session_id, room.room_id)
         self._reset_post_game_state(room.room_id)
-        self._create_room_results[cache_key] = room.room_id
+        return [self._create_room_result(context, message, session, cache_key, room.room_id)]
 
-        payload = struct.pack('>2L', GameTags.START_OK, room.room_id)
-        return [
-            context.reply(
-                message,
-                type_flags=FLAG_ROOM | FLAG_RESPONSE,
-                command=commands.CMD_RESULT_WRAPPER,
-                payload=payload,
-                session_id=session.session_id,
-            )
-        ]
+    def _create_room_result(
+        self,
+        context: HandlerContext,
+        message: SnapMessage,
+        session: Session,
+        cache_key: tuple[int, int],
+        result: int,
+    ) -> SnapMessage:
+        """Build and remember the create result (room id or error status)."""
+
+        reply = context.reply(
+            message,
+            type_flags=FLAG_ROOM | FLAG_RESPONSE,
+            command=commands.CMD_RESULT_WRAPPER,
+            payload=struct.pack('>2L', GameTags.START_OK, result),
+            session_id=session.session_id,
+        )
+        self._create_room_results[cache_key] = reply
+        return reply
 
     def _handle_join(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        session = _resolve_session(context, message)
+        session = resolve_session(context, message, _LOGGER)
         if session is None:
             return []
 
@@ -479,7 +478,7 @@ class AutoModellistaPlugin(GamePlugin):
         return []
 
     def _handle_leave(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        session = _resolve_session(context, message)
+        session = resolve_session(context, message, _LOGGER)
         if session is None:
             return []
 
@@ -487,7 +486,7 @@ class AutoModellistaPlugin(GamePlugin):
         if cached_result is not None:
             return [cached_result]
 
-        acknowledge_number = _ack_for_request(message, session)
+        acknowledge_number = ack_for_request(message, session)
 
         if (message.type_flags & FLAG_CHANNEL_BITS) == FLAG_CHANNEL_BITS:
             self._clear_session_join_retry_state(session.session_id)
@@ -501,7 +500,7 @@ class AutoModellistaPlugin(GamePlugin):
                 self._reset_post_game_state(room_id)
                 context.rooms.leave(room_id, session.session_id)
                 context.sessions.set_room(session.session_id, 0)
-                callbacks = _build_room_leave_callbacks(
+                callbacks = build_room_leave_callbacks(
                     context=context,
                     leaving_session_id=session.session_id,
                     recipients=recipients,
@@ -534,7 +533,7 @@ class AutoModellistaPlugin(GamePlugin):
                 self._reset_post_game_state(room_id)
                 context.rooms.leave(room_id, session.session_id)
                 context.sessions.set_room(session.session_id, 0)
-                callbacks = _build_room_leave_callbacks(
+                callbacks = build_room_leave_callbacks(
                     context=context,
                     leaving_session_id=session.session_id,
                     recipients=recipients,
@@ -661,7 +660,7 @@ class AutoModellistaPlugin(GamePlugin):
         self._latest_reliable_leave_result[key] = (message.sequence_number, result_wrapper)
 
     def _handle_send(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        session = _resolve_session(context, message)
+        session = resolve_session(context, message, _LOGGER)
         if session is None:
             return []
 
@@ -902,7 +901,7 @@ class AutoModellistaPlugin(GamePlugin):
                     type_flags=FLAG_ROOM | FLAG_RELIABLE,
                     command=commands.CMD_SEND,
                     payload=transition_payload,
-                    acknowledge_number=_ack_for_session(member),
+                    acknowledge_number=ack_for_session(member),
                 )
             )
         return messages
@@ -914,7 +913,7 @@ class AutoModellistaPlugin(GamePlugin):
         self._post_game_reports.pop(room_id, None)
 
     def _handle_send_target(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        session = _resolve_session(context, message)
+        session = resolve_session(context, message, _LOGGER)
         if session is None:
             return []
 
@@ -953,7 +952,7 @@ class AutoModellistaPlugin(GamePlugin):
             )
             return response
 
-        relay_payload = _build_send_target_payload(message.payload)
+        relay_payload = build_send_target_payload(message.payload)
         if relay_payload is None:
             _LOGGER.warning(
                 'Skipping send-target relay from %s:%d: payload len=%d is too short.',
@@ -970,7 +969,7 @@ class AutoModellistaPlugin(GamePlugin):
                 type_flags=FLAG_ROOM | FLAG_RELIABLE,
                 command=commands.CMD_SEND_TARGET,
                 payload=relay_payload,
-                acknowledge_number=_ack_for_session(target),
+                acknowledge_number=ack_for_session(target),
             )
         )
         return response
@@ -990,10 +989,10 @@ class AutoModellistaPlugin(GamePlugin):
         message: SnapMessage,
         callback_id: GameTags,
     ) -> list[SnapMessage]:
-        session = _resolve_session(context, message)
+        session = resolve_session(context, message, _LOGGER)
         if session is None:
             return []
-        acknowledge_number = _ack_for_request(message, session)
+        acknowledge_number = ack_for_request(message, session)
 
         payload = struct.pack('>2L', callback_id, RESULT_WRAPPER_STATUS_OK)
         return [
@@ -1073,31 +1072,6 @@ def _is_allowed_lobby_id(context: HandlerContext, lobby_id: int) -> bool:
     return context.lobbies.get(lobby_id) is not None
 
 
-def _resolve_session(context: HandlerContext, message: SnapMessage) -> Session | None:
-    """Find session by id first, then by endpoint."""
-
-    session = context.sessions.get(message.session_id)
-    if session is not None:
-        return session
-    session = context.sessions.get_by_endpoint(message.endpoint)
-    if session is not None:
-        return session
-    _LOGGER.warning(
-        (
-            'Rejecting command 0x%02x from %s:%d: no session matched '
-            '(type=0x%04x sess=0x%08x seq=%d ack=%d).'
-        ),
-        message.command,
-        message.endpoint.host,
-        message.endpoint.port,
-        message.type_flags,
-        message.session_id,
-        message.sequence_number,
-        message.acknowledge_number,
-    )
-    return None
-
-
 def _prune_stale_rooms_in_lobby(context: HandlerContext, lobby_id: int) -> None:
     """Remove stale room members and empty rooms in one lobby."""
 
@@ -1116,13 +1090,6 @@ def _prune_stale_room_members(context: HandlerContext, room_id: int) -> None:
         member_session = context.sessions.get(member_session_id)
         if member_session is None or member_session.room_id == 0:
             context.rooms.leave(room_id, member_session_id)
-
-
-def _pack_fixed(value: str, size: int) -> bytes:
-    """Pack text into fixed-size null-padded bytes."""
-
-    encoded = value.encode('utf-8', errors='ignore')[:size]
-    return struct.pack(f'{size}s', encoded)
 
 
 def _network_username(value: str) -> str:
@@ -1180,7 +1147,7 @@ def _broadcast_lobby_chat(
                 type_flags=TYPE_LOBBY_RELAY | FLAG_RESPONSE,
                 command=commands.CMD_SEND,
                 payload=payload,
-                acknowledge_number=_ack_for_session(member),
+                acknowledge_number=ack_for_session(member),
             )
         )
     return messages
@@ -1208,7 +1175,7 @@ def _broadcast_room_chat(
                 type_flags=TYPE_ROOM_RELAY | FLAG_RESPONSE,
                 command=commands.CMD_SEND,
                 payload=payload,
-                acknowledge_number=_ack_for_session(member),
+                acknowledge_number=ack_for_session(member),
             )
         )
     return messages
@@ -1243,22 +1210,10 @@ def _broadcast_room_game_packet(
                 command=commands.CMD_SEND,
                 payload=payload,
                 packet_number=request.packet_number,
-                acknowledge_number=_ack_for_session(member),
+                acknowledge_number=ack_for_session(member),
             )
         )
     return messages
-
-
-def _build_send_target_payload(payload: bytes) -> bytes | None:
-    """Build relay payload for send-target callbacks.
-
-    Binary/capture parity: server relays sender payload and only zeroes the
-    target-session field at `+0x04` before forwarding to the destination client.
-    """
-
-    if len(payload) < 10:
-        return None
-    return payload[:4] + b'\x00\x00\x00\x00' + payload[8:]
 
 def _build_room_join_callbacks(
     *,
@@ -1272,10 +1227,10 @@ def _build_room_join_callbacks(
     team = '' if account is None else account.team
     payload = struct.pack(
         '>16s2L16s',
-        _pack_fixed(_network_username(joining_session.username), 16),
+        pack_fixed(_network_username(joining_session.username), 16),
         joining_session.session_id,
         0,
-        _pack_fixed(team, 16),
+        pack_fixed(team, 16),
     )
 
     messages: list[SnapMessage] = []
@@ -1291,54 +1246,7 @@ def _build_room_join_callbacks(
                 type_flags=FLAG_ROOM | FLAG_RESPONSE,
                 command=commands.CMD_JOIN,
                 payload=payload,
-                acknowledge_number=_ack_for_session(member),
+                acknowledge_number=ack_for_session(member),
             )
         )
     return messages
-
-
-def _build_room_leave_callbacks(
-    *,
-    context: HandlerContext,
-    leaving_session_id: int,
-    recipients: list[Session],
-) -> list[SnapMessage]:
-    """Notify remaining room members that one peer left the room."""
-
-    payload = struct.pack('>L', leaving_session_id)
-    messages: list[SnapMessage] = []
-    for member in recipients:
-        if member.session_id == leaving_session_id:
-            continue
-        messages.append(
-            context.direct(
-                endpoint=member.endpoint,
-                session_id=member.session_id,
-                type_flags=FLAG_ROOM | FLAG_RESPONSE,
-                command=commands.CMD_LEAVE,
-                payload=payload,
-                acknowledge_number=_ack_for_session(member),
-            )
-        )
-    return messages
-def _ack_for_session(session: Session) -> int:
-    """ACK value for unsolicited packets sent to one client session."""
-
-    if session.last_incoming_sequence < 0:
-        return 0
-    return session.last_incoming_sequence
-
-
-def _ack_for_request(request: SnapMessage, session: Session) -> int:
-    """ACK value for request/response packets.
-
-    Embedded commands in observed multi-send packets can carry sequence 0 while the
-    enclosing reliable packet has a non-zero sequence. In that case, respond using
-    the latest accepted inbound sequence for the session.
-    """
-
-    if request.sequence_number != 0:
-        return request.sequence_number
-    if session.last_incoming_sequence >= 0:
-        return session.last_incoming_sequence
-    return 0

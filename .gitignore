@@ -232,6 +232,10 @@ SLUS_206.42
 SLES_511.91
 # Auto Modellista JP Classic ELF
 SLPM_651.24
+# Monster Hunter 1 NTSC-U ELF
+slus_208.96
+# Monster Hunter 1 PAL ELF
+SLES_527.07
 amus_bin/
 ambeta1_bin/
 etc/experiments/
@@ -241,3 +245,10 @@ AFSPacker/
 kageserver.cpp
 bomberman.cpp
 kage_server/
+
+# Local runtime game data (captured/ported resources are not redistributed).
+data/*
+!data/.nomedia
+
+# Local MCP configuration.
+.mcp.json

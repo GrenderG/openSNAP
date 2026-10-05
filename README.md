@@ -20,6 +20,8 @@ PlayStation 2:
   - Auto Modellista Public Beta volume 1.0 (SLUS_204.98)
   - Auto Modellista Public Beta volume 2.0 (SLUS_280.31)
   - Auto Modellista NTSC-U/C (SLUS_206.42)
+  - Monster Hunter NTSC-U (SLUS_208.96)
+  - Monster Hunter PAL (SLES_527.07), with crossplay with NTSC-U
 
 ## SNAP History (Brief)
 
@@ -42,7 +44,6 @@ Historical references:
 Next planned protocol targets:
 
 - Western versions of Resident Evil Outbreak
-- Western versions of Monster Hunter
 
 ## Prerequisites
 
@@ -127,18 +128,17 @@ Environment variables for the split UDP services:
 - `OPENSNAP_GAME_HOST`: game bind host (default: `0.0.0.0`).
 - `OPENSNAP_GAME_ADVERTISE_HOST`: optional IPv4 host advertised to clients in bootstrap login-success packets. If empty, openSNAP derives it from `OPENSNAP_GAME_HOST` and client routing.
 - `OPENSNAP_GAME_PORT`: game bind port (default: `9091`).
-- `OPENSNAP_GAME_IDENTIFIER`: identifier for the game served by this game process (default: `automodellista`).
 - `OPENSNAP_GAME_PLUGIN`: game plugin name (default: built-in plugin selection).
-- `OPENSNAP_BOOTSTRAP_DEFAULT_GAME_IDENTIFIER`: bootstrap fallback game id used when no reliable per-game identifier is available from the UDP login flow.
-- `OPENSNAP_GAME_SERVER_MAP`: optional explicit `game_identifier -> host:port` bootstrap redirect map. Example: `{"automodellista":"192.168.1.151:9091","monsterhunter":"192.168.1.152:10070"}`. Object values with `host` and `port` are also accepted, but `host:port` is the intended primary form.
+- `OPENSNAP_BOOTSTRAP_GAMES`: games whose logins the bootstrap accepts: `generic` (default, every known game) or a comma-separated list of game identifiers. Logins from other games are dropped and logged.
+- `OPENSNAP_GAME_SERVER_MAP`: optional explicit `game plugin name -> host:port` bootstrap redirect map. Example: `{"automodellista":"192.168.1.151:9091","monsterhunter":"192.168.1.152:10070"}`. Object values with `host` and `port` are also accepted, but `host:port` is the intended primary form.
 - `OPENSNAP_SERVER_SECRET`: bootstrap server secret string.
 - `OPENSNAP_BOOTSTRAP_KEY`: bootstrap encryption key string (default: `SNAP-SWAN`).
 - `OPENSNAP_TICK_INTERVAL_SECONDS`: periodic tick interval (default: `10.0`).
 
-The bootstrap and game servers are separate processes. Keep both pointed at the same `OPENSNAP_SQLITE_PATH` so the bootstrap-issued session id is available when the client reconnects to the game port.
+The bootstrap and game servers are separate processes. Point both at the same shared store (`OPENSNAP_SQLITE_PATH`, or the same MariaDB database) so the bootstrap-issued session is available when the client reconnects to the game port.
 The bootstrap handshake stays on the bootstrap endpoint through login start and verifier exchange (`0x2c` / `0x41`). The client should not switch to the game endpoint until bootstrap login success returns the final game server IP/port.
 
-The bootstrap UDP layer does not receive the original web-style bootstrap URL through the current transport API, so the server cannot reliably infer the requested game from hostname or URL alone today. openSNAP currently promotes the validated Auto Modellista beta1 KAGE footer (`0xBA476610`) to `automodellista_beta1`; all primary-footer (`0xBA476611`) clients still route through `OPENSNAP_BOOTSTRAP_DEFAULT_GAME_IDENTIFIER` because Auto Modellista beta2/release share the same proven bootstrap UDP path and those newer markers are also used by other SN@P titles. The redirect target is then resolved through the explicit `OPENSNAP_GAME_SERVER_MAP` plus the current process's local game endpoint.
+Every SN@P title logs in on the same bootstrap port (the SDK hardcodes UDP 9090), so the bootstrap identifies the game from the login itself: each game passes a fixed title code to the SDK, sent at login payload offset 100, and the packet footer tells the SDK generation apart. Known builds: Auto Modellista US `0xCAAD` (beta1 is the `0xCAAD` build with the legacy `0xBA476610` footer), Monster Hunter NA `0xCA03` and EU `0xCA0E` (both served by `monsterhunter`). Logins from unknown builds are dropped and logged, as are games left out of `OPENSNAP_BOOTSTRAP_GAMES`. The redirect target is then resolved through `OPENSNAP_GAME_SERVER_MAP` plus the current process's local game endpoint, so one bootstrap can serve every game, each game server on its own host or port. Game servers may share one SQLite database: rooms and lobby state are kept per game.
 
 ## Run Bootstrap Server
 
@@ -170,7 +170,7 @@ Start the web service (separate process):
 python3 run.py web
 ```
 
-Run web, bootstrap, and game services with the same `OPENSNAP_SQLITE_PATH` so account creation/login from the web page is immediately available to the UDP services.
+Run web, bootstrap, and game services against the same shared store so account creation/login from the web page is immediately available to the UDP services.
 
 Expected startup output includes:
 
@@ -180,15 +180,19 @@ openSNAP web listening on 0.0.0.0:80 using plugin <web-game-module>.
 
 The web service includes plugin-defined routes based on the original SNAP web flows.
 
-The signup flow is user-driven. The plugin-provided signup page allows the player to choose the username encoded in the signup payload.
-Usernames are limited to 10 characters and accepted characters are `A-Z`, `a-z`, `0-9`, `_`, `.`, and `-`.
-Passwords are required and limited to 8 characters.
-The form uses simple PS2-era-compatible HTML input controls for old console browsers.
-The page acts as create/login: missing users are created in SQLite, existing users must provide the matching password.
+The signup flow is user-driven and shared by every game (`opensnap_web/signup.py`): the page lets the player choose
+the username the browser saves to the memory card. Usernames are 4-10 letters, digits and single inner `_` (10 is the
+most the client browser keeps, and every game logs in with the whole ID). Passwords are 4-15 characters, the length of
+the in-game password keyboard of every client. The form uses simple PS2-era-compatible HTML input controls for old console
+browsers. The page acts as create/login: missing users are created in the shared store, existing users must provide
+the matching password.
 
 For reverse-engineering support, unknown routes trigger a full terminal request dump (method, URL, query, headers, form/body, and source address).
 
-Web routes are modular by game plugin. Each game can implement its own route set in `opensnap_web/games`.
+Web layout: `opensnap_web/app.py` opens the shared store once and registers one Flask blueprint per selected game
+module; `opensnap_web/games/__init__.py` lists the modules; `common.py` holds the response, request-dump and route
+helpers and `signup.py` the shared signup pages. A game module (`games/monsterhunter/`, `games/automodellista/`)
+only declares its paths and pages.
 
 ## Run DNS Service
 
@@ -205,17 +209,30 @@ The value `@default` in DNS entries resolves to `OPENSNAP_DNS_DEFAULT_IP` when s
 
 ## Storage Configuration
 
-openSNAP uses SQLite storage by default.
+openSNAP keeps two kinds of state:
 
-Environment variables:
+- Shared store: accounts, the bootstrap-to-game session handoff, and game records for rankings (Auto Modellista
+  lap times, Monster Hunter EU quest records). Web, bootstrap, and game services must use the same shared store.
+  It is touched at signup, login, and record uploads, never per packet.
+- Runtime state: sessions with their packet counters, lobbies, and rooms. Each server process keeps its own in
+  memory, so it is gone after a restart (clients log in again anyway).
 
-- `OPENSNAP_SQLITE_PATH`: path to SQLite database file (default: `opensnap.db`).
-- `OPENSNAP_RESET_RUNTIME_ON_STARTUP`: clears transient runtime state on startup (default: `true`). In split mode, the bootstrap server preserves sessions and the game server clears room state without deleting bootstrap-issued sessions.
-- `OPENSNAP_DEFAULT_USERS`: users seeded at startup as `username:password[:seed[:team]]`, comma-separated.
+Shared store settings:
 
-The default `.env.dist` includes `test:1111` in `OPENSNAP_DEFAULT_USERS`.
+- `OPENSNAP_STORAGE_BACKEND`: `sqlite` (default) or `mariadb`.
+- `OPENSNAP_SQLITE_PATH`: SQLite database file (default: `opensnap.db`). Every service must point at the same file, so
+  SQLite suits services running on one machine.
+- `OPENSNAP_MARIADB_HOST`, `OPENSNAP_MARIADB_PORT` (default `3306`), `OPENSNAP_MARIADB_USER`,
+  `OPENSNAP_MARIADB_PASSWORD`, `OPENSNAP_MARIADB_DATABASE` (default `opensnap`), `OPENSNAP_MARIADB_SSL_CA` (optional CA
+  file for TLS): MariaDB/MySQL connection for services spread over several machines. Requires `pip install PyMySQL`.
+  openSNAP creates its tables on first start; the user only needs rights on that database. Keep the database
+  reachable only by your own servers.
+- `OPENSNAP_DEFAULT_USERS`: comma-separated `username:password[:seed[:team]]` entries inserted on startup.
 
-Run with custom SQLite path:
+Older SQLite files are migrated automatically: the runtime tables earlier versions kept there are dropped, accounts
+are kept.
+
+Example:
 
 ```bash
 OPENSNAP_SQLITE_PATH=./opensnap.sqlite python3 run.py game
@@ -234,6 +251,65 @@ Run with explicit plugin selection:
 ```bash
 OPENSNAP_GAME_PLUGIN=<plugin_name> python3 run.py game
 ```
+
+## Monster Hunter
+
+Run the game service with the `monsterhunter` plugin:
+
+```bash
+OPENSNAP_GAME_PLUGIN=monsterhunter python3 run.py game
+```
+
+The bootstrap recognizes Monster Hunter NA and EU logins by their title codes and routes both to the
+`monsterhunter` game server (its `OPENSNAP_GAME_SERVER_MAP` entry, or the local game endpoint). Both releases
+share the lobby and hunt protocol, so NA and EU players meet in the same Lands, Towns, and quests. EU text is
+UTF-8 while NA shows plain ASCII, so accented EU names and chat look garbled on NA screens.
+
+Besides SNAP UDP, the client uses an APP TCP service on port `10127` for its online menu (Land list, Market
+state, Event download and quest-return receipts). The `monsterhunter` plugin starts it inside the game process.
+Its settings are grouped under "Plugin-specific configuration" in `.env.dist`:
+
+- `OPENSNAP_MH_APP_HOST`: APP bind host (default: `OPENSNAP_GAME_HOST`).
+- `OPENSNAP_MH_APP_PORT`: APP TCP port (default: `10127`).
+- `OPENSNAP_MH_WORLDS`: nested JSON object of World name ->
+  `{"enabled": true, "host": "...", "description": "...", "lands": [...]}`,
+  where each Land is `{"key": "...", "name": "...", "description": "...", "areas": N, "capacity": N, "color": "#RRGGBB"}`
+  (up to 16 Worlds, 56 Lands per World and 64 in total, 1-26 Areas per Land, Land keys up to 13 characters and
+  unique within their World, capacity default 750). The World and Land menus show the highlighted entry's
+  `description` (default "Select a world to login to." and "Select a land to login to."). The default is the original Brave World with the Red, Green
+  and Blue Lands, in the JP release's Land panel colors (all official colors are listed in `.env.dist`). Exactly
+  one World leaves `host` empty: the World served here. A World with a `host` runs on another game server (for
+  example another region); the client logs in to that address after choosing it, and this server only lists its
+  Lands (populations show as 0). Only enabled Worlds count (`enabled` defaults to `true`); the original Sincere
+  World is in `.env.dist` with `"enabled": false`, validated but not listed. Areas are named `<key>01`..`<key>NN`;
+  an Area holds at most 63 Towns (3 categories of 21) of `OPENSNAP_MAX_PLAYERS_PER_ROOM` players, and the client
+  creates every Town with a maximum of 8.
+- `OPENSNAP_DATA_DIR`: local data root (default: `data`). Monster Hunter reads `data/monsterhunter`:
+  - `events/manifest.json` plus its resource file: optional single downloadable Event;
+  - `information.json`: optional `{"title": "...", "pages": ["page1.txt"]}` online Information pages
+    (1-3 pages, 8192 bytes each, client page markup such as `<BODY>`). Without it one empty page is
+    published, which the client needs to continue its online setup (Event, Market, connection timing).
+    NA only; EU has no such pages.
+  - `files/`: pages the client asks for by name: the welcome page shown at the first online connection,
+    `files/02/TOP_INFOR.HTM` for NA and `files/03/<language>/TOP_INFOR.HTM` for EU (languages `01` English,
+    `02` French, `03` Italian, `04` Spanish, `05` German). A missing file is shown as nothing. The log names
+    every requested file.
+
+The data folder is not distributed with openSNAP.
+
+Players stay listed in their Town while they are out on a quest, and return to that Town when the quest ends.
+
+After a quest the EU client uploads its quest records: monsters hunted and the clear time. They are kept in the
+shared store (`records`, game `monsterhunter`, boards `hunts-<quest>` and `clear-<quest>`) and shown on the EU lobby's
+Record page (Information menu, `DATABASE.HTM`), which the server generates on request: the top hunters by monsters
+hunted and the fastest clears of every quest. Quests are listed by number until their names are decoded. A record
+from an address with several logged-in players cannot be told apart and is not kept.
+
+The Minegarde Market day changes automatically with the server's local date, following the 10-day
+rotation Claw, Normal, Half-off, Normal, Tools, Normal, Half-off, Normal, Fish & Food, Normal.
+
+Account registration uses the `monsterhunter` web module (`/mhweb/...`). DNAS is not served by openSNAP: point
+the DNAS host at an external DNAS-compatible service through `OPENSNAP_DNS_ENTRIES`.
 
 ## Web Service Configuration
 
@@ -266,6 +342,9 @@ its web/database flow. The embedded info pages use `http://gameweb...`, while
 the ranking upload path uses `https://rankweb...`. Run the web service for the
 post-game return path, and configure the optional HTTPS listener if you want to
 serve the embedded `rankweb` URL locally.
+
+Auto Modellista rankings: each upload's best lap is kept per course for an existing account, and the ranking
+page lists each player's best lap, fastest first: 10 per course, plus 50 on the release event board.
 
 ## DNS Service Configuration
 
