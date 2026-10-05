@@ -55,6 +55,7 @@ import re
 from flask import Blueprint, Response, request
 
 from opensnap.core.accounts import verify_password
+from opensnap.core.browser_pages import ERROR_COLOR, NOTE_COLOR, TITLE_COLOR, document, panel
 from opensnap.storage.interfaces import AccountStore, DuplicateAccountError
 from opensnap_web.common import add_routes, html_response, page_view
 
@@ -70,37 +71,10 @@ USERNAME_PATTERN = re.compile(
     rf'(?!_)(?!.*__)(?!.*_$)[A-Za-z0-9_]{{{MIN_USERNAME_LENGTH},{MAX_USERNAME_LENGTH}}}'
 )
 
-# The game browsers have no CSS; pages are styled only with the attributes
-# they parse (same tag table in `SLUS_208.96` main `0x0035e0a0` and both Auto
-# Modellista `browser.bin`): `BODY BGCOLOR/TEXT/LINK`, `TABLE BGCOLOR/BORDER/
-# BORDERCOLOR/CELLPADDING/CELLSPACING/WIDTH`, `TD BGCOLOR/ALIGN`, `FONT COLOR`.
-# The browser wraps at any character (mid-word), so text lines are broken by
-# hand to fit the panel (about 48 characters).
-PAGE_BACKGROUND = '#101820'
-PAGE_TEXT = '#E0E6EE'
-PANEL_BACKGROUND = '#1C2A3A'
-PANEL_BORDER = '#4F78A0'
-TITLE_COLOR = '#FFC864'
-ERROR_COLOR = '#FF8080'
-NOTE_COLOR = '#9FB4C8'
-
-
 def _page(title: str, body: str, *, title_color: str = TITLE_COLOR) -> str:
-    """Wrap `body` in the dark page layout: a centered panel with a title bar."""
+    """One signup page: a centered panel (shared browser page style)."""
 
-    return (
-        '<html>\n'
-        f'<body bgcolor="{PAGE_BACKGROUND}" text="{PAGE_TEXT}" link="{TITLE_COLOR}">\n'
-        '<center>\n'
-        f'<table width="520" border="1" bordercolor="{PANEL_BORDER}" cellspacing="0" cellpadding="8"'
-        f' bgcolor="{PANEL_BACKGROUND}">\n'
-        f'<tr><td align="center"><b><font color="{title_color}">{title}</font></b></td></tr>\n'
-        f'<tr><td>\n{body}</td></tr>\n'
-        '</table>\n'
-        '</center>\n'
-        '</body>\n'
-        '</html>\n'
-    )
+    return document(panel(title, body, title_color=title_color))
 
 
 SIGNUP_INDEX_PAGE = _page(

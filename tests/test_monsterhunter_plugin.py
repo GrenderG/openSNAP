@@ -1084,12 +1084,14 @@ class AppServiceTests(unittest.TestCase):
             page += decode_app_field(chunk[len(field) + 4:], 5)[0]
         text = page.decode()
         self.assertEqual(len(page), size)
-        self.assertTrue(text.startswith('<HTML>') and text.endswith('</HTML>\n'))
+        self.assertTrue(text.startswith('<html>') and text.endswith('</html>\n'))
+        # Same dark style as the signup pages.
+        self.assertIn('<body bgcolor="#101820"', text)
         # Monsters hunted, summed over quests, most first; names are escaped.
-        self.assertIn('<TR><TD>1</TD><TD>o&lt;b&gt;</TD><TD>9</TD></TR>', text)
-        self.assertIn('<TR><TD>2</TD><TD>hunter</TD><TD>5</TD></TR>', text)
-        self.assertIn('<P>Quest 261</P>', text)
-        self.assertIn('<TR><TD>1</TD><TD>hunter</TD><TD>12\'34"</TD></TR>', text)
+        self.assertIn('<tr><td>1</td><td>o&lt;b&gt;</td><td>9</td></tr>', text)
+        self.assertIn('<tr><td>2</td><td>hunter</td><td>5</td></tr>', text)
+        self.assertIn('Quest 261: fastest clears', text)
+        self.assertIn('<tr><td>1</td><td>hunter</td><td>12\'34"</td></tr>', text)
 
     def test_na_record_menu_gets_the_same_page(self) -> None:
         self.records.add(game='monsterhunter', board='clear-261', user_id=7, player='hunter', score=754, details={})
@@ -1112,7 +1114,7 @@ class AppServiceTests(unittest.TestCase):
                 )
         page = build_record_page(self.records, 'monsterhunter')
         self.assertLessEqual(len(page), 0x8000 - 1)
-        self.assertTrue(page.endswith(b'</BODY></HTML>\n'))
+        self.assertTrue(page.endswith(b'</body>\n</html>\n'))
 
     def test_quest_record_without_a_single_player_is_acknowledged_only(self) -> None:
         self.flows.arm_world(1, '127.0.0.1')

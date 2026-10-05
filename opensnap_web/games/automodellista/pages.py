@@ -1,12 +1,26 @@
 """Auto Modellista static browser pages (information, taboo list, runtime patches)."""
 
-AM_INFO_PAGE = """<html><head>
+# `INFO_MSG` text (at most 767 bytes, `browser.bin` `0x006d95c4`) is drawn by
+# `nwDispStr_Html` (`SLUS_206.42` `0x0028dd80`), whose tags are `BODY SIZE COLOR
+# BR CENTER LEFT RIGHT END LF` (table `0x00371100`): the same set as Monster
+# Hunter's `TOP_INFOR.HTM`, so the welcome text uses the same markup.
+AM_INFO_MESSAGE = (
+    '<BODY><SIZE=2><LF=1><CENTER>Welcome to openSNAP!<BR><BR>'
+    '<LEFT>This server runs openSNAP, the open source<BR>'
+    '<LEFT>SN@P server project:<BR>'
+    '<CENTER>https://github.com/GrenderG/openSNAP<BR><BR>'
+    '<LEFT>It is brought to you by mholdschool.com.<BR><BR>'
+    '<LEFT>Thank you for playing and enjoying the western<BR>'
+    '<LEFT>releases of Auto Modellista online once again!<BR><BR>'
+    '<RIGHT>- Grender<END>'
+)
+AM_INFO_PAGE = f"""<html><head>
 <!--AM-USA-INFORMATION-->
 </head>
 <!--
 <CSV>
 "INFO_TAG = openSNAP",
-"INFO_MSG = <BODY>Welcome to openSNAP!<END>",
+"INFO_MSG = {AM_INFO_MESSAGE}",
 </CSV>
 -->
 </html>

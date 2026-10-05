@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import html
 import struct
 
+from opensnap.core.browser_pages import data_table, document, panel
 from opensnap.core.sessions import Session
 from opensnap.storage.interfaces import RecordStore
 
@@ -26,7 +27,8 @@ CLEAR_BOARD_PREFIX = 'clear-'
 # over APP mode 3 (`0x005d0800` -> `0x0029da30`, 6101/6102) into a 32 KB buffer
 # (`0x005dc59c`) and then overwrites its last byte with a NUL (`0x005d08b0`).
 # The browser parses HTML 3 (`<TABLE>`, `<TR>`, `<TH>`, `<TD>`, `<CENTER>`,
-# `<FONT>`, `<HR>`, main ELF tag table near `0x0024c700`).
+# `<FONT>`, `<HR>`, main ELF tag table near `0x0024c700`); the page uses the
+# shared browser page style (`opensnap.core.browser_pages`).
 RECORD_PAGE_NAME = 'DATABASE.HTM'
 RECORD_PAGE_NA_PATH = b'02/' + RECORD_PAGE_NAME.encode()
 RECORD_PAGE_MAX_SIZE = 0x8000 - 1
@@ -112,25 +114,24 @@ def build_record_page(records: RecordStore, game: str) -> bytes:
 
     hunters = records.totals(game, HUNTS_BOARD_PREFIX, RECORD_PAGE_HUNTERS)
     head = [
-        '<HTML><HEAD><TITLE>Hunter Records</TITLE></HEAD><BODY>',
-        '<CENTER><H2>Hunter Records</H2></CENTER>',
-        '<H3>Monsters hunted</H3>',
-        _table(('Rank', 'Hunter', 'Monsters'), [(total.player, str(total.total)) for total in hunters]),
-        '<H3>Fastest quest clears</H3>',
+        panel('Hunter Records', 'Hunters with the most monsters hunted,<br>\nand the fastest clears of each quest.<br>\n'),
+        '<br>\n',
+        _board('Monsters hunted', 'Monsters', [(total.player, str(total.total)) for total in hunters]),
     ]
-    tail = ['</BODY></HTML>', '']
-    page = '\n'.join(head + tail).encode()
     boards = records.best_by_board(game, RECORD_PAGE_CLEARS_PER_QUEST)
     clears = sorted(
         (int(board[len(CLEAR_BOARD_PREFIX):]), rows) for board, rows in boards.items()
         if board.startswith(CLEAR_BOARD_PREFIX)
     )
+    if not clears:
+        head.append('<br>\n' + _board('Fastest quest clears', 'Time', []))
+    page = document(''.join(head)).encode()
     sections: list[str] = []
     for quest_id, rows in clears:
-        section = f'<P>Quest {quest_id}</P>\n' + _table(
-            ('Rank', 'Hunter', 'Time'), [(record.player, _clear_time(record.score)) for record in rows]
+        section = '<br>\n' + _board(
+            f'Quest {quest_id}: fastest clears', 'Time', [(record.player, _clear_time(record.score)) for record in rows]
         )
-        candidate = '\n'.join(head + sections + [section] + tail).encode()
+        candidate = document(''.join(head + sections + [section])).encode()
         if len(candidate) > RECORD_PAGE_MAX_SIZE:
             break
         sections.append(section)
@@ -138,16 +139,13 @@ def build_record_page(records: RecordStore, game: str) -> bytes:
     return page
 
 
-def _table(header: tuple[str, ...], rows: list[tuple[str, str]]) -> str:
-    lines = ['<TABLE BORDER="1">', '<TR>' + ''.join(f'<TH>{cell}</TH>' for cell in header) + '</TR>']
-    lines += [
-        f'<TR><TD>{rank}</TD><TD>{html.escape(name)}</TD><TD>{value}</TD></TR>'
-        for rank, (name, value) in enumerate(rows, start=1)
-    ]
-    if not rows:
-        lines.append(f'<TR><TD COLSPAN="{len(header)}">No records yet</TD></TR>')
-    lines.append('</TABLE>')
-    return '\n'.join(lines)
+def _board(title: str, value: str, rows: list[tuple[str, str]]) -> str:
+    return data_table(
+        title,
+        ('Rank', 'Hunter', value),
+        [(str(rank), html.escape(name), score) for rank, (name, score) in enumerate(rows, start=1)],
+        empty='No records yet',
+    )
 
 
 def _clear_time(seconds: int) -> str:
