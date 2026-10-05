@@ -203,6 +203,22 @@ class AppConfigTests(unittest.TestCase):
         self.assertEqual(monsterhunter_target.host, '192.168.1.152')
         self.assertEqual(monsterhunter_target.port, 10070)
 
+    def test_unreadable_game_server_map_is_reported(self) -> None:
+        # A missing closing quote: only the current game keeps a target, so say so.
+        with patch.dict(
+            os.environ,
+            {
+                'OPENSNAP_GAME_PLUGIN': 'automodellista_beta1',
+                'OPENSNAP_GAME_SERVER_MAP': '{"automodellista":"192.168.1.151:9091, "monsterhunter":"192.168.1.151:9091"}',
+            },
+            clear=True,
+        ), self.assertLogs('opensnap.config', level='WARNING') as logs:
+            config = default_app_config()
+
+        self.assertIn('OPENSNAP_GAME_SERVER_MAP', logs.output[0])
+        self.assertIsNone(config.server.resolve_game_target('monsterhunter'))
+        self.assertIsNotNone(config.server.resolve_game_target('automodellista_beta1'))
+
     def test_server_limit_defaults_are_used_when_env_is_unset(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             config = default_app_config()

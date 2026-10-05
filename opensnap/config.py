@@ -3,6 +3,7 @@
 import ast
 from dataclasses import dataclass, field
 import json
+import logging
 import os
 
 from opensnap.env_loader import load_env_file
@@ -412,6 +413,9 @@ def _parse_game_target_map(raw_value: str) -> tuple[tuple[str, str, int], ...]:
     if parsed is None:
         parsed = _parse_python_dict(token)
     if parsed is None:
+        logging.getLogger('opensnap.config').warning(
+            'Ignoring OPENSNAP_GAME_SERVER_MAP: not a JSON object (check its quotes and commas): %s', token
+        )
         return ()
 
     targets: list[tuple[str, str, int]] = []
