@@ -168,6 +168,21 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self.assertEqual(self._roster(player, town_id), [session_id])
         self.assertEqual(session.last_incoming_sequence, self.sequences[session_id])
 
+    def test_unreliable_sequence_does_not_move_the_reliable_session_sequence(self) -> None:
+        # Live NA: after a relogin the client's unreliable counter ran ahead (an
+        # unreliable CMD_SEND seq 22 while reliable requests were at 15); the next
+        # reliable requests (quest-start 0x10 seq 16, leave seq 17) must not be
+        # taken for duplicates.
+        endpoint, session_id = player = self.players[0]
+        session = self.engine._sessions.get(session_id)  # noqa: SLF001
+        self._publish(player, _profile(1))
+        before = session.last_incoming_sequence
+        self._send(player, commands.CMD_SEND, bytes.fromhex('0000'), FLAG_ROOM, sequence=self.sequences[session_id] + 10)
+        self.assertEqual(session.last_incoming_sequence, before)
+        town_id = self._create(player, TOWN_RULES)
+        self.assertEqual(self._roster(player, town_id), [session_id])
+        self.assertEqual(session.last_incoming_sequence, self.sequences[session_id])
+
     def _publish(self, player, profile: bytes) -> list[SnapMessage]:
         return self._send(player, commands.CMD_CHANGE_USER_PROPERTY, profile)
 

@@ -147,11 +147,15 @@ class SnapProtocolEngine:
                     )
                     continue
 
-                # Track highest inbound sequence per session so direct fanout ACKs can
-                # mirror client-side flow control state. Only top-level packets
-                # carry a transport sequence (embedded children decode as 0, see
-                # the codec), so children never touch the session sequence.
-                if message.embedded_in_multi:
+                # Track highest inbound reliable sequence per session so direct
+                # fanout ACKs can mirror client-side flow control state. Only
+                # top-level packets carry a transport sequence (embedded children
+                # decode as 0, see the codec), and unreliable packets are numbered
+                # by a separate counter: `kkReceiveExtentCheck` keeps reliable
+                # packets in the receive window (`SLUS_206.42` `0x002f4d5c`) and
+                # unreliable ones against their own last number (`app+16`,
+                # `0x002f5028`), so neither touches the session sequence.
+                if message.embedded_in_multi or (message.type_flags & FLAG_RELIABLE) == 0:
                     duplicate_reason = DuplicateAckPolicy.NONE
                 else:
                     accepted = self._sessions.accept_incoming(message.session_id, message.sequence_number)

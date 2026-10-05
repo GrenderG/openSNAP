@@ -36,7 +36,14 @@ class AutoModellistaWebModule:
 
     def blueprint(self, storage: StorageBundle) -> Blueprint:
         blueprint = Blueprint(self.name, __name__)
-        add_signup_routes(blueprint, SignupService(storage.accounts), self.signup_prefixes, root_aliases=True)
+        add_signup_routes(
+            blueprint,
+            SignupService(storage.accounts),
+            self.signup_prefixes,
+            root_aliases=True,
+            # Beta1's browser only knows `AMUSA_GAME_BACK` (`browser.bin` `0x008c3cc0`).
+            return_links={'ftpublicbeta/reg': 'AMUSA_GAME_BACK'},
+        )
         add_routes(blueprint, [self.info_path], page_view(AM_INFO_PAGE))
         add_routes(blueprint, [self.rule_path], page_view(self.rule_page))
         if self.taboo_path:

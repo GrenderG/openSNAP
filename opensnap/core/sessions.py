@@ -23,6 +23,7 @@ class Session:
     game_plugin: str = ''
     request_number: int = 0
     sequence_number: int = 0
+    # Highest reliable sequence received (unreliable packets use their own counter).
     last_incoming_sequence: int = -1
     lobby_id: int = 0
     room_id: int = 0
