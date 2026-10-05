@@ -26,6 +26,8 @@ DEFAULT_SQLITE_PATH = 'opensnap.db'
 DEFAULT_SQLITE_USERS = 'test:1111'
 DEFAULT_MARIADB_PORT = 3306
 DEFAULT_MARIADB_DATABASE = 'opensnap'
+DEFAULT_POSTGRESQL_PORT = 5432
+DEFAULT_POSTGRESQL_DATABASE = 'opensnap'
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,7 +139,7 @@ class ServerConfig:
 
 @dataclass(frozen=True, slots=True)
 class StorageConfig:
-    """Shared storage backend (`sqlite` or `mariadb`) configuration."""
+    """Shared storage backend (`sqlite`, `mariadb` or `postgresql`) configuration."""
 
     backend: str = DEFAULT_STORAGE_BACKEND
     sqlite_path: str = DEFAULT_SQLITE_PATH
@@ -147,6 +149,12 @@ class StorageConfig:
     mariadb_password: str = ''
     mariadb_database: str = DEFAULT_MARIADB_DATABASE
     mariadb_ssl_ca: str = ''
+    postgresql_host: str = ''
+    postgresql_port: int = DEFAULT_POSTGRESQL_PORT
+    postgresql_user: str = ''
+    postgresql_password: str = ''
+    postgresql_database: str = DEFAULT_POSTGRESQL_DATABASE
+    postgresql_ssl_ca: str = ''
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +257,12 @@ def default_app_config() -> AppConfig:
             mariadb_password=os.getenv('OPENSNAP_MARIADB_PASSWORD', ''),
             mariadb_database=_read_text_env(('OPENSNAP_MARIADB_DATABASE',), DEFAULT_MARIADB_DATABASE),
             mariadb_ssl_ca=_read_text_env(('OPENSNAP_MARIADB_SSL_CA',), ''),
+            postgresql_host=_read_text_env(('OPENSNAP_POSTGRESQL_HOST',), ''),
+            postgresql_port=_read_positive_int_env(('OPENSNAP_POSTGRESQL_PORT',), DEFAULT_POSTGRESQL_PORT),
+            postgresql_user=_read_text_env(('OPENSNAP_POSTGRESQL_USER',), ''),
+            postgresql_password=os.getenv('OPENSNAP_POSTGRESQL_PASSWORD', ''),
+            postgresql_database=_read_text_env(('OPENSNAP_POSTGRESQL_DATABASE',), DEFAULT_POSTGRESQL_DATABASE),
+            postgresql_ssl_ca=_read_text_env(('OPENSNAP_POSTGRESQL_SSL_CA',), ''),
         ),
         users=_read_default_users(),
         # Lobby naming keeps three game groups plus event and club-meeting groups.

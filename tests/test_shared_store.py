@@ -2,7 +2,8 @@
 
 MariaDB runs when `OPENSNAP_TEST_MARIADB_HOST` (plus `_PORT`, `_USER`,
 `_PASSWORD`, `_DATABASE`) points at a disposable test database and PyMySQL is
-installed; otherwise it is skipped.
+installed, and PostgreSQL when `OPENSNAP_TEST_POSTGRESQL_HOST` (same suffixes)
+does and psycopg is installed; otherwise they are skipped.
 """
 
 from dataclasses import replace
@@ -19,6 +20,7 @@ from opensnap.storage.interfaces import DuplicateAccountError
 from opensnap.storage.sql import seed_users
 
 MARIADB_HOST = os.getenv('OPENSNAP_TEST_MARIADB_HOST', '')
+POSTGRESQL_HOST = os.getenv('OPENSNAP_TEST_POSTGRESQL_HOST', '')
 
 
 class SharedStoreContract:
@@ -144,6 +146,30 @@ class MariaDbSharedStoreTests(SharedStoreContract, unittest.TestCase):
         connection.execute('DELETE FROM records')
         connection.execute("DELETE FROM users WHERE username <> 'test'")
 
+
+
+@unittest.skipUnless(
+    POSTGRESQL_HOST and importlib.util.find_spec('psycopg') is not None,
+    'PostgreSQL test server not configured (OPENSNAP_TEST_POSTGRESQL_HOST) or psycopg missing.',
+)
+class PostgresqlSharedStoreTests(SharedStoreContract, unittest.TestCase):
+    def storage_config(self) -> StorageConfig:
+        return StorageConfig(
+            backend='postgresql',
+            postgresql_host=POSTGRESQL_HOST,
+            postgresql_port=int(os.getenv('OPENSNAP_TEST_POSTGRESQL_PORT', '5432')),
+            postgresql_user=os.getenv('OPENSNAP_TEST_POSTGRESQL_USER', 'postgres'),
+            postgresql_password=os.getenv('OPENSNAP_TEST_POSTGRESQL_PASSWORD', ''),
+            postgresql_database=os.getenv('OPENSNAP_TEST_POSTGRESQL_DATABASE', 'opensnap_test'),
+        )
+
+    def setUp(self) -> None:
+        super().setUp()
+        connection = open_connection(self.config)
+        self.addCleanup(connection.close)
+        connection.execute('DELETE FROM session_handoffs')
+        connection.execute('DELETE FROM records')
+        connection.execute("DELETE FROM users WHERE username <> 'test'")
 
 if __name__ == '__main__':
     unittest.main()

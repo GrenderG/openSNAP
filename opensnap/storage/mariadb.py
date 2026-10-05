@@ -12,8 +12,6 @@ from opensnap.storage.sql import Row
 class MariaDbConnection:
     """Thread-safe MariaDB connection implementing `SqlConnection`."""
 
-    insert_ignore = 'INSERT IGNORE'
-
     def __init__(self, config: StorageConfig) -> None:
         try:
             import pymysql
@@ -42,10 +40,16 @@ class MariaDbConnection:
         self._connection = pymysql.connect(**self._connect_arguments)
         self._setup_schema()
 
-    def execute(self, query: str, parameters: tuple[object, ...] = ()) -> int:
-        with self._lock, self._cursor() as cursor:
-            cursor.execute(_placeholders(query), parameters)
-            return int(cursor.lastrowid or 0)
+    def execute(self, query: str, parameters: tuple[object, ...] = ()) -> None:
+        self._write(query, parameters)
+
+    def insert(self, query: str, parameters: tuple[object, ...] = (), *, key: str) -> int:
+        # `key` is the table's AUTO_INCREMENT column, which PyMySQL reports as lastrowid.
+        del key
+        return self._write(query, parameters)
+
+    def insert_or_ignore(self, query: str, parameters: tuple[object, ...] = ()) -> None:
+        self._write(query.replace('INSERT INTO', 'INSERT IGNORE INTO', 1), parameters)
 
     def query_one(self, query: str, parameters: tuple[object, ...] = ()) -> Row | None:
         with self._lock, self._cursor() as cursor:
@@ -60,6 +64,11 @@ class MariaDbConnection:
     def close(self) -> None:
         with self._lock:
             self._connection.close()
+
+    def _write(self, query: str, parameters: tuple[object, ...]) -> int:
+        with self._lock, self._cursor() as cursor:
+            cursor.execute(_placeholders(query), parameters)
+            return int(cursor.lastrowid or 0)
 
     def _cursor(self):
         # Servers stay idle for long periods; reconnect if the server dropped us.

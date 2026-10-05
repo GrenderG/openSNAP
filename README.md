@@ -135,7 +135,7 @@ Environment variables for the split UDP services:
 - `OPENSNAP_BOOTSTRAP_KEY`: bootstrap encryption key string (default: `SNAP-SWAN`).
 - `OPENSNAP_TICK_INTERVAL_SECONDS`: periodic tick interval (default: `10.0`).
 
-The bootstrap and game servers are separate processes. Point both at the same shared store (`OPENSNAP_SQLITE_PATH`, or the same MariaDB database) so the bootstrap-issued session is available when the client reconnects to the game port.
+The bootstrap and game servers are separate processes. Point both at the same shared store (`OPENSNAP_SQLITE_PATH`, or the same MariaDB or PostgreSQL database) so the bootstrap-issued session is available when the client reconnects to the game port.
 The bootstrap handshake stays on the bootstrap endpoint through login start and verifier exchange (`0x2c` / `0x41`). The client should not switch to the game endpoint until bootstrap login success returns the final game server IP/port.
 
 Every SN@P title logs in on the same bootstrap port (the SDK hardcodes UDP 9090), so the bootstrap identifies the game from the login itself: each game passes a fixed title code to the SDK, sent at login payload offset 100, and the packet footer tells the SDK generation apart. Known builds: Auto Modellista US `0xCAAD` (beta1 is the `0xCAAD` build with the legacy `0xBA476610` footer), Monster Hunter NA `0xCA03` and EU `0xCA0E` (both served by `monsterhunter`). Logins from unknown builds are dropped and logged, as are games left out of `OPENSNAP_BOOTSTRAP_GAMES`. The redirect target is then resolved through `OPENSNAP_GAME_SERVER_MAP` plus the current process's local game endpoint, so one bootstrap can serve every game, each game server on its own host or port. Game servers may share one SQLite database: rooms and lobby state are kept per game.
@@ -219,12 +219,17 @@ openSNAP keeps two kinds of state:
 
 Shared store settings:
 
-- `OPENSNAP_STORAGE_BACKEND`: `sqlite` (default) or `mariadb`.
+- `OPENSNAP_STORAGE_BACKEND`: `sqlite` (default), `mariadb` or `postgresql`.
 - `OPENSNAP_SQLITE_PATH`: SQLite database file (default: `opensnap.db`). Every service must point at the same file, so
   SQLite suits services running on one machine.
 - `OPENSNAP_MARIADB_HOST`, `OPENSNAP_MARIADB_PORT` (default `3306`), `OPENSNAP_MARIADB_USER`,
   `OPENSNAP_MARIADB_PASSWORD`, `OPENSNAP_MARIADB_DATABASE` (default `opensnap`), `OPENSNAP_MARIADB_SSL_CA` (optional CA
   file for TLS): MariaDB/MySQL connection for services spread over several machines. Requires `pip install PyMySQL`.
+- `OPENSNAP_POSTGRESQL_HOST`, `OPENSNAP_POSTGRESQL_PORT` (default `5432`), `OPENSNAP_POSTGRESQL_USER`,
+  `OPENSNAP_POSTGRESQL_PASSWORD`, `OPENSNAP_POSTGRESQL_DATABASE` (default `opensnap`), `OPENSNAP_POSTGRESQL_SSL_CA`
+  (optional CA file; connects over TLS and verifies the server name): PostgreSQL connection, the alternative to
+  MariaDB for services spread over several machines. Requires `pip install "psycopg[binary]"`. The tables are
+  created on first connection.
   openSNAP creates its tables on first start; the user only needs rights on that database. Keep the database
   reachable only by your own servers.
 - `OPENSNAP_DEFAULT_USERS`: comma-separated `username:password[:seed[:team]]` entries inserted on startup.

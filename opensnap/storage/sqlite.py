@@ -10,7 +10,6 @@ from opensnap.storage.sql import Row
 class SqliteConnection:
     """Thread-safe SQLite connection implementing `SqlConnection`."""
 
-    insert_ignore = 'INSERT OR IGNORE'
     integrity_error = sqlite3.IntegrityError
 
     def __init__(self, path: str | Path) -> None:
@@ -19,11 +18,16 @@ class SqliteConnection:
         self._connection.row_factory = sqlite3.Row
         self._setup_schema()
 
-    def execute(self, query: str, parameters: tuple[object, ...] = ()) -> int:
-        with self._lock:
-            cursor = self._connection.execute(query, parameters)
-            self._connection.commit()
-            return int(cursor.lastrowid or 0)
+    def execute(self, query: str, parameters: tuple[object, ...] = ()) -> None:
+        self._write(query, parameters)
+
+    def insert(self, query: str, parameters: tuple[object, ...] = (), *, key: str) -> int:
+        # `key` is the table's INTEGER PRIMARY KEY, which SQLite reports as lastrowid.
+        del key
+        return self._write(query, parameters)
+
+    def insert_or_ignore(self, query: str, parameters: tuple[object, ...] = ()) -> None:
+        self._write(query.replace('INSERT INTO', 'INSERT OR IGNORE INTO', 1), parameters)
 
     def query_one(self, query: str, parameters: tuple[object, ...] = ()) -> Row | None:
         with self._lock:
@@ -36,6 +40,12 @@ class SqliteConnection:
     def close(self) -> None:
         with self._lock:
             self._connection.close()
+
+    def _write(self, query: str, parameters: tuple[object, ...]) -> int:
+        with self._lock:
+            cursor = self._connection.execute(query, parameters)
+            self._connection.commit()
+            return int(cursor.lastrowid or 0)
 
     def _setup_schema(self) -> None:
         self.execute(

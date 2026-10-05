@@ -1,7 +1,9 @@
 """Shared stores (accounts, session handoffs, records) over any SQL backend.
 
 Backends provide a `SqlConnection`: `?` placeholders, rows readable by column
-name, and their own schema and integrity-error type.
+name, their own schema and integrity-error type, and the two statements whose
+syntax differs between databases (an insert returning its generated key, and
+an insert that skips rows clashing with a unique key).
 """
 
 from collections.abc import Mapping
@@ -27,12 +29,16 @@ Row = Mapping[str, Any]
 class SqlConnection(Protocol):
     """Minimal SQL backend contract used by the shared stores."""
 
-    # `INSERT OR IGNORE` (SQLite) or `INSERT IGNORE` (MariaDB).
-    insert_ignore: str
     integrity_error: type[Exception]
 
-    def execute(self, query: str, parameters: tuple[object, ...] = ()) -> int:
-        """Run one write statement and return the last inserted row id."""
+    def execute(self, query: str, parameters: tuple[object, ...] = ()) -> None:
+        """Run one write statement."""
+
+    def insert(self, query: str, parameters: tuple[object, ...] = (), *, key: str) -> int:
+        """Run one `INSERT` and return the value generated for column `key`."""
+
+    def insert_or_ignore(self, query: str, parameters: tuple[object, ...] = ()) -> None:
+        """Run one `INSERT`, skipping rows that clash with a unique key."""
 
     def query_one(self, query: str, parameters: tuple[object, ...] = ()) -> Row | None:
         """Run one query and return its first row."""
@@ -49,8 +55,8 @@ def seed_users(connection: SqlConnection, users: tuple[UserConfig, ...]) -> None
 
     for user in users:
         seed = normalize_seed(user.seed)
-        connection.execute(
-            f'{connection.insert_ignore} INTO users (username, password, seed, team) VALUES (?, ?, ?, ?)',
+        connection.insert_or_ignore(
+            'INSERT INTO users (username, password, seed, team) VALUES (?, ?, ?, ?)',
             (user.username, normalize_password_record(user.password, seed), seed, user.team),
         )
     for row in connection.query_all('SELECT user_id, password, seed FROM users'):
@@ -92,9 +98,10 @@ class SqlAccountStore:
         seed = normalize_seed('')
         password_record = normalize_password_record(password, seed)
         try:
-            user_id = self._connection.execute(
+            user_id = self._connection.insert(
                 'INSERT INTO users (username, password, seed, team) VALUES (?, ?, ?, ?)',
                 (username, password_record, seed, ''),
+                key='user_id',
             )
         except self._connection.integrity_error as exc:
             raise DuplicateAccountError(username) from exc
@@ -113,13 +120,14 @@ class SqlSessionHandoffStore:
             'DELETE FROM session_handoffs WHERE session_id = ? OR (host = ? AND port = ?)',
             (session_id, endpoint.host, endpoint.port),
         )
-        serial = self._connection.execute(
+        serial = self._connection.insert(
             (
                 'INSERT INTO session_handoffs '
                 '(session_id, user_id, username, host, port, game, sequence_number) '
                 'VALUES (?, ?, ?, ?, ?, ?, 0)'
             ),
             (session_id, account.user_id, account.username, endpoint.host, endpoint.port, game_identifier),
+            key='serial',
         )
         return SessionHandoff(
             serial=serial,
@@ -171,12 +179,13 @@ class SqlRecordStore:
     ) -> Record:
         details_text = json.dumps(dict(details), sort_keys=True)
         recorded_at = datetime.now(UTC).isoformat(timespec='seconds')
-        record_id = self._connection.execute(
+        record_id = self._connection.insert(
             (
                 'INSERT INTO records (game, board, user_id, player, score, details, recorded_at) '
                 'VALUES (?, ?, ?, ?, ?, ?, ?)'
             ),
             (game, board, user_id, player, score, details_text, recorded_at),
+            key='record_id',
         )
         return Record(
             record_id=record_id,
@@ -211,7 +220,6 @@ class SqlRecordStore:
             if len(board) < limit:
                 board.append(record)
         return boards
-
 
     def totals(self, game: str, board_prefix: str, limit: int) -> list[PlayerTotal]:
         rows = self._connection.query_all(

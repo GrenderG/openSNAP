@@ -24,6 +24,13 @@ class StorageFactoryTests(unittest.TestCase):
         with self.assertRaises((ValueError, RuntimeError)):
             create_storage(config)
 
+    def test_postgresql_backend_requires_connection_settings(self) -> None:
+        config = replace(default_app_config(), storage=StorageConfig(backend='postgresql'))
+
+        # Without psycopg installed this is a RuntimeError naming the package.
+        with self.assertRaises((ValueError, RuntimeError)):
+            create_storage(config)
+
     def test_create_storage_accepts_sqlite_backend(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             config = replace(

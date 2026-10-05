@@ -79,6 +79,30 @@ class AppConfigTests(unittest.TestCase):
         self.assertEqual(storage.mariadb_password, ' secret ')
         self.assertEqual((storage.mariadb_database, storage.mariadb_ssl_ca), ('snap', '/etc/ssl/ca.pem'))
 
+    def test_postgresql_storage_settings_are_read(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                'OPENSNAP_STORAGE_BACKEND': 'PostgreSQL',
+                'OPENSNAP_POSTGRESQL_HOST': 'pg.example',
+                'OPENSNAP_POSTGRESQL_PORT': '5433',
+                'OPENSNAP_POSTGRESQL_USER': 'opensnap',
+                'OPENSNAP_POSTGRESQL_PASSWORD': ' secret ',
+                'OPENSNAP_POSTGRESQL_DATABASE': 'snap',
+                'OPENSNAP_POSTGRESQL_SSL_CA': '/etc/ssl/ca.pem',
+            },
+            clear=True,
+        ):
+            storage = default_app_config().storage
+
+        self.assertEqual(
+            (storage.backend, storage.postgresql_host, storage.postgresql_port, storage.postgresql_user),
+            ('postgresql', 'pg.example', 5433, 'opensnap'),
+        )
+        # Passwords are taken verbatim.
+        self.assertEqual(storage.postgresql_password, ' secret ')
+        self.assertEqual((storage.postgresql_database, storage.postgresql_ssl_ca), ('snap', '/etc/ssl/ca.pem'))
+
     def test_game_advertise_host_can_use_compatibility_env_names(self) -> None:
         with patch.dict(
             os.environ,
