@@ -435,6 +435,19 @@ Example with Nginx Unit:
 - module: `opensnap_web.wsgi`
 - callable: `app` (or `application`)
 
+Example with Apache mod_wsgi (one process with threads, since the app opens one shared-store connection):
+
+```apache
+WSGIDaemonProcess opensnap processes=1 threads=8 home=/path/to/openSNAP python-home=/path/to/openSNAP/.venv python-path=/path/to/openSNAP
+WSGIProcessGroup opensnap
+WSGIApplicationGroup %{GLOBAL}
+WSGIScriptAlias / /path/to/openSNAP/opensnap_web/wsgi.py
+```
+
+The entry point reads `.env` and sets up logging like `run.py web`. Relative paths in `.env` (SQLite file, data and
+log paths) resolve against the working directory, so run it from the repository (`home=` above, Gunicorn
+`--chdir`). The WSGI server owns the listen address, port and TLS.
+
 ## Run Tests
 
 Run the full suite:
