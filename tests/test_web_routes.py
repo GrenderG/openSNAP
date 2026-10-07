@@ -316,6 +316,76 @@ class WebRouteTests(unittest.TestCase):
         am_response = client.get('/amweb/index.jsp')
         self.assertEqual(am_response.status_code, 404)
 
+    def _outbreak_client(self, game_plugin: str = 'outbreak'):
+        app = create_web_app(WebServerConfig(host='127.0.0.1', port=18080, game_plugin=game_plugin))
+        app.testing = True
+        return app.test_client()
+
+    def test_outbreak_notice_board_links_signup_and_rankings(self) -> None:
+        client = self._outbreak_client()
+        for path in ('/reweb/', '/reweb/index.jsp'):
+            page = client.get(path).get_data(as_text=True)
+            self.assertIn('openSNAP Notice Board', page)
+            self.assertIn('href="/reweb/signup/"', page)
+            self.assertIn('href="/reweb/rank_clear_4.html">Fastest clears: Decisions, Decisions', page)
+            self.assertIn('href="/reweb/rank_points.html"', page)
+            self.assertIn('href="AMUSA_MENU_BACK"', page)
+
+        self.assertIn('openSNAP signup service', client.get('/reweb/signup/index.jsp').get_data(as_text=True))
+        created = client.get('/reweb/signup/create_id_survivor.html?password=abc123').get_data(as_text=True)
+        self.assertIn('<!--AM-USA-COMP-SIGNUP-->', created)
+        self.assertIn('<!--INPUT-IDS-->survivor', created)
+        self.assertIn('AMUSA_MENU_BACK', created)
+
+        self.assertEqual(client.get('/mhweb/index.jsp').status_code, 404)
+
+    def test_outbreak_rankings_show_stored_results(self) -> None:
+        from opensnap.storage.sql import SqlAccountStore, SqlRecordStore
+        from opensnap.storage.sqlite import SqliteConnection
+        from opensnap_app.capcom.outbreak.results import ScenarioResult, store_scenario_result
+
+        client = self._outbreak_client()
+        connection = SqliteConnection(f'{self._temp_directory.name}/web.sqlite')
+        self.addCleanup(connection.close)
+        accounts = SqlAccountStore(connection)
+        records = SqlRecordStore(connection)
+        jill = accounts.create_user('jill', 'secret')
+        carlos = accounts.create_user('carlos', 'secret')
+
+        def report(account, scenario: int, free_mode: bool, character: int, clear_ticks: int, points: int) -> None:
+            result = ScenarioResult(
+                scenario, free_mode, clear_ticks != 0, character, clear_ticks, points, (), 32, 8, 0, 0, 286, 1001
+            )
+            store_scenario_result(records, account, result)
+
+        report(jill, 4, True, 6, 94260, 3780)
+        report(jill, 4, True, 6, 89367, 4185)
+        report(carlos, 4, True, 124, 119668, 3690)
+        report(carlos, 4, False, 1, 100000, 2000)
+        report(carlos, 1, False, 1, 0, 614)
+
+        page = client.get('/reweb/rank_clear_4.html').get_data(as_text=True)
+        scenario_mode, free_mode = page.split('Decisions, Decisions: Free mode')
+        self.assertIn('Decisions, Decisions: Scenario mode', scenario_mode)
+        self.assertIn('<td>carlos</td><td>MARK</td><td>55\'33"</td>', scenario_mode)
+        self.assertNotIn('jill', scenario_mode)
+        # Best clear per player, fastest first; 89367 ticks at 30 per second is 49'38".
+        self.assertLess(free_mode.index('jill'), free_mode.index('carlos'))
+        self.assertIn('<td>jill</td><td>YOKO</td><td>49\'38"</td>', free_mode)
+        self.assertIn('<td>carlos</td><td>U.S.S.2</td>', free_mode)
+        self.assertNotIn('52\'22"', page)
+        self.assertEqual(client.get('/reweb/rank_clear_1.html').get_data(as_text=True).count('No clears yet'), 2)
+        self.assertEqual(client.get('/reweb/rank_clear_5.html').status_code, 404)
+
+        points = client.get('/reweb/rank_points.html').get_data(as_text=True)
+        self.assertIn('<td>jill</td><td>7965</td>', points)
+        self.assertIn('<td>carlos</td><td>6304</td>', points)
+
+    def test_generic_web_serves_the_outbreak_notice_board_on_reweb(self) -> None:
+        client = self._outbreak_client('generic')
+        self.assertIn('openSNAP Notice Board', client.get('/reweb/index.jsp').get_data(as_text=True))
+        self.assertIn('openSNAP signup service', client.get('/reweb/signup/').get_data(as_text=True))
+
     def test_automodellista_beta1_web_plugin_serves_beta1_rule_payload(self) -> None:
         app = create_web_app(
             WebServerConfig(

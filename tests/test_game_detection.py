@@ -32,16 +32,27 @@ class BootstrapGameDetectionTests(unittest.TestCase):
             (0xCA03, FOOTER_BYTES, 'monsterhunter'),
             # MH EU shares the Monster Hunter server (cross-region).
             (0xCA0E, FOOTER_BYTES, 'monsterhunter'),
+            # Resident Evil Outbreak NA, v1 and v2 (`netwk.bin` `0x00584930`).
+            (0xCAE0, FOOTER_BYTES, 'outbreak'),
         )
         for title_code, footer, expected in cases:
             message = _message(footer_bytes=footer, payload=_login_payload(title_code))
             self.assertEqual(_detect(message), expected, msg=hex(title_code))
 
+    def test_bootstrap_games_choose_between_builds_sharing_a_title_code(self) -> None:
+        # The MH NA public beta logs in with the release's 0xCA03; its own bootstrap
+        # (`snap01.reo`, shared with Outbreak) serves it instead of the release.
+        message = _message(footer_bytes=FOOTER_BYTES, payload=_login_payload(0xCA03))
+        self.assertEqual(_detect(message, ('monsterhunter_na_beta', 'outbreak')), 'monsterhunter_na_beta')
+        self.assertEqual(_detect(message, ('monsterhunter',)), 'monsterhunter')
+        with self.assertLogs('opensnap.core.bootstrap', 'WARNING'):
+            self.assertIsNone(_detect(message, ('outbreak',)))
+
     def test_unknown_title_code_is_not_identified(self) -> None:
         message = _message(footer_bytes=FOOTER_BYTES, payload=_login_payload(0x1234))
         with self.assertLogs('opensnap.core.bootstrap', 'WARNING') as captured:
             self.assertIsNone(_detect(message))
-        self.assertIn('unknown SN@P title 0x1234', captured.output[0])
+        self.assertIn('SN@P title 0x1234 (footer 0xba476611) is unknown or not served here', captured.output[0])
 
     def test_login_without_title_code_is_not_identified(self) -> None:
         for footer in (FOOTER_BYTES, FOOTER_BYTES_KAGE):
@@ -49,8 +60,8 @@ class BootstrapGameDetectionTests(unittest.TestCase):
                 self.assertIsNone(_detect(_message(footer_bytes=footer)))
 
 
-def _detect(message: SnapMessage) -> str | None:
-    return detect_game_identifier(message=message, identify_snap_title=identify_snap_title)
+def _detect(message: SnapMessage, games: tuple[str, ...] = ()) -> str | None:
+    return detect_game_identifier(message=message, identify_snap_title=identify_snap_title, games=games)
 
 
 def _login_payload(title_code: int) -> bytes:

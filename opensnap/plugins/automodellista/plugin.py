@@ -32,7 +32,7 @@ from opensnap.protocol.constants import (
     FLAG_RELIABLE,
     FLAG_RESPONSE,
     RELAY_CONTEXT_MASK,
-    RESULT_WRAPPER_STATUS_ERROR_DIALOG,
+    RESULT_ERROR_CODE_GENERIC,
     RESULT_WRAPPER_STATUS_OK,
     TYPE_LOBBY_RELAY_REQUEST,
     TYPE_LOBBY_RELAY,
@@ -324,7 +324,7 @@ class AutoModellistaPlugin(GamePlugin):
             return [replace(cached_result, endpoint=message.endpoint)]
 
         if not _is_allowed_lobby_id(context, session.lobby_id):
-            return [self._create_room_result(context, message, session, cache_key, RESULT_WRAPPER_STATUS_ERROR_DIALOG)]
+            return [self._create_room_failure(context, message, session, cache_key)]
 
         _prune_stale_rooms_in_lobby(context, session.lobby_id)
         room_name = get_c_string(message.payload, 0)
@@ -335,7 +335,7 @@ class AutoModellistaPlugin(GamePlugin):
 
         room_count = len(context.rooms.list_for_lobby(session.lobby_id))
         if room_count >= context.config.server.max_rooms_per_lobby:
-            return [self._create_room_result(context, message, session, cache_key, RESULT_WRAPPER_STATUS_ERROR_DIALOG)]
+            return [self._create_room_failure(context, message, session, cache_key)]
 
         room = context.rooms.create_room(
             name=room_name,
@@ -356,18 +356,32 @@ class AutoModellistaPlugin(GamePlugin):
         session: Session,
         cache_key: tuple[int, int],
         result: int,
+        command: int = commands.CMD_RESULT_WRAPPER,
     ) -> SnapMessage:
-        """Build and remember the create result (room id or error status)."""
+        """Build and remember the create result (room id, or error code with `CMD_RESULT_ERROR`)."""
 
         reply = context.reply(
             message,
             type_flags=FLAG_ROOM | FLAG_RESPONSE,
-            command=commands.CMD_RESULT_WRAPPER,
+            command=command,
             payload=struct.pack('>2L', GameTags.START_OK, result),
             session_id=session.session_id,
         )
         self._create_room_results[cache_key] = reply
         return reply
+
+    def _create_room_failure(
+        self,
+        context: HandlerContext,
+        message: SnapMessage,
+        session: Session,
+        cache_key: tuple[int, int],
+    ) -> SnapMessage:
+        """Refuse the create; a `CMD_RESULT_WRAPPER` would enter its word as the room id."""
+
+        return self._create_room_result(
+            context, message, session, cache_key, RESULT_ERROR_CODE_GENERIC, command=commands.CMD_RESULT_ERROR
+        )
 
     def _handle_join(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         session = resolve_session(context, message, _LOGGER)
@@ -380,12 +394,12 @@ class AutoModellistaPlugin(GamePlugin):
                 context.sessions.set_room(session.session_id, 0)
             lobby_id = get_u32(message.payload, 0)
             if not _is_allowed_lobby_id(context, lobby_id):
-                payload = struct.pack('>2L', GameTags.GAME_START, RESULT_WRAPPER_STATUS_ERROR_DIALOG)
+                payload = struct.pack('>2L', GameTags.GAME_START, RESULT_ERROR_CODE_GENERIC)
                 return [
                     context.reply(
                         message,
                         type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
-                        command=commands.CMD_RESULT_WRAPPER,
+                        command=commands.CMD_RESULT_ERROR,
                         payload=payload,
                         session_id=session.session_id,
                     )
@@ -451,17 +465,19 @@ class AutoModellistaPlugin(GamePlugin):
                     self._pending_room_joins[session.session_id] = _PendingRoomJoin(room_id=room_id)
                 else:
                     self._pending_room_joins.pop(session.session_id, None)
+                command = commands.CMD_RESULT_WRAPPER
                 payload = struct.pack('>2L', GameTags.GAME_START, RESULT_WRAPPER_STATUS_OK)
             else:
                 callbacks = []
                 self._clear_session_join_retry_state(session.session_id)
-                payload = struct.pack('>2L', GameTags.GAME_START, RESULT_WRAPPER_STATUS_ERROR_DIALOG)
+                command = commands.CMD_RESULT_ERROR
+                payload = struct.pack('>2L', GameTags.GAME_START, RESULT_ERROR_CODE_GENERIC)
 
             outbound = [
                 context.reply(
                     message,
                     type_flags=FLAG_ROOM | FLAG_RESPONSE,
-                    command=commands.CMD_RESULT_WRAPPER,
+                    command=command,
                     payload=payload,
                     session_id=session.session_id,
                 )

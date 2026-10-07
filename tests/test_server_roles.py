@@ -233,7 +233,7 @@ class ServerRoleTests(unittest.TestCase):
 
         self.assertFalse(result.errors)
         self.assertFalse(result.messages)
-        self.assertIn('unknown SN@P title 0x1234', '\n'.join(captured.output))
+        self.assertIn('SN@P title 0x1234 (footer 0xba476611) is unknown or not served here', '\n'.join(captured.output))
 
     def test_bootstrap_games_drop_logins_from_other_games(self) -> None:
         config = replace(self._config, server=replace(self._config.server, bootstrap_games=('monsterhunter',)))
@@ -244,7 +244,7 @@ class ServerRoleTests(unittest.TestCase):
             result = engine.handle_datagram(_encode(_login_request(endpoint, login_client_payload(b'test\n'))), endpoint)
 
         self.assertFalse(result.messages)
-        self.assertIn("game 'automodellista' is not served here", '\n'.join(captured.output))
+        self.assertIn('SN@P title 0xcaad (footer 0xba476611) is unknown or not served here', '\n'.join(captured.output))
 
 
 def _login_request(endpoint: Endpoint, payload: bytes) -> SnapMessage:

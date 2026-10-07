@@ -25,7 +25,7 @@ from opensnap.protocol.constants import (
     FLAG_RELIABLE,
     FLAG_RESPONSE,
     FOOTER_BYTES_KAGE,
-    RESULT_WRAPPER_STATUS_ERROR_DIALOG,
+    RESULT_ERROR_CODE_GENERIC,
 )
 from opensnap.protocol.fields import get_c_string, get_u32
 from opensnap.protocol.models import Endpoint, SnapMessage
@@ -504,10 +504,10 @@ class EngineFlowTests(unittest.TestCase):
         result = engine.handle_datagram(_encode(request), endpoint)
         self.assertFalse(result.errors)
         self.assertEqual(len(result.messages), 1)
-        self.assertEqual(result.messages[0].command, commands.CMD_RESULT_WRAPPER)
+        self.assertEqual(result.messages[0].command, commands.CMD_RESULT_ERROR)
         self.assertEqual(
             struct.unpack_from('>L', result.messages[0].payload, 4)[0],
-            RESULT_WRAPPER_STATUS_ERROR_DIALOG,
+            RESULT_ERROR_CODE_GENERIC,
         )
 
         session = engine._sessions.get(session_id)  # noqa: SLF001
@@ -2390,10 +2390,10 @@ class EngineFlowTests(unittest.TestCase):
         overflow_result = engine.handle_datagram(_encode(overflow_request), endpoint)
         self.assertFalse(overflow_result.errors)
         self.assertEqual(len(overflow_result.messages), 1)
-        self.assertEqual(overflow_result.messages[0].command, commands.CMD_RESULT_WRAPPER)
+        self.assertEqual(overflow_result.messages[0].command, commands.CMD_RESULT_ERROR)
         self.assertEqual(
             struct.unpack_from('>2L', overflow_result.messages[0].payload),
-            (0x04, RESULT_WRAPPER_STATUS_ERROR_DIALOG),
+            (0x04, RESULT_ERROR_CODE_GENERIC),
         )
 
     def test_room_join_rejects_when_global_player_cap_is_reached(self) -> None:
@@ -2458,10 +2458,10 @@ class EngineFlowTests(unittest.TestCase):
         overflow_result = engine.handle_datagram(_encode(overflow_join), endpoint_three)
         self.assertFalse(overflow_result.errors)
         self.assertEqual(len(overflow_result.messages), 1)
-        self.assertEqual(overflow_result.messages[0].command, commands.CMD_RESULT_WRAPPER)
+        self.assertEqual(overflow_result.messages[0].command, commands.CMD_RESULT_ERROR)
         self.assertEqual(
             struct.unpack_from('>L', overflow_result.messages[0].payload, 4)[0],
-            RESULT_WRAPPER_STATUS_ERROR_DIALOG,
+            RESULT_ERROR_CODE_GENERIC,
         )
 
         room = engine._rooms.get(room_id)  # noqa: SLF001

@@ -32,6 +32,13 @@ def main() -> None:
         config.server.game.port,
         plugin.name,
     )
+    if plugin.companion_app is not None:
+        logger.info(
+            'Plugin %s also needs the %s app service; start it as its own process: python3 run.py app %s',
+            plugin.name,
+            plugin.companion_app,
+            plugin.companion_app,
+        )
     try:
         engine.start_plugin_services()
         server.run()

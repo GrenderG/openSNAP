@@ -1,18 +1,33 @@
 """Game-agnostic SNAP helpers shared by game plugins."""
 
+from dataclasses import replace
 import logging
 import struct
 
 from opensnap.core.context import HandlerContext
 from opensnap.core.sessions import Session
 from opensnap.protocol import commands
-from opensnap.protocol.constants import FLAG_RESPONSE, FLAG_ROOM
+from opensnap.protocol.constants import FLAG_CHANNEL_BITS, FLAG_RELIABLE, FLAG_RESPONSE, FLAG_ROOM
 from opensnap.protocol.models import SnapMessage
 
 
 # Binary-verified attribute selector used by kkQueryLobbyAttribute/kkQueryGameRoomAttribute:
 # SLUS_206.42 cpnGetJoinUserLobby/cpnGetJoinUserRoom load 0x55534552 ("USER").
 USER_ATTRIBUTE_TOKEN = b'USER'
+
+# Attribute searches of the Dec 2003 SDK (`CMD_QUERY_AREA`, `CMD_SEARCH_ROOMS`;
+# `SLUS_208.96` `0x0020873c`/`0x00208cc8`, `SLUS_207.65` `0x001e677c`/
+# `0x001e6d08`): `u32 limit, u8 count`, padded to 8 bytes, then conditions
+# `u32 name, u8 type << 5 | operator, value` with 4/8/16-byte values for
+# types 0/1/2. Observed operators: 1 equal (`OID`; MH `0x00613a8c`, Outbreak
+# `0x0058adac`), 4 at least and 6 at most (`NAME`; MH `0x00612950`).
+SEARCH_HEADER_SIZE = 8
+SEARCH_VALUE_SIZES = {0: 4, 1: 8, 2: 16}
+SEARCH_EQUAL = 1
+SEARCH_AT_LEAST = 4
+SEARCH_AT_MOST = 6
+SEARCH_OID = b'OID\x00'
+SEARCH_NAME = b'NAME'
 
 
 def resolve_session(
@@ -42,6 +57,32 @@ def resolve_session(
         message.acknowledge_number,
     )
     return None
+
+
+def parse_attribute_search(payload: bytes) -> tuple[int, list[tuple[bytes, int, bytes]]]:
+    """Parse one attribute search request into `(limit, [(name, operator, value)])`."""
+
+    if len(payload) < SEARCH_HEADER_SIZE:
+        return 0, []
+    limit, count = struct.unpack_from('>L', payload, 0)[0], payload[4]
+    conditions = []
+    offset = SEARCH_HEADER_SIZE
+    for _ in range(count):
+        if offset + 5 > len(payload):
+            break
+        name, flags = payload[offset:offset + 4], payload[offset + 4]
+        size = SEARCH_VALUE_SIZES.get(flags >> 5)
+        if size is None or offset + 5 + size > len(payload):
+            break
+        conditions.append((name, flags & 0x1F, payload[offset + 5:offset + 5 + size]))
+        offset += 5 + size
+    return limit, conditions
+
+
+def search_text(value: bytes) -> str:
+    """Text of one search value (NUL-terminated ASCII)."""
+
+    return value.split(b'\x00', 1)[0].decode('ascii', errors='ignore')
 
 
 def pack_fixed(value: str, size: int) -> bytes:
@@ -110,3 +151,47 @@ def build_room_leave_callbacks(
             )
         )
     return messages
+
+
+class ReliableReplyCache:
+    """Replay a requester's original result for an exact reliable retry.
+
+    The SN@P client retransmits a reliable request until it is ACKed and
+    applies a second copy of any callback (MH room join `0x00619430` counts the
+    member twice), so a retried room change must not run again. Results are
+    kept per `(session, command, channel)` with the request sequence; only the
+    requester's own messages are replayed, re-addressed to its endpoint.
+    """
+
+    def __init__(self) -> None:
+        self._replies: dict[tuple[int, int, int], tuple[int, tuple[SnapMessage, ...]]] = {}
+
+    def replay(self, message: SnapMessage, session: Session) -> list[SnapMessage] | None:
+        key = _reliable_reply_key(message, session)
+        cached = None if key is None else self._replies.get(key)
+        if cached is None or cached[0] != message.sequence_number:
+            return None
+        return [
+            replace(cached_message, endpoint=message.endpoint)
+            if cached_message.session_id == session.session_id
+            else replace(cached_message)
+            for cached_message in cached[1]
+        ]
+
+    def remember(self, message: SnapMessage, session: Session, outbound: list[SnapMessage]) -> None:
+        key = _reliable_reply_key(message, session)
+        if key is not None:
+            self._replies[key] = (
+                message.sequence_number,
+                tuple(replace(item) for item in outbound if item.session_id == session.session_id),
+            )
+
+    def forget(self, session_id: int) -> None:
+        for key in [key for key in self._replies if key[0] == session_id]:
+            self._replies.pop(key, None)
+
+
+def _reliable_reply_key(message: SnapMessage, session: Session) -> tuple[int, int, int] | None:
+    if (message.type_flags & FLAG_RELIABLE) == 0 or message.embedded_in_multi:
+        return None
+    return (session.session_id, message.command, message.type_flags & FLAG_CHANNEL_BITS)

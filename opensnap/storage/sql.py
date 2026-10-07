@@ -1,4 +1,4 @@
-"""Shared stores (accounts, session handoffs, records) over any SQL backend.
+"""Shared stores (accounts, session handoffs, records, online players) over any SQL backend.
 
 Backends provide a `SqlConnection`: `?` placeholders, rows readable by column
 name, their own schema and integrity-error type, and the two statements whose
@@ -9,6 +9,7 @@ an insert that skips rows clashing with a unique key).
 from collections.abc import Mapping
 from datetime import UTC, datetime
 import json
+import time
 from typing import Any, Protocol
 
 from opensnap.config import UserConfig
@@ -18,8 +19,9 @@ from opensnap.core.accounts import (
     normalize_password_record,
     normalize_seed,
 )
+from opensnap.core.online import OnlinePlayer
 from opensnap.core.records import PlayerTotal, Record
-from opensnap.core.sessions import SessionHandoff, create_session_id
+from opensnap.core.sessions import Session, SessionHandoff, create_session_id
 from opensnap.protocol.models import Endpoint
 from opensnap.storage.interfaces import DuplicateAccountError
 
@@ -161,6 +163,55 @@ class SqlSessionHandoffStore:
         self._connection.execute('DELETE FROM session_handoffs WHERE session_id = ?', (session_id,))
 
 
+class SqlOnlinePlayerStore:
+    """Logged-in players in the shared store (`online_players`)."""
+
+    def __init__(self, connection: SqlConnection) -> None:
+        self._connection = connection
+        self._last_login_serial = 0
+
+    def login(self, game: str, session: Session) -> None:
+        # Strictly increasing, even on coarse clocks: readers order logins and
+        # spot repeated ones by it. Each game has one writer, its game server.
+        self._last_login_serial = max(time.time_ns(), self._last_login_serial + 1)
+        self._connection.insert_or_ignore(
+            'INSERT INTO online_players (session_id, game, user_id, username, host, area_id, login_serial) '
+            'VALUES (?, ?, ?, ?, ?, 0, 0)',
+            (session.session_id, game, session.user_id, session.username, session.endpoint.host),
+        )
+        self._connection.execute(
+            'UPDATE online_players SET host = ?, login_serial = ? WHERE session_id = ?',
+            (session.endpoint.host, self._last_login_serial, session.session_id),
+        )
+
+    def set_area(self, session_id: int, area_id: int) -> None:
+        self._connection.execute('UPDATE online_players SET area_id = ? WHERE session_id = ?', (area_id, session_id))
+
+    def logout(self, session_id: int) -> None:
+        self._connection.execute('DELETE FROM online_players WHERE session_id = ?', (session_id,))
+
+    def clear(self, game: str) -> None:
+        self._connection.execute('DELETE FROM online_players WHERE game = ?', (game,))
+
+    def list(self, game: str) -> list[OnlinePlayer]:
+        rows = self._connection.query_all(
+            'SELECT session_id, user_id, username, host, area_id, login_serial FROM online_players '
+            'WHERE game = ? ORDER BY login_serial',
+            (game,),
+        )
+        return [
+            OnlinePlayer(
+                session_id=int(row['session_id']),
+                user_id=int(row['user_id']),
+                username=str(row['username']),
+                host=str(row['host']),
+                area_id=int(row['area_id']),
+                login_serial=int(row['login_serial']),
+            )
+            for row in rows
+        ]
+
+
 class SqlRecordStore:
     """Game records in the shared store, one row per submission."""
 
@@ -198,13 +249,14 @@ class SqlRecordStore:
             recorded_at=recorded_at,
         )
 
-    def best_by_board(self, game: str, limit: int) -> dict[str, list[Record]]:
+    def best_by_board(self, game: str, limit: int, *, highest: bool = False) -> dict[str, list[Record]]:
+        best, order = ('MAX', 'DESC') if highest else ('MIN', 'ASC')
         rows = self._connection.query_all(
             (
                 'SELECT r.* FROM records r JOIN ('
-                'SELECT board, user_id, MIN(score) AS best FROM records WHERE game = ? GROUP BY board, user_id'
+                f'SELECT board, user_id, {best}(score) AS best FROM records WHERE game = ? GROUP BY board, user_id'
                 ') b ON r.board = b.board AND r.user_id = b.user_id AND r.score = b.best '
-                'WHERE r.game = ? ORDER BY r.board, r.score, r.record_id'
+                f'WHERE r.game = ? ORDER BY r.board, r.score {order}, r.record_id'
             ),
             (game, game),
         )

@@ -14,6 +14,7 @@ SERVICE_LOG_FILENAMES = {
     'game': 'opensnap-game.log',
     'dns': 'opensnap-dns.log',
     'web': 'opensnap-web.log',
+    'capcom-app': 'opensnap-capcom-app.log',
 }
 LOG_LEVELS: dict[str, int] = {
     'critical': logging.CRITICAL,

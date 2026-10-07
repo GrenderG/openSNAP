@@ -125,13 +125,13 @@ class Directory:
         return tuple(area for area in self.areas if low <= area.name <= high)
 
 
-def read_directory(*, max_players_per_town: int) -> Directory:
-    """Build the directory from `OPENSNAP_MH_WORLDS`: World name -> World object, in list order."""
+def read_directory(*, max_players_per_town: int, environment_key: str = WORLDS_ENVIRONMENT_KEY) -> Directory:
+    """Build the directory from `environment_key`: World name -> World object, in list order."""
 
-    raw = os.getenv(WORLDS_ENVIRONMENT_KEY, '').strip()
+    raw = os.getenv(environment_key, '').strip()
     specs = _parse_worlds(raw) if raw else DEFAULT_WORLDS
     if not 1 <= len(specs) <= MAX_WORLDS:
-        raise ValueError(f'{WORLDS_ENVIRONMENT_KEY} must define between 1 and {MAX_WORLDS} Worlds.')
+        raise ValueError(f'{environment_key} must define between 1 and {MAX_WORLDS} Worlds.')
 
     worlds = []
     area_id = 1
@@ -167,7 +167,7 @@ def read_directory(*, max_players_per_town: int) -> Directory:
         )
 
     if not worlds:
-        raise ValueError(f'{WORLDS_ENVIRONMENT_KEY} must enable at least one World.')
+        raise ValueError(f'{environment_key} must enable at least one World.')
     if sum(len(world.lands) for world in worlds) > MAX_LANDS:
         raise ValueError(f'Worlds may list at most {MAX_LANDS} Lands in total.')
     # 6504/6510 select an enabled World by its key (host), and exactly one is served here.

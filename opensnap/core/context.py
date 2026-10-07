@@ -10,6 +10,7 @@ from opensnap.protocol.models import Endpoint, SnapMessage
 from opensnap.storage.interfaces import (
     AccountStore,
     LobbyStore,
+    OnlinePlayerStore,
     RecordStore,
     RoomStore,
     SessionHandoffStore,
@@ -25,12 +26,13 @@ class HandlerContext:
     accounts: AccountStore
     handoffs: SessionHandoffStore
     records: RecordStore
+    online_players: OnlinePlayerStore
     sessions: SessionStore
     lobbies: LobbyStore
     rooms: RoomStore
     # `(title code, footer marker)` -> `(game identifier, title name)` for
     # bootstrap logins, or None for an unknown client build.
-    identify_snap_title: Callable[[int, int], tuple[str, str] | None]
+    identify_snap_title: Callable[[int, int, tuple[str, ...]], tuple[str, str] | None]
     # Tear one session down as a transport timeout does (plugin cleanup,
     # rooms, handoff) and return the callbacks it produces for other players.
     end_session: Callable[[Session], list[SnapMessage]]

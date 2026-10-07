@@ -116,6 +116,18 @@ class PostgresqlConnection:
             ')'
         )
         self.execute('CREATE INDEX IF NOT EXISTS records_board ON records (game, board, score)')
+        self.execute(
+            'CREATE TABLE IF NOT EXISTS online_players ('
+            'session_id BIGINT PRIMARY KEY, '
+            'game VARCHAR(64) NOT NULL, '
+            'user_id INTEGER NOT NULL, '
+            'username VARCHAR(255) NOT NULL, '
+            'host VARCHAR(255) NOT NULL, '
+            'area_id BIGINT NOT NULL, '
+            'login_serial BIGINT NOT NULL'
+            ')'
+        )
+        self.execute('CREATE INDEX IF NOT EXISTS online_players_game ON online_players (game, login_serial)')
 
 
 def _placeholders(query: str) -> str:

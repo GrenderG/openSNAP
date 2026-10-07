@@ -6,7 +6,14 @@ from opensnap.config import AppConfig, StorageConfig
 from opensnap.storage.interfaces import StorageBundle
 from opensnap.storage.mariadb import MariaDbConnection
 from opensnap.storage.postgresql import PostgresqlConnection
-from opensnap.storage.sql import SqlAccountStore, SqlConnection, SqlRecordStore, SqlSessionHandoffStore, seed_users
+from opensnap.storage.sql import (
+    SqlAccountStore,
+    SqlConnection,
+    SqlOnlinePlayerStore,
+    SqlRecordStore,
+    SqlSessionHandoffStore,
+    seed_users,
+)
 from opensnap.storage.sqlite import SqliteConnection
 
 # Backend name -> connection opener. Each backend module imports its database
@@ -20,7 +27,7 @@ SUPPORTED_BACKENDS = tuple(BACKENDS)
 
 
 def create_storage(config: AppConfig) -> StorageBundle:
-    """Open the configured shared store (accounts, session handoffs, records)."""
+    """Open the configured shared store (accounts, session handoffs, records, online players)."""
 
     connection = open_connection(config)
     seed_users(connection, config.users)
@@ -28,6 +35,7 @@ def create_storage(config: AppConfig) -> StorageBundle:
         accounts=SqlAccountStore(connection),
         handoffs=SqlSessionHandoffStore(connection),
         records=SqlRecordStore(connection),
+        online_players=SqlOnlinePlayerStore(connection),
         _close=connection.close,
     )
 

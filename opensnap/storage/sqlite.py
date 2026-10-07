@@ -83,6 +83,18 @@ class SqliteConnection:
             ')'
         )
         self.execute('CREATE INDEX IF NOT EXISTS records_board ON records (game, board, score)')
+        self.execute(
+            'CREATE TABLE IF NOT EXISTS online_players ('
+            'session_id INTEGER PRIMARY KEY, '
+            'game TEXT NOT NULL, '
+            'user_id INTEGER NOT NULL, '
+            'username TEXT NOT NULL, '
+            'host TEXT NOT NULL, '
+            'area_id INTEGER NOT NULL, '
+            'login_serial INTEGER NOT NULL'
+            ')'
+        )
+        self.execute('CREATE INDEX IF NOT EXISTS online_players_game ON online_players (game, login_serial)')
         # Runtime state (sessions, rooms, lobbies) now lives in each server
         # process; drop the tables older versions kept here.
         for table in ('room_members', 'rooms', 'sessions', 'lobbies'):

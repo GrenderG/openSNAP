@@ -31,6 +31,10 @@ CMD_SEARCH_USERS = 0x18
 # `kkSearchUsers` request and result (`SearchUsersSwap`, callback slot 41):
 # `SLUS_208.96` sender `0x00207d6c`.
 CMD_SEARCH_USERS_BY_NAME = 0x25
+# Failed request result: same `selector, code` payload as `CMD_RESULT_WRAPPER`,
+# but the SDK sets callback info byte `+0` to 39 before the selector dispatch
+# (`kkDispatchingOperation` switch `cmd - 3`; `SLUS_207.65` `0x001e0cac`).
+CMD_RESULT_ERROR = 0x27
 CMD_RESULT_WRAPPER = 0x28  # Special-case result command.
 CMD_RESULT_LOGIN_TO_KICS = 0x29  # KICS login result command.
 CMD_LOGIN_CLIENT = 0x2C  # Bootstrap login start.

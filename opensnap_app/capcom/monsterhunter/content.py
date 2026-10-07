@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 import struct
 
-_LOGGER = logging.getLogger('opensnap.plugins.monsterhunter.app')
+_LOGGER = logging.getLogger('opensnap_app.capcom.monsterhunter')
 
 # Market day values (6211, stored by `0x002af0c0`). The Minegarde vendor
 # dialog table (`lobby.bin` `0x00686490`) follows the same index order as the

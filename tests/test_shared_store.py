@@ -1,4 +1,4 @@
-"""Shared store contract (accounts, session handoffs, records) for every SQL backend.
+"""Shared store contract (accounts, session handoffs, records, online players) for every SQL backend.
 
 MariaDB runs when `OPENSNAP_TEST_MARIADB_HOST` (plus `_PORT`, `_USER`,
 `_PASSWORD`, `_DATABASE`) points at a disposable test database and PyMySQL is
@@ -14,6 +14,7 @@ import unittest
 
 from opensnap.config import StorageConfig, UserConfig, default_app_config
 from opensnap.core.accounts import verify_password
+from opensnap.core.sessions import Session
 from opensnap.protocol.models import Endpoint
 from opensnap.storage.factory import create_storage, open_connection
 from opensnap.storage.interfaces import DuplicateAccountError
@@ -82,6 +83,35 @@ class SharedStoreContract:
 
         handoffs.remove(moved.session_id)
         self.assertIsNone(handoffs.get(moved.session_id))
+
+    def test_online_players_keep_login_order_areas_and_games_apart(self) -> None:
+        online = self.storage.online_players
+        for game in ('monsterhunter', 'outbreak'):
+            online.clear(game)
+
+        def login(game: str, session_id: int) -> None:
+            endpoint = Endpoint(host='10.0.0.1', port=4000)
+            online.login(game, Session(session_id=session_id, user_id=1, username='test', endpoint=endpoint))
+
+        login('monsterhunter', 2)
+        login('monsterhunter', 1)
+        login('outbreak', 3)
+        online.set_area(1, 5)
+        first = online.list('monsterhunter')
+        self.assertEqual([(player.session_id, player.area_id) for player in first], [(2, 0), (1, 5)])
+
+        # A repeated login keeps the row and its Area, with a new, later serial.
+        login('monsterhunter', 2)
+        again = online.list('monsterhunter')
+        self.assertEqual([(player.session_id, player.area_id) for player in again], [(1, 5), (2, 0)])
+        self.assertGreater(again[1].login_serial, first[0].login_serial)
+
+        online.logout(1)
+        self.assertEqual([player.session_id for player in online.list('monsterhunter')], [2])
+        online.clear('monsterhunter')
+        self.assertEqual(online.list('monsterhunter'), [])
+        self.assertEqual([player.session_id for player in online.list('outbreak')], [3])
+        online.clear('outbreak')
 
     def test_records_rank_each_players_best_per_board(self) -> None:
         records = self.storage.records

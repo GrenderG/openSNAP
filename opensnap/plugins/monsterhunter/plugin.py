@@ -6,7 +6,7 @@ overlay (`lobby.bin`, load address `0x005be900`) and are cited inline.
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import logging
 import struct
 
@@ -17,16 +17,23 @@ from opensnap.core.router import CommandRouter
 from opensnap.core.sessions import Session
 from opensnap.plugins.base import GamePlugin, SnapTitle
 from opensnap.plugins.common import (
+    SEARCH_AT_LEAST,
+    SEARCH_AT_MOST,
+    SEARCH_EQUAL,
+    SEARCH_NAME,
+    SEARCH_OID,
     USER_ATTRIBUTE_TOKEN,
+    ReliableReplyCache,
     ack_for_request,
     ack_for_session,
     build_room_leave_callbacks,
     build_send_target_payload,
     pack_fixed,
+    parse_attribute_search,
     resolve_session,
+    search_text,
 )
-from opensnap.plugins.monsterhunter.app import AppFlowTracker, AppService, read_app_service_config
-from opensnap.plugins.monsterhunter.directory import TOWNS_PER_CATEGORY, Area, Directory, Land, read_directory
+from opensnap.plugins.monsterhunter.directory import TOWNS_PER_CATEGORY, Area, Directory, read_directory
 from opensnap.plugins.monsterhunter.profile import MONSTER_HUNTER_NA, MonsterHunterProfile
 from opensnap.protocol import GameTags, commands
 from opensnap.protocol.constants import (
@@ -37,7 +44,7 @@ from opensnap.protocol.constants import (
     FLAG_ROOM,
     FOOTER_MARKER,
     RELAY_CONTEXT_MASK,
-    RESULT_WRAPPER_STATUS_ERROR_DIALOG,
+    RESULT_ERROR_CODE_GENERIC,
     RESULT_WRAPPER_STATUS_OK,
     TYPE_LOBBY_RELAY,
     TYPE_LOBBY_RELAY_REQUEST,
@@ -69,11 +76,11 @@ STAT_ATTRIBUTE = b'STAT'
 # `0x1000`, `0x00610370`) removes the row with that room id. SDK dispatch:
 # `kkDispatchingOperation` (Beta1 `0x002e7d88`, `0x002e7da8`).
 
-# Member profile (`CMD_CHANGE_USER_PROPERTY` payload, slot 10 `0x0061a0b0`).
-PROFILE_SIZE = 140
+# Member profile (`CMD_CHANGE_USER_PROPERTY` payload, slot 10 `0x0061a0b0`): its
+# size and departure offsets depend on the build (`MemberProfileLayout`).
 # Quest departure. A player leaving its Town for a quest stays listed there.
 # The departure is announced differently by the two sides (`lobby.bin`):
-# - Guests publish profile `+136/+137 = 3/5` (`0x0061cb64`, step 0 of the
+# - Guests publish profile `+136/+137 = 3/5` (release layout; `0x0061cb64`, step 0 of the
 #   guest machine `0x0061c7a0`) before their room leave (step 4, `0x0061cdd0`).
 # - The host, solo or with a party, starts with selector 3 to every party
 #   member, itself first (`0x00611210`: its own entry goes to slot 0, then
@@ -84,8 +91,6 @@ PROFILE_SIZE = 140
 #   quest room `CREATE` (step 2) and only then its 3/5 profile (`0x00611d1c`,
 #   step 5). The machine is only deactivated on completion (`0x0061116c`), so
 #   the host's next room change after selector 3 is always this leave.
-PROFILE_PARTY_STATE_OFFSET = 136
-PROFILE_QUEST_STATE_OFFSET = 137
 PROFILE_DEPARTING_STATE = (3, 5)
 DEPARTURE_PREPARATION_SELECTOR = 3
 DEPARTURE_PREPARATION_SIZE = 16
@@ -99,18 +104,6 @@ LOBBY_IDLE_LIMIT_SECONDS = 5 * 60
 QUEST_IDLE_LIMIT_SECONDS = (50 + 10) * 60
 # `kkSearchUsers` request (`0x00207d6c`): name16 padded with `-`.
 SEARCH_NAME_PADDING = '-'
-# Attribute searches (`CMD_QUERY_AREA` `0x0020873c`, `CMD_SEARCH_ROOMS`
-# `0x00208cc8`): `u32 limit, u8 count`, padded to 8 bytes, then conditions
-# `u32 name, u8 type << 5 | operator, value` with 4/8/16-byte values for
-# types 0/1/2. Observed operators: 1 equal (`OID`, `0x00613a8c`), 4 at least
-# and 6 at most (`NAME`, `0x00612950`).
-SEARCH_HEADER_SIZE = 8
-SEARCH_VALUE_SIZES = {0: 4, 1: 8, 2: 16}
-SEARCH_EQUAL = 1
-SEARCH_AT_LEAST = 4
-SEARCH_AT_MOST = 6
-SEARCH_OID = b'OID\x00'
-SEARCH_NAME = b'NAME'
 
 
 @dataclass(slots=True)
@@ -138,16 +131,14 @@ class MonsterHunterPlugin(GamePlugin):
         SnapTitle(title_code=0xCA03, footer_marker=FOOTER_MARKER, name='Monster Hunter NA'),
         SnapTitle(title_code=0xCA0E, footer_marker=FOOTER_MARKER, name='Monster Hunter EU'),
     )
+    companion_app = 'capcom'
 
     def __init__(self, profile: MonsterHunterProfile = MONSTER_HUNTER_NA) -> None:
         self.profile = profile
         self.name = profile.identifier
         self._players: dict[int, _Player] = {}
-        self._app_flows = AppFlowTracker()
-        self._app_service: AppService | None = None
         self._directory: Directory | None = None
-        # Exact reliable retries replay the requester's original result:
-        # `(session, command, channel)` -> (sequence, result).
+        # Exact reliable retries replay the requester's original result.
         #
         # Transport (`SLUS_208.96` receive `0x001fe778`, which merges AM's
         # `kkDispatchingPacket` and `kkReceiveExtentCheck`): ACKs are taken from
@@ -161,12 +152,19 @@ class MonsterHunterPlugin(GamePlugin):
         # shows the arrival again and counts the member twice, leave
         # `0x00619590` likewise). The requester's own result callbacks only set
         # the result flag and room id again (`0x00615f50`, `0x00616010`).
-        self._reliable_replies: dict[tuple[int, int, int], tuple[int, tuple[SnapMessage, ...]]] = {}
+        self._reliable_replies = ReliableReplyCache()
 
     def register_handlers(self, router: CommandRouter, context: HandlerContext) -> None:
         """Register plugin handlers."""
 
-        self._directory = read_directory(max_players_per_town=context.config.server.max_players_per_room)
+        self._directory = read_directory(
+            max_players_per_town=context.config.server.max_players_per_room,
+            environment_key=self.profile.worlds_environment_key,
+        )
+        # The Capcom APP process follows logins and Areas through the shared
+        # store; a starting game server has no players yet.
+        self._online_players = context.online_players
+        self._online_players.clear(self.profile.identifier)
         router.register(commands.CMD_LOGIN_TO_KICS, self._tracking_towns(self._handle_login_to_kics))
         router.register(commands.CMD_LOGOUT_CLIENT, self._tracking_towns(self._handle_logout))
         router.register(commands.CMD_QUERY_AREA, self._handle_query_area)
@@ -220,26 +218,6 @@ class MonsterHunterPlugin(GamePlugin):
 
         return handle
 
-    def start_services(self, context: HandlerContext) -> None:
-        """Start the APP TCP service that the client uses beside SNAP."""
-
-        self._app_service = AppService(
-            config=read_app_service_config(context.config, self.profile),
-            flows=self._app_flows,
-            directory=self.directory,
-            land_population=self._land_population,
-            records=context.records,
-            session=context.sessions.get,
-        )
-        self._app_service.start()
-
-    def stop_services(self) -> None:
-        """Stop the APP TCP service."""
-
-        if self._app_service is not None:
-            self._app_service.stop()
-            self._app_service = None
-
     def on_session_timeout(self, context: HandlerContext, session: Session) -> list[SnapMessage]:
         """Remove one timed-out player from Land, Area and rooms."""
 
@@ -285,7 +263,7 @@ class MonsterHunterPlugin(GamePlugin):
         if session is not None:
             # KICS repeats during Land entry; keep the player and its APP phase.
             self._players.setdefault(session.session_id, _Player(session_id=session.session_id))
-            self._app_flows.arm_world(session.session_id, session.endpoint.host)
+            self._online_players.login(self.profile.identifier, session)
         return responses
 
     def _handle_logout(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -313,11 +291,11 @@ class MonsterHunterPlugin(GamePlugin):
         if session is None:
             return []
 
-        limit, conditions = _parse_search(message.payload)
+        limit, conditions = parse_attribute_search(message.payload)
         low = next((value for name, op, value in conditions if name == SEARCH_NAME and op == SEARCH_AT_LEAST), None)
         high = next((value for name, op, value in conditions if name == SEARCH_NAME and op == SEARCH_AT_MOST), None)
         areas = () if low is None or high is None else self.directory.areas_in_name_range(
-            _search_text(low), _search_text(high)
+            search_text(low), search_text(high)
         )
         entries = [
             struct.pack(
@@ -382,8 +360,9 @@ class MonsterHunterPlugin(GamePlugin):
         """Return the member roster of one room or one Area.
 
         Both callbacks (room `0x006182f0`, Area `0x00614060`) read
-        `name16, session_id, length` and always copy a 140-byte profile from
-        `+24`, so only members that already published their profile are listed.
+        `name16, session_id, length` and always copy a profile of the build's
+        fixed size from `+24`, so only members that already published their
+        profile are listed.
         """
 
         session = resolve_session(context, message, _LOGGER)
@@ -441,7 +420,7 @@ class MonsterHunterPlugin(GamePlugin):
             # "not found" instead of leading into the player's own room.
             if session is not None and member.session_id == session.session_id:
                 continue
-            data = player.profile or bytes(PROFILE_SIZE)
+            data = player.profile or bytes(self.profile.member_profile.size)
             area = self.directory.area(player.area_id)
             # The client only tests the Land word for zero ("not found").
             land_number = self.directory.lands[0].number if area is None else area.land_number
@@ -475,7 +454,7 @@ class MonsterHunterPlugin(GamePlugin):
         `+36` (`0x00613830`). The other words are not read.
         """
 
-        _, conditions = _parse_search(message.payload)
+        _, conditions = parse_attribute_search(message.payload)
         records = []
         for name, op, value in conditions:
             if name != SEARCH_OID or op != SEARCH_EQUAL:
@@ -505,11 +484,7 @@ class MonsterHunterPlugin(GamePlugin):
 
         rules = get_u32(message.payload, 0x28)
         if rules & TOWN_RULES_FLAG and self._town_category_full(context, session.lobby_id, rules):
-            outbound = [
-                self._result(
-                    context, message, session, GameTags.START_OK, RESULT_WRAPPER_STATUS_ERROR_DIALOG, FLAG_ROOM
-                )
-            ]
+            outbound = [self._refusal(context, message, session, GameTags.START_OK, FLAG_ROOM)]
             self._remember_reliable_reply(message, session, outbound)
             return outbound
         departures = self._detach(context, session, keep_town_listing=not rules & TOWN_RULES_FLAG)
@@ -539,11 +514,7 @@ class MonsterHunterPlugin(GamePlugin):
         if channel_type == FLAG_CHANNEL_BITS:
             area = self.directory.area(get_u32(message.payload, 0))
             if area is None or self._area_full(session.session_id, area):
-                return [
-                    self._result(
-                        context, message, session, GameTags.GAME_START, RESULT_WRAPPER_STATUS_ERROR_DIALOG, channel_type
-                    )
-                ]
+                return [self._refusal(context, message, session, GameTags.GAME_START, channel_type)]
             departures = self._detach(context, session, keep_town_listing=False)
             context.sessions.set_lobby(session.session_id, area.area_id)
             self._set_area(session.session_id, area.area_id)
@@ -560,11 +531,7 @@ class MonsterHunterPlugin(GamePlugin):
         if room is not None and session.room_id == room_id:
             return [self._result(context, message, session, GameTags.GAME_START, RESULT_WRAPPER_STATUS_OK, FLAG_ROOM)]
         if room is None:
-            return [
-                self._result(
-                    context, message, session, GameTags.GAME_START, RESULT_WRAPPER_STATUS_ERROR_DIALOG, FLAG_ROOM
-                )
-            ]
+            return [self._refusal(context, message, session, GameTags.GAME_START, FLAG_ROOM)]
 
         # Joining a quest room keeps the Town listing; coming back to the Town
         # that still lists the player is not a new arrival for its members.
@@ -576,9 +543,7 @@ class MonsterHunterPlugin(GamePlugin):
         )
         if not context.rooms.join(room_id, session.session_id):
             outbound = departures + [
-                self._result(
-                    context, message, session, GameTags.GAME_START, RESULT_WRAPPER_STATUS_ERROR_DIALOG, FLAG_ROOM
-                )
+                self._refusal(context, message, session, GameTags.GAME_START, FLAG_ROOM)
             ]
             self._remember_reliable_reply(message, session, outbound)
             return outbound
@@ -742,7 +707,7 @@ class MonsterHunterPlugin(GamePlugin):
             return []
 
         player = self._players.get(session.session_id)
-        if player is not None and len(message.payload) == PROFILE_SIZE:
+        if player is not None and len(message.payload) == self.profile.member_profile.size:
             player.profile = bytes(message.payload)
 
         payload = struct.pack('>2L', session.session_id, len(message.payload)) + message.payload
@@ -968,15 +933,11 @@ class MonsterHunterPlugin(GamePlugin):
         player = self._players.get(session_id)
         if player is None:
             return False
-        profile = player.profile
+        profile, layout = player.profile, self.profile.member_profile
         return player.preparing_departure or (
             profile is not None
-            and (profile[PROFILE_PARTY_STATE_OFFSET], profile[PROFILE_QUEST_STATE_OFFSET]) == PROFILE_DEPARTING_STATE
+            and (profile[layout.party_state_offset], profile[layout.quest_state_offset]) == PROFILE_DEPARTING_STATE
         )
-
-    def _land_population(self, land: Land) -> int:
-        area_ids = {area.area_id for area in land.areas}
-        return sum(1 for player in tuple(self._players.values()) if player.area_id in area_ids)
 
     def _town_category_full(self, context: HandlerContext, area_id: int, rules: int) -> bool:
         """The Town directory shows at most 21 Towns per category (`0x006173a0`)."""
@@ -1009,12 +970,12 @@ class MonsterHunterPlugin(GamePlugin):
         player = self._players.get(session_id)
         if player is not None:
             player.area_id = area_id
+            self._online_players.set_area(session_id, area_id or 0)
 
     def _forget_player(self, session_id: int) -> None:
         self._players.pop(session_id, None)
-        self._app_flows.forget(session_id)
-        for key in [key for key in self._reliable_replies if key[0] == session_id]:
-            self._reliable_replies.pop(key, None)
+        self._online_players.logout(session_id)
+        self._reliable_replies.forget(session_id)
 
     def _result(
         self,
@@ -1034,27 +995,35 @@ class MonsterHunterPlugin(GamePlugin):
             acknowledge_number=ack_for_request(message, session),
         )
 
-    def _replay_reliable_reply(self, message: SnapMessage, session: Session) -> list[SnapMessage] | None:
-        """Replay the requester's original result for an exact reliable retry."""
+    def _refusal(
+        self,
+        context: HandlerContext,
+        message: SnapMessage,
+        session: Session,
+        selector: int,
+        channel_type: int,
+    ) -> SnapMessage:
+        """Fail a request: the `lobby.bin` result callbacks test only the `CMD_RESULT_ERROR` mark.
 
-        key = _reliable_reply_key(message, session)
-        cached = None if key is None else self._reliable_replies.get(key)
-        if cached is None or cached[0] != message.sequence_number:
-            return None
-        return [
-            replace(cached_message, endpoint=message.endpoint)
-            if cached_message.session_id == session.session_id
-            else replace(cached_message)
-            for cached_message in cached[1]
-        ]
+        NA create `0x00611e40`, Area join `0x00615340` and room join
+        `0x00616010` (EU `0x005bf490`, `0x005c2a90`, `0x005c3770`) treat any
+        `CMD_RESULT_WRAPPER` as success; a create keeps its word as the room id.
+        """
+
+        return context.reply(
+            message,
+            type_flags=channel_type | FLAG_RESPONSE,
+            command=commands.CMD_RESULT_ERROR,
+            payload=struct.pack('>2L', selector, RESULT_ERROR_CODE_GENERIC),
+            session_id=session.session_id,
+            acknowledge_number=ack_for_request(message, session),
+        )
+
+    def _replay_reliable_reply(self, message: SnapMessage, session: Session) -> list[SnapMessage] | None:
+        return self._reliable_replies.replay(message, session)
 
     def _remember_reliable_reply(self, message: SnapMessage, session: Session, outbound: list[SnapMessage]) -> None:
-        key = _reliable_reply_key(message, session)
-        if key is not None:
-            self._reliable_replies[key] = (
-                message.sequence_number,
-                tuple(replace(item) for item in outbound if item.session_id == session.session_id),
-            )
+        self._reliable_replies.remember(message, session, outbound)
 
 
 def _member_record(session: Session, profile: bytes) -> bytes:
@@ -1083,35 +1052,3 @@ def _quest_started(room: GameRoom) -> bool:
 
 def _is_quest_return(room: GameRoom, rules: int) -> bool:
     return not room.rules & TOWN_RULES_FLAG and bool(rules & TOWN_RULES_FLAG)
-
-
-def _reliable_reply_key(message: SnapMessage, session: Session) -> tuple[int, int, int] | None:
-    if (message.type_flags & FLAG_RELIABLE) == 0:
-        return None
-    if message.embedded_in_multi:
-        return None
-    return (session.session_id, message.command, message.type_flags & FLAG_CHANNEL_BITS)
-
-
-def _parse_search(payload: bytes) -> tuple[int, list[tuple[bytes, int, bytes]]]:
-    """Parse one attribute search request into `(limit, [(name, operator, value)])`."""
-
-    if len(payload) < SEARCH_HEADER_SIZE:
-        return 0, []
-    limit, count = get_u32(payload, 0), payload[4]
-    conditions = []
-    offset = SEARCH_HEADER_SIZE
-    for _ in range(count):
-        if offset + 5 > len(payload):
-            break
-        name, flags = payload[offset:offset + 4], payload[offset + 4]
-        size = SEARCH_VALUE_SIZES.get(flags >> 5)
-        if size is None or offset + 5 + size > len(payload):
-            break
-        conditions.append((name, flags & 0x1F, payload[offset + 5:offset + 5 + size]))
-        offset += 5 + size
-    return limit, conditions
-
-
-def _search_text(value: bytes) -> str:
-    return value.split(b'\x00', 1)[0].decode('ascii', errors='ignore')

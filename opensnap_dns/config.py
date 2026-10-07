@@ -29,6 +29,7 @@ MONSTER_HUNTER_USA_DNS_ENTRIES: dict[str, str] = {
     'bootstrap01.sf.yav4.com': '@default',
     # `SLUS_208.96` bootstrap host.
     'bootstrap01.mh-beta.capcom.sf.yav4.com': '@default',
+    # Capcom APP host of Monster Hunter (NA and EU) and Resident Evil Outbreak.
     'app01.reo.capcom.sf.yav4.com': '@default',
 }
 
@@ -38,7 +39,8 @@ MONSTER_HUNTER_PAL_AND_DEMO_DNS_ENTRIES: dict[str, str] = {
     'bootstrap01.mheu-beta.capcom.sf.yav4.com': '@default',
 }
 
-# Monster Hunter USA Public Beta
+# Monster Hunter USA Public Beta, and the regweb and bootstrap hosts of
+# Resident Evil Outbreak (`SLUS_207.65`), whose APP host is the one above.
 MONSTER_HUNTER_USA_PUBLIC_BETA_DNS_ENTRIES: dict[str, str] = {
     'regweb.reo.capcom.sf.yav4.com': '@default',
     'snap01.reo.capcom.sf.yav4.com': '@default',

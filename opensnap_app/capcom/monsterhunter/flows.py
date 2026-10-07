@@ -1,7 +1,10 @@
-"""APP connection phase tracking shared by the SNAP handlers and the APP service."""
+"""APP connection phase tracking, fed by the game server's logins."""
 
+from collections.abc import Iterable
 from enum import StrEnum
 import threading
+
+from opensnap.core.online import OnlinePlayer
 
 
 class AppPhase(StrEnum):
@@ -23,12 +26,26 @@ class AppFlowTracker:
     """
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._login_serial_by_session: dict[int, int] = {}
         self._phase_by_session: dict[int, AppPhase] = {}
         self._host_by_session: dict[int, str] = {}
         self._pending_by_host: dict[str, list[int]] = {}
         self._active_by_host: dict[str, int] = {}
         self._fallback_by_host: dict[str, AppPhase] = {}
+
+    def sync(self, players: Iterable[OnlinePlayer]) -> None:
+        """Catch up with the game server: arm each login not seen yet, in login order, and forget logged-out players."""
+
+        online = {player.session_id: player for player in players}
+        with self._lock:
+            for session_id in [session_id for session_id in self._login_serial_by_session if session_id not in online]:
+                del self._login_serial_by_session[session_id]
+                self.forget(session_id)
+            for player in online.values():
+                if self._login_serial_by_session.get(player.session_id) != player.login_serial:
+                    self._login_serial_by_session[player.session_id] = player.login_serial
+                    self.arm_world(player.session_id, player.host)
 
     def arm_world(self, session_id: int, host: str) -> None:
         """Start the online APP flow for one logged-in session without rewinding it."""

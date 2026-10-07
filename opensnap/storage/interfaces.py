@@ -1,6 +1,6 @@
 """Storage backend protocols.
 
-Shared stores (accounts, session handoffs, records) live in the configured
+Shared stores (accounts, session handoffs, records, online players) live in the configured
 backend and may be shared by the web, bootstrap and game servers across
 machines. Runtime
 stores (sessions with transport counters, lobbies, rooms) belong to one
@@ -14,6 +14,7 @@ from typing import Protocol
 
 from opensnap.core.accounts import Account
 from opensnap.core.lobbies import Lobby
+from opensnap.core.online import OnlinePlayer
 from opensnap.core.records import PlayerTotal, Record
 from opensnap.core.rooms import GameRoom
 from opensnap.core.sessions import Session, SessionHandoff
@@ -70,11 +71,33 @@ class RecordStore(Protocol):
     ) -> Record:
         """Store one submitted record."""
 
-    def best_by_board(self, game: str, limit: int) -> dict[str, list[Record]]:
-        """Return each board's lowest score per player, best first, at most `limit` players."""
+    def best_by_board(self, game: str, limit: int, *, highest: bool = False) -> dict[str, list[Record]]:
+        """Return each board's lowest (or `highest`) score per player, best first, at most `limit` players."""
 
     def totals(self, game: str, board_prefix: str, limit: int) -> list[PlayerTotal]:
         """Return players by summed score over the boards starting with `board_prefix`, highest first."""
+
+
+class OnlinePlayerStore(Protocol):
+    """Players logged in to each game, written by its game server for companion services.
+
+    Writes happen only on logins, lobby changes and logouts, never per packet.
+    """
+
+    def login(self, game: str, session: Session) -> None:
+        """Publish one game login (again on a repeated login, with a new login serial)."""
+
+    def set_area(self, session_id: int, area_id: int) -> None:
+        """Record the player's lobby (0 = none)."""
+
+    def logout(self, session_id: int) -> None:
+        """Remove one player."""
+
+    def clear(self, game: str) -> None:
+        """Remove every player of `game` (its game server starts with none)."""
+
+    def list(self, game: str) -> list[OnlinePlayer]:
+        """Players of `game` in login order."""
 
 
 class SessionStore(Protocol):
@@ -178,6 +201,7 @@ class StorageBundle:
     accounts: AccountStore
     handoffs: SessionHandoffStore
     records: RecordStore
+    online_players: OnlinePlayerStore
     _close: Callable[[], None]
 
     def close(self) -> None:

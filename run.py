@@ -6,7 +6,7 @@ from opensnap.env_loader import load_env_file
 
 
 def main() -> None:
-    """Dispatch to bootstrap, game, web, or DNS service launcher."""
+    """Dispatch to bootstrap, game, web, DNS, or companion app service launcher."""
 
     load_env_file()
 
@@ -14,9 +14,14 @@ def main() -> None:
     parser.add_argument(
         'service',
         nargs='?',
-        choices=('bootstrap', 'game', 'web', 'dns'),
+        choices=('bootstrap', 'game', 'web', 'dns', 'app'),
         default='game',
-        help='Service to launch: game (default), bootstrap, web, or dns.',
+        help='Service to launch: game (default), bootstrap, web, dns, or app.',
+    )
+    parser.add_argument(
+        'app',
+        nargs='?',
+        help='Companion app to launch when service=app (for example: capcom).',
     )
     parser.add_argument(
         '--web-plugin',
@@ -28,6 +33,8 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+    if args.app is not None and args.service != 'app':
+        parser.error(f'unexpected argument {args.app!r} for service {args.service}.')
 
     if args.service == 'web':
         try:
@@ -40,6 +47,14 @@ def main() -> None:
             raise
 
         run_web_server(web_plugin=args.web_plugin)
+        return
+
+    if args.service == 'app':
+        from opensnap_app import APPS, run_app
+
+        if args.app is None:
+            parser.error(f'service app needs an app name: {", ".join(APPS)}.')
+        run_app(args.app)
         return
 
     if args.service == 'bootstrap':

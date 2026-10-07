@@ -116,7 +116,7 @@ class SqliteBackendTests(unittest.TestCase):
 
             with sqlite3.connect(database_path) as connection:
                 tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-            self.assertEqual(tables - {'sqlite_sequence'}, {'users', 'session_handoffs', 'records'})
+            self.assertEqual(tables - {'sqlite_sequence'}, {'users', 'session_handoffs', 'records', 'online_players'})
 
     def test_sqlite_generates_non_empty_per_account_seeds(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

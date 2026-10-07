@@ -114,6 +114,18 @@ class MariaDbConnection:
             'INDEX records_board (game, board, score)'
             ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
         )
+        self.execute(
+            'CREATE TABLE IF NOT EXISTS online_players ('
+            'session_id BIGINT UNSIGNED PRIMARY KEY, '
+            'game VARCHAR(64) NOT NULL, '
+            'user_id INT NOT NULL, '
+            'username VARCHAR(255) NOT NULL, '
+            'host VARCHAR(255) NOT NULL, '
+            'area_id BIGINT NOT NULL, '
+            'login_serial BIGINT NOT NULL, '
+            'INDEX online_players_game (game, login_serial)'
+            ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+        )
 
 
 def _placeholders(query: str) -> str:

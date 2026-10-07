@@ -31,6 +31,9 @@ class GamePlugin:
     # Client builds served by this plugin; the bootstrap service routes their
     # logins to this plugin's game server.
     snap_titles: tuple[SnapTitle, ...] = ()
+    # Companion service (`opensnap_app`) this game also connects to, run as
+    # its own process: `python run.py app <companion_app>`.
+    companion_app: str | None = None
 
     def register_handlers(self, router: CommandRouter, context: HandlerContext) -> None:
         """Register game-specific command handlers."""

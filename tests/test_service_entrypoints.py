@@ -55,7 +55,7 @@ class FatalOSErrorLoggingTests(unittest.TestCase):
                 tick_interval_seconds=0.05,
             )
         )
-        plugin = SimpleNamespace(name='automodellista')
+        plugin = SimpleNamespace(name='automodellista', companion_app=None)
         error = OSError('bind failed')
 
         with patch('opensnap.game_server.load_env_file'):

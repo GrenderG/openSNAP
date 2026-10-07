@@ -236,6 +236,12 @@ SLPM_651.24
 slus_208.96
 # Monster Hunter 1 PAL ELF
 SLES_527.07
+# Monster Hunter 1 NTSC-U public beta ELF
+slus_291.10
+# Monster Hunter 1 PAL demo ELF
+SLED_530.83
+# Monster Hunter 1 PAL test build ELF
+TLES_527.07
 amus_bin/
 ambeta1_bin/
 etc/experiments/

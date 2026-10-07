@@ -17,26 +17,10 @@ from opensnap.config import StorageConfig, UserConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.core.sessions import Session
 from opensnap.plugins.monsterhunter import MonsterHunterPlugin
-import opensnap.plugins.monsterhunter.plugin as plugin_module
-from opensnap.plugins.monsterhunter.app import AppFlowTracker, AppPhase, AppService, AppServiceConfig
-from opensnap.plugins.monsterhunter.app.codec import (
-    app_frame,
-    decode_app_field,
-    encode_app_field,
-    frame_command,
-    frame_payload,
-    frame_sequence,
-    pop_app_frame,
-)
-from opensnap.plugins.monsterhunter.app.content import EventCatalog, InformationPages, MarketState
-from opensnap.plugins.monsterhunter.app.records import (
-    RECORD_PAGE_SAFE_CELLS,
-    RECORD_PAGE_SAFE_SIZE,
-    RecordPages,
-    load_quests,
-)
 from opensnap.plugins.monsterhunter.directory import Directory, read_directory
-from opensnap.plugins.monsterhunter.profile import MONSTER_HUNTER_NA
+import opensnap.plugins.monsterhunter.plugin as plugin_module
+from opensnap.plugins.monsterhunter.profile import MONSTER_HUNTER_NA, MONSTER_HUNTER_NA_BETA
+from opensnap.plugins.monsterhunter_na_beta import MonsterHunterNaBetaPlugin
 from opensnap.protocol import commands
 from opensnap.protocol.codec import decode_datagram, encode_messages
 from opensnap.protocol.constants import (
@@ -46,35 +30,63 @@ from opensnap.protocol.constants import (
     FLAG_ROOM,
 )
 from opensnap.protocol.models import Endpoint, SnapMessage
-from opensnap.storage.sql import SqlRecordStore
+from opensnap.storage.sql import SqlOnlinePlayerStore, SqlRecordStore
 from opensnap.storage.sqlite import SqliteConnection
+from opensnap_app.capcom.monsterhunter.content import EventCatalog, InformationPages, MarketState
+from opensnap_app.capcom.monsterhunter.flows import AppFlowTracker, AppPhase
+from opensnap_app.capcom.monsterhunter.records import (
+    RECORD_PAGE_SAFE_CELLS,
+    RECORD_PAGE_SAFE_SIZE,
+    RecordPages,
+    load_quests,
+)
+from opensnap_app.capcom.monsterhunter.service import (
+    APP_BUILD_EU,
+    APP_BUILD_NA,
+    NA_PUBLIC_BETA_VERSION,
+    AppService,
+    AppServiceConfig,
+)
+from opensnap_app.capcom.protocol import (
+    app_frame,
+    decode_app_field,
+    encode_app_field,
+    frame_command,
+    frame_payload,
+    frame_sequence,
+    pop_app_frame,
+)
+from opensnap_app.capcom.server import CapcomAppServer
 from tests.support import MONSTER_HUNTER_NA_TITLE_CODE, login_client_payload, serving
 
 TOWN_RULES = (3 << 8) | 4
 QUEST_RULES = 2
 QUEST_STARTED_RULES = 0x40000002
 AREA_ID = 1
-
-
-def _profile(marker: int, *, departing: bool = False) -> bytes:
-    profile = bytearray([marker]) * 140
-    profile[136:138] = b'\x03\x05' if departing else b'\x00\x00'
-    return bytes(profile)
+# Build stamp of the TLES_527.07 test build's APP answer (`0x00397ce0`).
+TLES_STAMP = b'0408131008'
 
 
 class MonsterHunterFlowTests(unittest.TestCase):
     """Town, quest departure and return flow through the protocol engine."""
 
+    plugin_class: type[MonsterHunterPlugin] = MonsterHunterPlugin
+
     def setUp(self) -> None:
         temp_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temp_directory.cleanup)
         users = tuple(UserConfig(user_id=index + 1, username=f'hunter{index}', password='1111') for index in range(4))
+        config = serving(default_app_config(), self.plugin_class.name)
+        # The bootstrap serves this game only, as a deployment does for the beta, whose
+        # title code is the release's (`OPENSNAP_BOOTSTRAP_GAMES`).
         self.config = replace(
-            serving(default_app_config(), 'monsterhunter'),
+            config,
+            server=replace(config.server, bootstrap_games=(self.plugin_class.name,)),
             storage=StorageConfig(backend='sqlite', sqlite_path=f'{temp_directory.name}/mh.sqlite'),
             users=users,
         )
-        self.plugin = MonsterHunterPlugin()
+        self.plugin = self.plugin_class()
+        self.layout = self.plugin.profile.member_profile
         self.engine = SnapProtocolEngine(config=self.config, plugin=self.plugin, role='combined')
         self.addCleanup(self.engine.close)
         self.sequences: dict[int, int] = {}
@@ -117,6 +129,24 @@ class MonsterHunterFlowTests(unittest.TestCase):
         endpoint, session_id = player
         return self._send_raw(endpoint, session_id, command, payload, type_flags, sequence)
 
+    def test_logins_and_areas_are_published_for_the_capcom_app(self) -> None:
+        online = self.engine._storage.online_players  # noqa: SLF001
+        players = online.list(self.plugin.name)
+        self.assertEqual([(player.username, player.host, player.area_id) for player in players], [
+            ('hunter0', '10.0.0.1', AREA_ID), ('hunter1', '10.0.0.2', AREA_ID), ('hunter2', '10.0.0.3', AREA_ID),
+        ])
+
+        endpoint, session_id = self.players[0]
+        self._send((endpoint, session_id), commands.CMD_LEAVE, b'', FLAG_CHANNEL_BITS)
+        # A repeated KICS (Land entry) is a new login for the APP flow tracker.
+        self._send((endpoint, session_id), commands.CMD_LOGIN_TO_KICS, bytes(0x130), FLAG_CHANNEL_BITS)
+        again = {player.session_id: player for player in online.list(self.plugin.name)}[session_id]
+        self.assertEqual(again.area_id, 0)
+        self.assertGreater(again.login_serial, players[0].login_serial)
+
+        self._send((endpoint, session_id), commands.CMD_LOGOUT_CLIENT, b'', FLAG_CHANNEL_BITS)
+        self.assertNotIn(session_id, [player.session_id for player in online.list(self.plugin.name)])
+
     def test_embedded_child_sequence_word_does_not_move_the_session_sequence(self) -> None:
         # Live NA multi: outer reliable 0x0c seq 17 plus an embedded CMD_SEND whose
         # header `+0x08` reads `05 00 00 00`. Only the outer sequence counts, so the
@@ -131,8 +161,8 @@ class MonsterHunterFlowTests(unittest.TestCase):
             session_id=session_id,
             sequence_number=17,
             acknowledge_number=4,
-            payload=_profile(1),
-            size_word_override=(flags | FLAG_MULTI) | (16 + len(_profile(1))),
+            payload=self._profile(1),
+            size_word_override=(flags | FLAG_MULTI) | (16 + len(self._profile(1))),
         )
         child = SnapMessage(
             endpoint=endpoint,
@@ -164,7 +194,7 @@ class MonsterHunterFlowTests(unittest.TestCase):
             payload=bytes.fromhex('04f0100000000000'),
             size_word_override=(flags | FLAG_MULTI) | 24,
         )
-        profile = replace(child, command=commands.CMD_CHANGE_USER_PROPERTY, sequence_number=27, payload=_profile(1))
+        profile = replace(child, command=commands.CMD_CHANGE_USER_PROPERTY, sequence_number=27, payload=self._profile(1))
         result = self.engine.handle_datagram(encode_messages([release, profile]), endpoint)
         self.assertFalse(result.errors)
         wrappers = [message for message in result.messages if message.command == commands.CMD_RESULT_WRAPPER]
@@ -183,13 +213,21 @@ class MonsterHunterFlowTests(unittest.TestCase):
         # taken for duplicates.
         endpoint, session_id = player = self.players[0]
         session = self.engine._sessions.get(session_id)  # noqa: SLF001
-        self._publish(player, _profile(1))
+        self._publish(player, self._profile(1))
         before = session.last_incoming_sequence
         self._send(player, commands.CMD_SEND, bytes.fromhex('0000'), FLAG_ROOM, sequence=self.sequences[session_id] + 10)
         self.assertEqual(session.last_incoming_sequence, before)
         town_id = self._create(player, TOWN_RULES)
         self.assertEqual(self._roster(player, town_id), [session_id])
         self.assertEqual(session.last_incoming_sequence, self.sequences[session_id])
+
+    def _profile(self, marker: int, *, departing: bool = False) -> bytes:
+        """A member profile in the plugin's layout; departing is `3/5` at its departure offsets."""
+
+        profile = bytearray([marker]) * self.layout.size
+        profile[self.layout.party_state_offset] = 3 if departing else 0
+        profile[self.layout.quest_state_offset] = 5 if departing else 0
+        return bytes(profile)
 
     def _publish(self, player, profile: bytes) -> list[SnapMessage]:
         return self._send(player, commands.CMD_CHANGE_USER_PROPERTY, profile)
@@ -213,12 +251,13 @@ class MonsterHunterFlowTests(unittest.TestCase):
         reply = self._send(player, commands.CMD_QUERY_USER, struct.pack('>L', room_id))[0]
         room, count, _ = struct.unpack_from('>3L', reply.payload)
         self.assertEqual(room, room_id)
-        return [struct.unpack_from('>L', reply.payload, 12 + index * 164 + 16)[0] for index in range(count)]
+        record_size = 24 + self.layout.size
+        return [struct.unpack_from('>L', reply.payload, 12 + index * record_size + 16)[0] for index in range(count)]
 
     def _town_with_residents(self) -> int:
         host, guest, _ = self.players
         for index, player in enumerate(self.players):
-            self._publish(player, _profile(index + 1))
+            self._publish(player, self._profile(index + 1))
         town_id = self._create(host, TOWN_RULES)
         self._join(guest, town_id)
         return town_id
@@ -235,8 +274,8 @@ class MonsterHunterFlowTests(unittest.TestCase):
             self._send(host, commands.CMD_SEND_TARGET, struct.pack('>2L', 1, member[1]) + bytes((0, 0, 3, 0, 0, 0, 0, 0)))
         self._send(host, commands.CMD_LEAVE)
         quest_id = self._create(host, QUEST_RULES)
-        self._publish(host, _profile(1, departing=True))
-        self._publish(guest, _profile(2, departing=True))
+        self._publish(host, self._profile(1, departing=True))
+        self._publish(guest, self._profile(2, departing=True))
         self._send(guest, commands.CMD_LEAVE)
         self._join(guest, quest_id)
         self._stat(host, QUEST_STARTED_RULES)
@@ -245,20 +284,23 @@ class MonsterHunterFlowTests(unittest.TestCase):
     def _area_roster(self, player) -> list[bytes]:
         reply = self._send(player, commands.CMD_QUERY_USER, struct.pack('>L', AREA_ID), FLAG_CHANNEL_BITS)[0]
         count = struct.unpack_from('>3L', reply.payload)[1]
-        return [reply.payload[12 + index * 164:28 + index * 164].rstrip(b'\0') for index in range(count)]
+        record_size = 24 + self.layout.size
+        return [
+            reply.payload[12 + index * record_size:28 + index * record_size].rstrip(b'\0') for index in range(count)
+        ]
 
     def test_new_login_from_the_same_endpoint_ends_the_old_session(self) -> None:
         # A console that crashed logs in again (here with another account) from
         # the same address and port; its old hunter must leave the Area.
         for index, player in enumerate(self.players):
-            self._publish(player, _profile(index + 1))
+            self._publish(player, self._profile(index + 1))
         crashed_endpoint, crashed_id = self.players[0]
         self.assertIn(b'hunter0', self._area_roster(self.players[1]))
 
         relogged = self._login('hunter3', crashed_endpoint.host)
         self.assertNotEqual(relogged[1], crashed_id)
         self.assertIsNone(self.engine._sessions.get(crashed_id))  # noqa: SLF001
-        self._publish(relogged, _profile(4))
+        self._publish(relogged, self._profile(4))
         self.assertEqual(sorted(self._area_roster(self.players[1])), [b'hunter2', b'hunter3'])
 
     def test_silent_sessions_end_after_their_idle_limit(self) -> None:
@@ -318,7 +360,7 @@ class MonsterHunterFlowTests(unittest.TestCase):
         host, guest, waiting = self.players
         self._join(waiting, town_id)
 
-        self._publish(host, _profile(1, departing=True))
+        self._publish(host, self._profile(1, departing=True))
         leave = self._send(host, commands.CMD_LEAVE)
 
         self.assertEqual([message.command for message in leave], [commands.CMD_RESULT_WRAPPER])
@@ -342,7 +384,7 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self.assertIn(host[1], self._roster(waiting, town_id))
         quest_id = self._create(host, QUEST_RULES)
         self._stat(host, QUEST_STARTED_RULES)
-        self._publish(host, _profile(1, departing=True))
+        self._publish(host, self._profile(1, departing=True))
         self.assertIn(host[1], self._roster(guest, town_id))
 
         # Back from the quest, the host returns to the Town it never left.
@@ -412,7 +454,7 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self._join(waiting, town_id)
         self._depart(host, guest, town_id)
 
-        messages = self._publish(guest, _profile(9))
+        messages = self._publish(guest, self._profile(9))
 
         recipients = {message.endpoint for message in messages if message.command == commands.CMD_CHANGE_USER_PROPERTY}
         self.assertEqual(recipients, {waiting[0]})
@@ -431,9 +473,9 @@ class MonsterHunterFlowTests(unittest.TestCase):
 
         # The client now runs game.bin: no echo reply and no property result.
         self.assertEqual(self._send(host, commands.CMD_SEND_ECHO, echo, type_flags=FLAG_ROOM), [])
-        replies = self._publish(host, _profile(5))
+        replies = self._publish(host, self._profile(5))
         self.assertNotIn(host[0], [message.endpoint for message in replies])
-        self.assertEqual(self.plugin._players[host[1]].profile, _profile(5))  # noqa: SLF001
+        self.assertEqual(self.plugin._players[host[1]].profile, self._profile(5))  # noqa: SLF001
 
         # After the return STAT the lobby is back and keepalives are answered.
         self._stat(host, TOWN_RULES)
@@ -456,8 +498,8 @@ class MonsterHunterFlowTests(unittest.TestCase):
 
     def test_join_callback_carries_member_profile(self) -> None:
         host, guest, _ = self.players
-        self._publish(host, _profile(1))
-        self._publish(guest, _profile(2))
+        self._publish(host, self._profile(1))
+        self._publish(guest, self._profile(2))
         town_id = self._create(host, TOWN_RULES)
 
         messages = self._join(guest, town_id)
@@ -465,8 +507,8 @@ class MonsterHunterFlowTests(unittest.TestCase):
         callback = [message for message in messages if message.command == commands.CMD_JOIN][0]
         self.assertEqual(callback.endpoint, host[0])
         self.assertEqual(callback.payload[:16], b'hunter1'.ljust(16, b'\x00'))
-        self.assertEqual(struct.unpack_from('>2L', callback.payload, 16), (guest[1], 140))
-        self.assertEqual(callback.payload[24:], _profile(2))
+        self.assertEqual(struct.unpack_from('>2L', callback.payload, 16), (guest[1], self.layout.size))
+        self.assertEqual(callback.payload[24:], self._profile(2))
 
     def test_exact_reliable_create_retry_replays_the_same_room(self) -> None:
         host = self.players[0]
@@ -487,8 +529,8 @@ class MonsterHunterFlowTests(unittest.TestCase):
 
     def test_exact_join_retry_replays_only_the_joiners_result(self) -> None:
         host, guest, _ = self.players
-        self._publish(host, _profile(1))
-        self._publish(guest, _profile(2))
+        self._publish(host, self._profile(1))
+        self._publish(guest, self._profile(2))
         town_id = self._create(host, TOWN_RULES)
 
         first = self._send(guest, commands.CMD_JOIN, struct.pack('>L', town_id), sequence=60)
@@ -533,7 +575,7 @@ class MonsterHunterFlowTests(unittest.TestCase):
 
     def test_area_population_and_roster(self) -> None:
         for index, player in enumerate(self.players):
-            self._publish(player, _profile(index + 1))
+            self._publish(player, self._profile(index + 1))
         self._send(self.players[2], commands.CMD_LEAVE, b'', FLAG_CHANNEL_BITS)
 
         area = self._send(self.players[0], commands.CMD_QUERY_AREA, area_query('RED'), FLAG_CHANNEL_BITS)[0]
@@ -561,8 +603,8 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from('>3L', reply.payload), (0, 1, 1))
         record = reply.payload[12:]
         self.assertEqual(record[:16], pack16('hunter1'))
-        self.assertEqual(struct.unpack_from('>4L', record, 16), (1, AREA_ID, town_id, 140))
-        self.assertEqual(record[32:], _profile(2))
+        self.assertEqual(struct.unpack_from('>4L', record, 16), (1, AREA_ID, town_id, self.layout.size))
+        self.assertEqual(record[32:], self._profile(2))
 
         missing = self._send(searcher, commands.CMD_SEARCH_USERS_BY_NAME, pack16('nobody-') + struct.pack('>2L', 7, 1),
                              FLAG_CHANNEL_BITS | FLAG_RELIABLE)[0]
@@ -574,7 +616,13 @@ class MonsterHunterFlowTests(unittest.TestCase):
 
     def test_unknown_area_join_is_rejected(self) -> None:
         reply = self._send(self.players[0], commands.CMD_JOIN, struct.pack('>L', 99), FLAG_CHANNEL_BITS)[0]
-        self.assertEqual(struct.unpack('>2L', reply.payload)[1], 0x27)
+        self.assertEqual(reply.command, commands.CMD_RESULT_ERROR)
+        self.assertEqual(struct.unpack('>L', reply.payload[:4])[0], commands.CMD_JOIN)
+
+    def test_missing_room_join_is_an_error_result(self) -> None:
+        reply = self._join(self.players[0], 0x7777)[-1]
+        self.assertEqual(reply.command, commands.CMD_RESULT_ERROR)
+        self.assertEqual(reply.type_flags & FLAG_CHANNEL_BITS, FLAG_ROOM)
 
     def test_area_join_is_refused_when_the_land_is_full(self) -> None:
         lands = [{'key': 'RED', 'areas': 2, 'capacity': 2}]
@@ -583,9 +631,10 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self._send(self.players[2], commands.CMD_LEAVE, b'', FLAG_CHANNEL_BITS)
 
         refused = self._send(self.players[2], commands.CMD_JOIN, struct.pack('>L', 2), FLAG_CHANNEL_BITS)[0]
-        self.assertEqual(struct.unpack('>2L', refused.payload)[1], 0x27)
+        self.assertEqual(refused.command, commands.CMD_RESULT_ERROR)
         # A hunter already counted in the Land may still move between its Areas.
         moved = self._send(self.players[0], commands.CMD_JOIN, struct.pack('>L', 2), FLAG_CHANNEL_BITS)[0]
+        self.assertEqual(moved.command, commands.CMD_RESULT_WRAPPER)
         self.assertEqual(struct.unpack('>2L', moved.payload)[1], 0)
 
     def test_town_category_is_limited_to_21_towns(self) -> None:
@@ -597,9 +646,10 @@ class MonsterHunterFlowTests(unittest.TestCase):
         payload = bytearray(0x2C)
         payload[0x28:0x2C] = struct.pack('>L', TOWN_RULES)
         reply = self._send(self.players[1], commands.CMD_CREATE_GAME_ROOM, bytes(payload))[-1]
-        self.assertEqual(struct.unpack('>2L', reply.payload)[1], 0x27)
+        self.assertEqual(reply.command, commands.CMD_RESULT_ERROR)
+        self.assertEqual(struct.unpack('>L', reply.payload[:4])[0], commands.CMD_CREATE_GAME_ROOM)
         other_category = (1 << 24) | TOWN_RULES
-        self.assertNotEqual(self._create(self.players[1], other_category), 0x27)
+        self.assertIsNotNone(self.engine._rooms.get(self._create(self.players[1], other_category)))
 
     def test_room_search_by_oid_returns_rules_and_id(self) -> None:
         town_id = self._town_with_residents()
@@ -630,6 +680,30 @@ def area_query(land_key: str) -> bytes:
         + b'NAME\x44' + pack16(f'{land_key}01')
         + b'NAME\x46' + pack16(f'{land_key}26')
     )
+
+
+class MonsterHunterNaBetaFlowTests(MonsterHunterFlowTests):
+    """The whole release flow with the NA public beta's 216-byte profiles (departure state at `+213/+215`)."""
+
+    plugin_class = MonsterHunterNaBetaPlugin
+
+    def test_silent_sessions_end_after_their_idle_limit(self) -> None:
+        # The beta lobby sends no keepalive: only a started quest has a limit.
+        now = [1000.0]
+        self.engine._clock = lambda: now[0]  # noqa: SLF001
+        town_id = self._town_with_residents()
+        host, guest, waiting = self.players
+        self._depart(host, guest, town_id)
+
+        now[0] += plugin_module.QUEST_IDLE_LIMIT_SECONDS + 1
+        self.engine.tick()
+        self.assertIsNone(self.engine._sessions.get(host[1]))  # noqa: SLF001
+        self.assertIsNotNone(self.engine._sessions.get(waiting[1]))  # noqa: SLF001
+
+    def test_release_sized_profiles_are_not_kept(self) -> None:
+        host = self.players[0]
+        self._publish(host, bytes(140))
+        self.assertIsNone(self.plugin._players[host[1]].profile)  # noqa: SLF001
 
 
 class DirectoryTests(unittest.TestCase):
@@ -878,6 +952,7 @@ class AppServiceTests(unittest.TestCase):
         connection = SqliteConnection(self.data_directory / 'records.sqlite')
         self.addCleanup(connection.close)
         self.records = SqlRecordStore(connection)
+        self.online = SqlOnlinePlayerStore(connection)
         self.sessions = {
             1: Session(session_id=1, user_id=7, username='hunter', endpoint=Endpoint('127.0.0.1', 4000)),
             2: Session(session_id=2, user_id=8, username='other', endpoint=Endpoint('127.0.0.1', 4001)),
@@ -894,22 +969,41 @@ class AppServiceTests(unittest.TestCase):
             self.directory = read_directory(max_players_per_town=8)
         self.service = AppService(
             config=AppServiceConfig(
-                host='127.0.0.1',
-                port=0,
                 data_directory=self.data_directory,
                 profile=MONSTER_HUNTER_NA,
-                advertise_host='192.0.2.10',
-                game_bind_host='0.0.0.0',
+                game_host='192.0.2.10',
             ),
             flows=self.flows,
             directory=self.directory,
-            land_population=lambda land: 4 * land.number,
+            online_players=self.online,
             records=self.records,
-            session=self.sessions.get,
         )
-        self.service.start()
-        self.addCleanup(self.service.stop)
-        self.port = self.service._listener.getsockname()[1]
+        # The NA public beta: its own service, chosen by its build stamp.
+        self.beta_service = AppService(
+            config=AppServiceConfig(
+                data_directory=self.data_directory / 'beta', profile=MONSTER_HUNTER_NA_BETA, game_host='192.0.2.20'
+            ),
+            flows=AppFlowTracker(),
+            directory=self.directory,
+            online_players=self.online,
+            records=self.records,
+        )
+        server = CapcomAppServer(
+            host='127.0.0.1',
+            port=0,
+            titles={APP_BUILD_NA: self.service, APP_BUILD_EU: self.service},
+            stamped_builds={NA_PUBLIC_BETA_VERSION: self.beta_service},
+        )
+        server.start()
+        self.addCleanup(server.stop)
+        self.port = server.address[1]
+
+    def _login(self, session: Session, area_id: int = 0) -> None:
+        """Publish a KICS login (and the player's Area) like the game server, and let the tracker see it."""
+
+        self.online.login('monsterhunter', session)
+        self.online.set_area(session.session_id, area_id)
+        self.flows.sync(self.online.list('monsterhunter'))
 
     def _connect(self) -> tuple[socket.socket, bytearray]:
         client = socket.create_connection(('127.0.0.1', self.port), timeout=5)
@@ -925,14 +1019,20 @@ class AppServiceTests(unittest.TestCase):
             buffer.extend(data)
         return frame
 
-    def _open(self, client: socket.socket, buffer: bytearray, *, build: int = 2, flags: int = 1) -> None:
-        """Answer the server's opening 1002 like the client build does (`0x002aeb40`)."""
+    def _open(
+        self, client: socket.socket, buffer: bytearray, *, build: int = 2, flags: int = 1, version: bytes = b'0502180939'
+    ) -> None:
+        """Answer the server's opening 1002 like the client build does (`0x002aeb40`).
+
+        EU (build 3) gets its 6001 at once; NA and the TLES test build (build 3 with
+        its stamp `0408131008`) run the NA client, which may speak first.
+        """
 
         opening = self._receive(client, buffer)
         self.assertEqual((frame_command(opening), frame_payload(opening)), (0x1002, b'\x00\x00'))
-        reply = encode_app_field(b'HUNTER', 2) + bytes([build, flags]) + encode_app_field(b'0404141723', 2) + bytes(4)
+        reply = encode_app_field(b'HUNTER', 2) + bytes([build, flags]) + encode_app_field(version, 2) + bytes(4)
         client.sendall(app_frame(2, 0x1002, sequence=2, payload=reply))
-        if build == 3:
+        if build == 3 and version != TLES_STAMP:
             self._receive_version(client, buffer)
 
     def _receive_version(self, client: socket.socket, buffer: bytearray) -> None:
@@ -947,7 +1047,7 @@ class AppServiceTests(unittest.TestCase):
         return frame_payload(reply)
 
     def test_world_then_land_progression(self) -> None:
-        self.flows.arm_world(1, '127.0.0.1')
+        self._login(self.sessions[1])
         client, buffer = self._connect()
         self._open(client, buffer)
         client.sendall(app_frame(1, 0x6103, sequence=4))
@@ -974,7 +1074,7 @@ class AppServiceTests(unittest.TestCase):
         self.assertEqual(frame_payload(self._receive(land, buffer)), MarketState().native_response())
 
     def test_world_list_pages_configured_worlds(self) -> None:
-        self.flows.arm_world(1, '127.0.0.1')
+        self._login(self.sessions[1])
         self.flows.advance('127.0.0.1', 1, AppPhase.LAND)
         client, buffer = self._connect()
         self._open(client, buffer)
@@ -996,7 +1096,11 @@ class AppServiceTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from('>2HB', frame_payload(self._receive(client, buffer))), (2, 1, 1))
 
     def test_land_list_pages_each_world_and_populations(self) -> None:
-        self.flows.arm_world(1, '127.0.0.1')
+        first, second = self.directory.local_world.lands
+        self._login(self.sessions[1], first.areas[0].area_id)
+        for session_id, area in ((10, second.areas[0]), (11, second.areas[2])):
+            self._login(Session(session_id=session_id, user_id=session_id, username=f'p{session_id}',
+                                endpoint=Endpoint('10.0.0.9', 4000)), area.area_id)
         self.flows.advance('127.0.0.1', 1, AppPhase.LAND)
         client, buffer = self._connect()
         self._open(client, buffer)
@@ -1026,7 +1130,8 @@ class AppServiceTests(unittest.TestCase):
 
         request = b'\x02' + encode_app_field(b'AAA', 9) + encode_app_field(b'BBB', 9) + brave
         client.sendall(app_frame(1, 0x6510, sequence=9, payload=request))
-        self.assertEqual(frame_payload(self._receive(client, buffer)), struct.pack('>B2H', 2, 4, 8) + brave)
+        # Populations of the players the game server published in each Land's Areas.
+        self.assertEqual(frame_payload(self._receive(client, buffer)), struct.pack('>B2H', 2, 1, 2) + brave)
 
         # Players of a World hosted elsewhere are not visible here.
         sincere = encode_app_field(b'sincere.example', 12)
@@ -1034,7 +1139,7 @@ class AppServiceTests(unittest.TestCase):
         self.assertEqual(frame_payload(self._receive(client, buffer)), struct.pack('>BH', 1, 0) + sincere)
 
     def test_world_connection_reaches_connection_timing(self) -> None:
-        self.flows.arm_world(1, '127.0.0.1')
+        self._login(self.sessions[1])
         client, buffer = self._connect()
         self._open(client, buffer)
         exchanges = [
@@ -1051,6 +1156,16 @@ class AppServiceTests(unittest.TestCase):
             self.assertEqual(frame_payload(self._receive(client, buffer)), expected, hex(command))
         client.sendall(app_frame(1, 0x6501, sequence=3))
         self.assertEqual(frame_payload(self._receive(client, buffer)), b'\x01' + socket.inet_aton('192.0.2.10') + bytes(4))
+
+    def test_na_public_beta_is_served_by_its_own_service(self) -> None:
+        # Its 6213 holds four words (no lobby keepalive), and its Worlds point at its own server.
+        self.online.login('monsterhunter_na_beta', self.sessions[1])
+        client, buffer = self._connect()
+        self._open(client, buffer, version=NA_PUBLIC_BETA_VERSION)
+        client.sendall(app_frame(1, 0x6213, sequence=3))
+        self.assertEqual(frame_payload(self._receive(client, buffer)), struct.pack('>4H', 20, 300, 300, 5400))
+        client.sendall(app_frame(1, 0x6501, sequence=3))
+        self.assertEqual(frame_payload(self._receive(client, buffer)), b'\x01' + socket.inet_aton('192.0.2.20') + bytes(4))
 
     def test_eu_app1_keeps_client_defaults_and_serves_its_welcome_page(self) -> None:
         page = b'<BODY>' + b'x' * 800 + b'<END>'
@@ -1102,7 +1217,7 @@ class AppServiceTests(unittest.TestCase):
         path.parent.mkdir(parents=True)
         path.write_bytes(page)
         # A stale WORLD claim does not matter: the silent client is in APP1 (mode 0).
-        self.flows.arm_world(1, '127.0.0.1')
+        self._login(self.sessions[1])
         client, buffer = self._connect()
         self._open(client, buffer)
         self._receive_version(client, buffer)
@@ -1126,8 +1241,38 @@ class AppServiceTests(unittest.TestCase):
         with self.assertRaises(ConnectionError):
             self._receive(client, buffer)
 
+    def test_tles_runs_the_na_flow(self) -> None:
+        # Its LAND connection speaks first and gets no 6001, which NA code would take as a patch offer.
+        self._login(self.sessions[1])
+        self.flows.advance('127.0.0.1', 1, AppPhase.LAND)
+        client, buffer = self._connect()
+        self._open(client, buffer, build=3, flags=0x11, version=TLES_STAMP)
+        self.assertEqual(self._exchange(client, buffer, 0x6306), b'')
+        # A silent connection is APP1 and gets the NA 6001 after the wait, like NA.
+        client, buffer = self._connect()
+        self._open(client, buffer, build=3, flags=0x11, version=TLES_STAMP)
+        self._receive_version(client, buffer)
+        self.assertEqual(self._exchange(client, buffer, 0x6501), b'\x00')
+
+    def test_tles_quest_records_are_acknowledged_and_stored(self) -> None:
+        self._login(self.sessions[1])
+        self.flows.advance('127.0.0.1', 1, AppPhase.LAND)
+        client, buffer = self._connect()
+        self._open(client, buffer, build=3, flags=0x11, version=TLES_STAMP)
+        self.assertEqual(self._exchange(client, buffer, 0x6306), b'')
+        # Gypceros (kind 3), lifetime total 7; a Rathian kill (kind 0) comes without its pair.
+        self.assertEqual(self._exchange(client, buffer, 0x6307, struct.pack('>BBHBL', 1, 5, 0x0105, 3, 7)), b'')
+        self.assertEqual(self._exchange(client, buffer, 0x6307, struct.pack('>BBH', 1, 5, 0x0105)), b'')
+
+        boards = self.records.best_by_board('monsterhunter', 10)
+        self.assertEqual(
+            [(record.player, record.score, dict(record.details)) for record in boards['tles-kills-20']],
+            [('hunter', 7, {'quest': 261, 'hunter_rank': 5})],
+        )
+        self.assertEqual(set(boards), {'tles-kills-20'})
+
     def test_eu_quest_records_are_acknowledged_and_stored(self) -> None:
-        self.flows.arm_world(1, '127.0.0.1')
+        self._login(self.sessions[1])
         self.flows.advance('127.0.0.1', 1, AppPhase.LAND)
         client, buffer = self._connect()
         self._open(client, buffer, build=3, flags=0x15)
@@ -1210,6 +1355,23 @@ class AppServiceTests(unittest.TestCase):
         self.assertIn('Quest 261', page)
         self.assertIn('<tr><td>1</td><td>hunter</td><td>12\'34"</td></tr>', page)
 
+    def test_tles_record_pages_show_its_kill_totals(self) -> None:
+        pages = self._pages()
+        # TLES opens `lbs://lbs/03/DATABASE.HTM`; the totals page is linked once a total is stored.
+        self.assertNotIn('TLES_KILLS.HTM', pages.render(b'03/DATABASE.HTM').decode())
+        for user, totals in ((1, (3, 7)), (2, (5,))):
+            for total in totals:
+                self.records.add(
+                    game='monsterhunter', board='tles-kills-20', user_id=user, player=f'p{user}', score=total,
+                    details={},
+                )
+        self.assertIn('<a href="lbs://lbs/03/TLES_KILLS.HTM">', pages.render(b'03/DATABASE.HTM').decode())
+        page = pages.render(b'03/TLES_KILLS.HTM').decode()
+        self.assertIn('Gypceros', page)
+        # Each hunter's latest (highest) total, highest first.
+        self.assertLess(page.index('<td>p1</td><td>7</td>'), page.index('<td>p2</td><td>5</td>'))
+        self.assertNotIn('<td>3</td>', page)
+
     def test_category_pages_hold_eight_quests_in_quest_order(self) -> None:
         self._write_quests({quest: (f'Hunt {quest}', 'hunt') for quest in range(1, 11)})
         for quest in range(10, 0, -1):
@@ -1288,8 +1450,8 @@ class AppServiceTests(unittest.TestCase):
             self.assertLessEqual(page.count(b'<td'), RECORD_PAGE_SAFE_CELLS, name)
 
     def test_quest_record_without_a_single_player_is_acknowledged_only(self) -> None:
-        self.flows.arm_world(1, '127.0.0.1')
-        self.flows.arm_world(2, '127.0.0.1')
+        self._login(self.sessions[1])
+        self._login(self.sessions[2])
         for session_id in (1, 2):
             self.assertEqual(self.flows.claim('127.0.0.1')[0], session_id)
             self.flows.release('127.0.0.1', session_id)
@@ -1318,7 +1480,7 @@ class AppServiceTests(unittest.TestCase):
         self.assertEqual(self.flows.claim('127.0.0.1'), (None, AppPhase.POSTWORLD))
 
     def test_na_online_connection_gets_no_version_push(self) -> None:
-        self.flows.arm_world(1, '127.0.0.1')
+        self._login(self.sessions[1])
         client, buffer = self._connect()
         self._open(client, buffer)
         # The next frame is the reply to the client's first request, not a 6001.

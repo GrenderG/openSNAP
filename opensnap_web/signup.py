@@ -5,7 +5,8 @@ special tags of the result page to the memory card; games only differ in the
 URL prefixes they open. Accounts are shared by every game.
 
 Result page tag (same browser code in `SLUS_206.42` `browser.bin`,
-`SLUS_204.98` `browser.bin` and `SLUS_208.96` main):
+`SLUS_204.98` `browser.bin`, `SLUS_208.96` main and `SLUS_207.65` `netwk.bin`,
+whose tag table `0x0060dbc0` and handler `0x005ace5c` match MH's):
 - `COMP-SIGNUP` (page type 4) also sets the browser's close-button flag
   (`+400`, MH `0x0023c028`): the browser adds a `閉じる` button whose element
   always opens `https://www01.kddi-mmbb.jp/<n>/CRS-top.jsp` (MH `lobby.bin`
@@ -21,11 +22,14 @@ Return link: a link whose `HREF` starts with one of the browser's exit names
 ends the browser like its pad menu does (the `HREF` is kept raw, MH
 `0x00641630`; link press `0x0063dfa0` -> exit `0x0063f5b0`), after which the
 game saves the stored ID. Names and the exit reason they leave the game:
-- MH NA/EU (`lobby.bin` `0x0063dfa0`) and AM release (`browser.bin`
-  `0x006d7040`): `AMUSA_MENU_BACK` = 1, `AMUSA_GAME_BACK` = 2. The pad
+- MH NA/EU (`lobby.bin` `0x0063dfa0`), Outbreak (`netwk.bin` `0x00596fd0`) and
+  AM release (`browser.bin` `0x006d7040`): `AMUSA_MENU_BACK` = 1,
+  `AMUSA_GAME_BACK` = 2. The pad
   menu's exit leaves 0. MH ends reasons 0/1 the same way and only 2 differently
   (main `0x00249520`); AM release only branches on 2 after `SaveNetFile`
-  (`net_menu_sega_new` `0x0020a368`). So these games get `AMUSA_MENU_BACK`.
+  (`net_menu_sega_new` `0x0020a368`). Outbreak saves the ID on both and only
+  makes it the active login on 2 (`netwk.bin` `0x00608290` state 7). So these
+  games get `AMUSA_MENU_BACK`.
 - AM Beta1 (`browser.bin` `0x008c3cc0`): only `AMUSA_GAME_BACK`, which exits
   without a reason (`0x008c4da0`), like its pad menu.
 

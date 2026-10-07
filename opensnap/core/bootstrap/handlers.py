@@ -30,17 +30,12 @@ LOGIN_CLIENT_TITLE_CODE_OFFSET = 100
 def handle_login_client(context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
     """Handle `kkLoginClient` on the bootstrap endpoint."""
 
-    game_identifier = detect_game_identifier(message=message, identify_snap_title=context.identify_snap_title)
+    game_identifier = detect_game_identifier(
+        message=message,
+        identify_snap_title=context.identify_snap_title,
+        games=context.config.server.bootstrap_games,
+    )
     if game_identifier is None:
-        return []
-    accepted_games = context.config.server.bootstrap_games
-    if accepted_games and game_identifier not in accepted_games:
-        LOGGER.warning(
-            'Dropping login from %s:%d: game %r is not served here (OPENSNAP_BOOTSTRAP_GAMES).',
-            message.endpoint.host,
-            message.endpoint.port,
-            game_identifier,
-        )
         return []
     raw_login = _get_login_client_raw_name(message.payload)
     login = _parse_login_client_name(raw_login)
@@ -261,9 +256,13 @@ def _login_success(context: HandlerContext, message: SnapMessage, session_id: in
 def detect_game_identifier(
     *,
     message: SnapMessage,
-    identify_snap_title: Callable[[int, int], tuple[str, str] | None],
+    identify_snap_title: Callable[[int, int, tuple[str, ...]], tuple[str, str] | None],
+    games: tuple[str, ...] = (),
 ) -> str | None:
     """Return the game a bootstrap login belongs to, or None for an unknown build.
+
+    `games` limits the candidates to the games this bootstrap serves
+    (`OPENSNAP_BOOTSTRAP_GAMES`; empty: all).
 
     Every SN@P title connects to the same bootstrap port (the SDK's
     `kkLoginClient` hardcodes 9090), so the login itself must identify the
@@ -282,10 +281,10 @@ def detect_game_identifier(
         return None
     title_code = get_u32(message.payload, LOGIN_CLIENT_TITLE_CODE_OFFSET)
     footer_marker = struct.unpack('>L', message.footer_bytes)[0]
-    identified = identify_snap_title(title_code, footer_marker)
+    identified = identify_snap_title(title_code, footer_marker, games)
     if identified is None:
         LOGGER.warning(
-            'Dropping login from %s:%d: unknown SN@P title 0x%04x (footer 0x%08x).',
+            'Dropping login from %s:%d: SN@P title 0x%04x (footer 0x%08x) is unknown or not served here.',
             message.endpoint.host,
             message.endpoint.port,
             title_code,

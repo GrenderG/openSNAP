@@ -15,7 +15,10 @@ class RunLauncherTests(unittest.TestCase):
         game_main = Mock()
 
         with patch('run.load_env_file') as load_env:
-            with patch('run.argparse.ArgumentParser.parse_args', return_value=types.SimpleNamespace(service='game')):
+            with patch(
+                'run.argparse.ArgumentParser.parse_args',
+                return_value=types.SimpleNamespace(service='game', app=None),
+            ):
                 with patch.dict(
                     sys.modules,
                     {'opensnap.game_server': _module_with_main('opensnap.game_server', game_main)},
@@ -31,7 +34,7 @@ class RunLauncherTests(unittest.TestCase):
         with patch('run.load_env_file'):
             with patch(
                 'run.argparse.ArgumentParser.parse_args',
-                return_value=types.SimpleNamespace(service='bootstrap'),
+                return_value=types.SimpleNamespace(service='bootstrap', app=None),
             ):
                 with patch.dict(
                     sys.modules,

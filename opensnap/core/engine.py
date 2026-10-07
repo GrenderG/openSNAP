@@ -71,7 +71,7 @@ class SnapProtocolEngine:
         self._closed = False
         self._clock = time.monotonic
 
-        # Accounts, session handoffs and records are shared with other processes (and
+        # Accounts, session handoffs, records and online players are shared with other processes (and
         # possibly other machines); sessions, lobbies and rooms are this
         # process's connection state and stay in memory.
         self._storage = create_storage(config)
@@ -87,6 +87,7 @@ class SnapProtocolEngine:
             accounts=self._accounts,
             handoffs=self._handoffs,
             records=self._storage.records,
+            online_players=self._storage.online_players,
             sessions=self._sessions,
             lobbies=self._lobbies,
             rooms=self._rooms,

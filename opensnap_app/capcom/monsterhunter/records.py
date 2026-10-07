@@ -8,10 +8,10 @@ from pathlib import Path
 import struct
 
 from opensnap.core.browser_pages import NOTE_COLOR, data_table, document, panel
-from opensnap.core.sessions import Session
+from opensnap.core.online import OnlinePlayer
 from opensnap.storage.interfaces import RecordStore
 
-_LOGGER = logging.getLogger('opensnap.plugins.monsterhunter.app')
+_LOGGER = logging.getLogger('opensnap_app.capcom.monsterhunter')
 
 # 6307 kinds (EU builder `0x002a3e00`). After 6306 the client sends kind 1 if
 # any monster was hunted, then kind 2 if the quest clear was timed, then 6320
@@ -43,6 +43,10 @@ KILLS_BOARD_PREFIX = 'kills-'
 # only `lt gt quot amp nbsp #034 #34 #039 #39` (NA main `0x0038a398`), so
 # text is escaped without quotes (no `&#x27;`).
 RECORD_PAGE_NAME = 'DATABASE.HTM'
+# The EU test build's lifetime kill totals (`TEST_BUILD_RECORD_MONSTERS`),
+# linked from the index once any is stored.
+TEST_BUILD_KILLS_PAGE_NAME = 'TLES_KILLS.HTM'
+TEST_BUILD_KILLS_PER_MONSTER = 5
 RECORD_PAGE_SAFE_SIZE = 6 * 1024
 RECORD_PAGE_SAFE_CELLS = 156
 MONSTER_PAGE_CODE = 'MON'
@@ -130,7 +134,7 @@ def decode_quest_record(payload: bytes) -> QuestRecord:
     raise ValueError(f'Unknown quest record kind {kind}.')
 
 
-def store_quest_record(records: RecordStore, game: str, session: Session, record: QuestRecord) -> None:
+def store_quest_record(records: RecordStore, game: str, player: OnlinePlayer, record: QuestRecord) -> None:
     """Keep one quest record.
 
     Clear times go on `clear-<quest>`. Hunts go on `hunts-<quest>` (the whole
@@ -141,8 +145,8 @@ def store_quest_record(records: RecordStore, game: str, session: Session, record
         records.add(
             game=game,
             board=f'{CLEAR_BOARD_PREFIX}{record.quest_id}',
-            user_id=session.user_id,
-            player=session.username,
+            user_id=player.user_id,
+            player=player.username,
             score=record.clear_seconds,
             details={'weapon_class': record.weapon_class},
         )
@@ -150,8 +154,8 @@ def store_quest_record(records: RecordStore, game: str, session: Session, record
     records.add(
         game=game,
         board=f'{HUNTS_BOARD_PREFIX}{record.quest_id}',
-        user_id=session.user_id,
-        player=session.username,
+        user_id=player.user_id,
+        player=player.username,
         score=sum(record.counts),
         details={
             'hunter_rank': record.hunter_rank,
@@ -163,11 +167,72 @@ def store_quest_record(records: RecordStore, game: str, session: Session, record
             records.add(
                 game=game,
                 board=_kills_board(index + 1),
-                user_id=session.user_id,
-                player=session.username,
+                user_id=player.user_id,
+                player=player.username,
                 score=count,
                 details={'quest': record.quest_id},
             )
+
+
+# The EU test build `TLES_527.07` sends its own 6307 after 6306 (`0x002b2da0`)
+# when a large-monster kill is pending (`0x0040be43`): `u8 1, u8 Hunter Rank,
+# u16 quest`, then `u8 kind, u32 total` unless the kind is 0. Its quest death
+# handlers (`game.bin` `0x00615f90`, `0x0068b120`) call `0x005543a0` with a
+# kind from the monster type (11 -> 1, other types of the Rathian/Rathalos
+# handler -> 0, 6 -> 2, 20 -> 3), which adds one to that monster's saved total
+# (hunter `+1732/+1744/+1740/+1742`, capped at 9999) and keeps the new total
+# for the upload. The pair loop stops at a zero kind byte, so a Rathian kill is
+# reported without its pair. Hunter Rank counts the HR point thresholds
+# reached (`0x005517e0`, table `0x00581560`); the quest is quest information
+# `+0x1e` (`lobby.bin` `0x005bc240`), as on EU.
+TEST_BUILD_RECORD_MONSTERS = {0: 1, 1: 11, 2: 6, 3: 20}
+TEST_BUILD_KILLS_BOARD_PREFIX = 'tles-kills-'
+
+
+@dataclass(frozen=True, slots=True)
+class TestBuildQuestRecord:
+    """One decoded TLES 6307 upload; `total` is None for a Rathian kill."""
+
+    quest_id: int
+    hunter_rank: int
+    monster: int
+    total: int | None
+
+
+def decode_test_build_quest_record(payload: bytes) -> TestBuildQuestRecord:
+    """Decode one TLES 6307 request payload."""
+
+    if len(payload) not in (4, 9) or payload[0] != 1:
+        raise ValueError('TLES quest record has an invalid size or flag.')
+    _, hunter_rank, quest_id = struct.unpack_from('>BBH', payload)
+    if len(payload) == 4:
+        return TestBuildQuestRecord(quest_id, hunter_rank, TEST_BUILD_RECORD_MONSTERS[0], None)
+    kind, total = struct.unpack_from('>BL', payload, 4)
+    if kind not in TEST_BUILD_RECORD_MONSTERS or kind == 0 or total > QUEST_RECORD_MAX_COUNT:
+        raise ValueError('TLES quest record has an invalid kill entry.')
+    return TestBuildQuestRecord(quest_id, hunter_rank, TEST_BUILD_RECORD_MONSTERS[kind], total)
+
+
+def store_test_build_quest_record(
+    records: RecordStore, game: str, player: OnlinePlayer, record: TestBuildQuestRecord
+) -> None:
+    """Keep a TLES lifetime kill total on `tles-kills-<monster>`.
+
+    A Rathian report carries no total, so it is not stored. These totals are
+    the client's own saved counts, unlike EU's per-quest counts, so they stay
+    off the Record pages.
+    """
+
+    if record.total is None:
+        return
+    records.add(
+        game=game,
+        board=f'{TEST_BUILD_KILLS_BOARD_PREFIX}{record.monster:02d}',
+        user_id=player.user_id,
+        player=player.username,
+        score=record.total,
+        details={'quest': record.quest_id, 'hunter_rank': record.hunter_rank},
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +282,8 @@ class RecordPages:
         links = _Links(directory)
         if page == RECORD_PAGE_NAME:
             return document(self._index(links)).encode()
+        if page == TEST_BUILD_KILLS_PAGE_NAME:
+            return document(self._test_build_kills(links)).encode()
         parsed = _parse_paged_name(page)
         if parsed is None:
             return None
@@ -236,6 +303,8 @@ class RecordPages:
                 continue
             ranked = f'{count} quest{"s" if count != 1 else ""}'
             lines.append(f'<a href="{links.page(code, 1)}">{title}</a> ({ranked})<br>\n')
+        if self._test_build_totals():
+            lines.append(f'<a href="{links.named(TEST_BUILD_KILLS_PAGE_NAME)}">EU test build kill totals</a><br>\n')
         return panel(
             'Hunter Records',
             'Fastest clears of each quest and the hunters<br>\nwith the most kills of each monster.<br>\n<br>\n'
@@ -245,6 +314,33 @@ class RecordPages:
             # Only the EU build uploads quest records (6307); NA has no such command.
             f'<br>\n<font color="{NOTE_COLOR}">Only the European release sends quest records,<br>\n'
             'so these rankings list EU players only.</font><br>\n'
+        )
+
+    def _test_build_totals(self) -> dict[int, list]:
+        """Stored TLES lifetime totals by monster, highest per hunter first."""
+
+        boards = self._records.best_by_board(self._game, TEST_BUILD_KILLS_PER_MONSTER, highest=True)
+        totals = {}
+        for monster in TEST_BUILD_RECORD_MONSTERS.values():
+            rows = boards.get(f'{TEST_BUILD_KILLS_BOARD_PREFIX}{monster:02d}')
+            if rows:
+                totals[monster] = rows
+        return totals
+
+    def _test_build_kills(self, links: '_Links') -> str:
+        bar = f'<a href="{links.index}">Index</a><br>\n'
+        boards = [
+            _board(MONSTER_NAMES[monster], 'Kills', [(record.player, str(record.score)) for record in rows])
+            for monster, rows in self._test_build_totals().items()
+        ] or [_board('Monsters', 'Kills', [])]
+        return (
+            panel(
+                'EU Test Build Kill Totals',
+                'Lifetime kills the EU test build saves and<br>\nreports after each quest. It reports<br>\n'
+                'Rathalos, Yian Kut-Ku and Gypceros kills;<br>\nRathian kills come without a total.<br>\n' + bar,
+            )
+            + ''.join(f'<br>\n{board}' for board in boards)
+            + f'<br>\n{bar}'
         )
 
     def _monsters(self, number: int, links: '_Links') -> str | None:
@@ -298,6 +394,9 @@ class _Links:
     def page(self, code: str, number: int) -> str:
         return self._url(f'RANK_{code}_{number}.HTM')
 
+    def named(self, page: str) -> str:
+        return self._url(page)
+
     def _url(self, page: str) -> str:
         return f'lbs://lbs/{self.directory}/{page}'
 
@@ -325,10 +424,12 @@ def _paged(
 
 
 def _is_record_directory(directory: str) -> bool:
-    """NA `02`, EU `03/<two-digit language>`."""
+    """NA `02`, EU `03/<two-digit language>`, EU test build `03` (`lobby.bin` `lbs://lbs/03/DATABASE.HTM`)."""
 
     parts = directory.split('/')
-    return parts == ['02'] or (len(parts) == 2 and parts[0] == '03' and len(parts[1]) == 2 and parts[1].isdigit())
+    if parts in (['02'], ['03']):
+        return True
+    return len(parts) == 2 and parts[0] == '03' and len(parts[1]) == 2 and parts[1].isdigit()
 
 
 def _parse_paged_name(page: str) -> tuple[str, int] | None:
