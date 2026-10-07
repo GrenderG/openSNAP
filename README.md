@@ -1,586 +1,285 @@
 # openSNAP
 
-Open, clean-room implementation of the Sega Network Application Package (SN@P).
+An open, clean-room server for SEGA's SN@P online middleware, bringing PlayStation 2 online games back.
 
-## Overview
+## Supported games
 
-openSNAP is designed with a strict separation between:
-
-- protocol and transport core logic,
-- state and storage logic,
-- game-specific extensions.
-
-This keeps core behavior reusable while allowing game integrations to be added independently.
-
-## Project Status
-
-Supported PlayStation 2 builds, by disc serial, with the game plugin that serves them:
-
-| Game | Serial | Plugin | Status and limitations |
+| Game | Serial | Plugin | Status |
 | --- | --- | --- | --- |
 | Auto Modellista Public Beta volume 1.0 | `SLUS_204.98` | `automodellista_beta1` | Supported. |
-| Auto Modellista Public Beta volume 2.0 | `SLUS_280.31` | `automodellista` | Supported: same SDK build, title code and signup page as the release. |
+| Auto Modellista Public Beta volume 2.0 | `SLUS_280.31` | `automodellista` | Supported (same protocol as the release). |
 | Auto Modellista NTSC-U/C | `SLUS_206.42` | `automodellista` | Supported. |
-| Monster Hunter NTSC-U | `SLUS_208.96` | `monsterhunter` | Supported. Needs the Capcom APP service. DNAS is not served by openSNAP. |
-| Monster Hunter PAL | `SLES_527.07` | `monsterhunter` | Supported, with crossplay with NTSC-U. Needs the Capcom APP service. DNAS is not served by openSNAP. Accented EU text shows garbled on NTSC-U screens. |
-| Monster Hunter NTSC-U public beta | `SLUS_291.10` | `monsterhunter_na_beta` | Supported, untested in game, on its own server: its member profile differs from the release's, so beta players only meet each other. Needs its own bootstrap and the Capcom APP service (see [Monster Hunter NA public beta](#monster-hunter-na-public-beta)). Requires a DNAS-patched disc: its DNAS replies were never captured back in the day, so no DNAS replay server (such as dnasrep-go) can authenticate it. |
-| Monster Hunter PAL demo | `SLED_530.83` | `monsterhunter` | Expected to work, untested in game, together with the releases: its lobby makes the same SN@P requests as `SLES_527.07` with the same 140-byte profile, and its APP flow is the PAL one. Requires a DNAS-patched disc: its DNAS replies were never captured back in the day, so no DNAS replay server (such as dnasrep-go) can authenticate it. |
-| Monster Hunter PAL test build | `TLES_527.07` | `monsterhunter` | Supported, untested in game: its lobby is the NTSC-U one with the PAL title code. It answers the APP service like PAL but runs the NTSC-U APP flow, so the APP service recognises its build stamp and serves it that flow. Plays together with the releases. Its own large-monster kill reports (lifetime Rathalos, Yian Kut-Ku and Gypceros totals) are stored and shown on its Record page (`03/TLES_KILLS.HTM`, linked from the Record index once any is stored). Requires a DNAS-patched disc: its DNAS replies were never captured back in the day, so no DNAS replay server (such as dnasrep-go) can authenticate it. |
-| Resident Evil Outbreak (File#1) NTSC-U | `SLUS_207.65` | `outbreak` | Supported, both releases (v1 and v2 play together); not yet tested in game. Needs the Capcom APP service. Scenario results feed the rankings, shown in the lobby's DATABASE menu and on the Notice Board. |
+| Monster Hunter NTSC-U | `SLUS_208.96` | `monsterhunter` | Supported. Plays with PAL. |
+| Monster Hunter PAL | `SLES_527.07` | `monsterhunter` | Supported. Plays with NTSC-U; accented EU text looks garbled on NTSC-U screens. |
+| Monster Hunter PAL demo | `SLED_530.83` | `monsterhunter` | Expected to work with the releases; untested. DNAS patch required. |
+| Monster Hunter PAL test build | `TLES_527.07` | `monsterhunter` | Supported, untested. Plays with the releases. DNAS patch required. |
+| Monster Hunter NTSC-U public beta | `SLUS_291.10` | `monsterhunter_na_beta` | Supported, untested. Separate server: beta players only meet each other. DNAS patch required. |
+| Resident Evil Outbreak (File#1) NTSC-U | `SLUS_207.65` | `outbreak` | Supported, v1 and v2 play together. Not yet fully tested in game. |
+| Resident Evil Outbreak (File#1) NTSC-U public beta | `SLUS_290.89` | - | Not supported: same login as the release, but an earlier lobby design (own Areas `obbs01`/`obbf01`, fixed "TEST GAME" rooms, older APP flow) that would need its own reverse engineering. |
 
-"Needs the Capcom APP service" means also running `python3 run.py app capcom` (see
-[Run Capcom APP Service](#run-capcom-app-service-monster-hunter-resident-evil-outbreak)).
+Monster Hunter and Resident Evil Outbreak also need the [Capcom APP service](#capcom-app-service).
 
-## SNAP History (Brief)
+openSNAP does not serve DNAS: point the DNAS hostnames (listed in `.env.dist`) at a DNAS replay server such as
+dnasrep-go. The builds marked "DNAS patch required" need a DNAS-patched disc instead, because their DNAS replies
+were never captured.
 
-SN@P is the direct continuation of KAGE, an in-house online gaming middleware developed by SEGA primarily for Dreamcast titles. It later evolved into the **SEGA Network Application Package**.
+## Install
 
-In the early 2000s, SEGA positioned SNAP as a cross-platform networking stack for game developers. In **December 2002**, SEGA announced middleware agreements that made SNAP available to PlayStation 2 and GameCube developers.
-
-On **August 19, 2003**, Nokia and SEGA announced an agreement for Nokia to acquire select Sega.com technology, including SNAP. Nokia stated that SNAP would become core technology for its online mobile gaming push (especially around N-Gage services).
-
-After that transition, the platform was commonly referred to in Nokia's mobile ecosystem as **SNAP Mobile**, and industry coverage from that period described SNAP as **Scalable Network Application Package** in its Nokia-era mobile form.
-
-Historical references:
-
-- Nokia/SEGA transfer announcement (Aug 19, 2003): https://www.globenewswire.com/news-release/2003/08/19/1847054/0/en/Nokia-and-SEGA-reach-agreement-on-the-transfer-of-select-SEGA-com-leading-technology.html
-- Sega middleware rollout coverage (Dec 4, 2002): https://www.gamedeveloper.com/game-platforms/sega-networking-middleware-rolls-out-to-ps2-gamecube-developers
-- Nokia/Sun SNAP Mobile coverage (Jul 1, 2004): https://www.gamespot.com/articles/nokia-and-sun-bringing-snap-to-java-handsets/1100-6101766/
-
-## Future Goals
-
-Next planned protocol targets:
-
-- Western versions of Resident Evil Outbreak
-
-## Prerequisites
-
-Install these first:
-
-- `git`
-- `python3` (3.11 or newer)
-- `pip` (usually included with Python)
-
-Optional but recommended checks:
-
-```bash
-git --version
-python3 --version
-python3 -m pip --version
-```
-
-## Install From Scratch
-
-1. Clone the repository.
+Requirements: `git` and Python 3.11 or newer.
 
 ```bash
 git clone https://github.com/GrenderG/openSNAP
 cd openSNAP
-```
-
-2. Create and activate a virtual environment.
-
-```bash
 python3 -m venv .venv
-source .venv/bin/activate
-```
-
-Windows PowerShell:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
-
-3. Install dependencies.
-
-```bash
-python3 -m pip install --upgrade pip
+source .venv/bin/activate          # Windows PowerShell: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+cp .env.dist .env                  # optional: created automatically on first run
 ```
 
-4. Create local configuration file (optional).
-
-```bash
-cp .env.dist .env
-```
-
-Edit `.env` as needed for your machine. Local `.env` files are gitignored so local changes are not committed.
-If `.env` is missing, openSNAP automatically creates it from `.env.dist` on first run.
-
-## Run openSNAP (Game)
-
-Start the SNAP game service:
-
-```bash
-python3 run.py game
-```
-
-Expected startup output includes:
-
-```text
-Starting openSNAP game server on 0.0.0.0:9091 using plugin <game-plugin>.
-```
-
-Stop the server with `Ctrl+C`.
-
-`python3 run.py` without arguments is equivalent to `python3 run.py game`.
-
-## Bootstrap And Game Server Configuration
-
-Environment variables for the split UDP services:
-
-- `OPENSNAP_BOOTSTRAP_HOST`: bootstrap bind host (default: `0.0.0.0`).
-- `OPENSNAP_BOOTSTRAP_ADVERTISE_HOST`: optional IPv4 host advertised by the bootstrap service when it needs to emit its own endpoint. If empty, openSNAP derives it from `OPENSNAP_BOOTSTRAP_HOST` and client routing.
-- `OPENSNAP_BOOTSTRAP_PORT`: bootstrap bind port (default: `9090`).
-- `OPENSNAP_GAME_HOST`: game bind host (default: `0.0.0.0`).
-- `OPENSNAP_GAME_ADVERTISE_HOST`: optional IPv4 host advertised to clients in bootstrap login-success packets. If empty, openSNAP derives it from `OPENSNAP_GAME_HOST` and client routing.
-- `OPENSNAP_GAME_PORT`: game bind port (default: `9091`).
-- `OPENSNAP_GAME_PLUGIN`: game plugin name (default: built-in plugin selection).
-- `OPENSNAP_BOOTSTRAP_GAMES`: games whose logins the bootstrap accepts: `generic` (default, every known game) or a comma-separated list of game identifiers. Logins from other games are dropped and logged. Builds sharing a title code (the Monster Hunter release and `monsterhunter_na_beta`) go to the first game this bootstrap accepts.
-- `OPENSNAP_GAME_SERVER_MAP`: optional explicit `game plugin name -> host:port` bootstrap redirect map. Example: `{"automodellista":"192.168.1.151:9091","monsterhunter":"192.168.1.152:10070"}`. Object values with `host` and `port` are also accepted, but `host:port` is the intended primary form.
-- `OPENSNAP_SERVER_SECRET`: bootstrap server secret string.
-- `OPENSNAP_BOOTSTRAP_KEY`: bootstrap encryption key string (default: `SNAP-SWAN`).
-- `OPENSNAP_TICK_INTERVAL_SECONDS`: periodic tick interval (default: `10.0`).
-
-The bootstrap and game servers are separate processes. Point both at the same shared store (`OPENSNAP_SQLITE_PATH`, or the same MariaDB or PostgreSQL database) so the bootstrap-issued session is available when the client reconnects to the game port.
-The bootstrap handshake stays on the bootstrap endpoint through login start and verifier exchange (`0x2c` / `0x41`). The client should not switch to the game endpoint until bootstrap login success returns the final game server IP/port.
-
-Every SN@P title logs in on the same bootstrap port (the SDK hardcodes UDP 9090), so the bootstrap identifies the game from the login itself: each game passes a fixed title code to the SDK, sent at login payload offset 100, and the packet footer tells the SDK generation apart. Known builds: Auto Modellista US `0xCAAD` (beta1 is the `0xCAAD` build with the legacy `0xBA476610` footer), Monster Hunter NA `0xCA03` and EU `0xCA0E` (both served by `monsterhunter`; the NA public beta also sends `0xCA03` and is told apart by the bootstrap it logs in to, see `OPENSNAP_BOOTSTRAP_GAMES`), Resident Evil Outbreak NA `0xCAE0` (both releases, served by `outbreak`). Logins from unknown builds are dropped and logged, as are games left out of `OPENSNAP_BOOTSTRAP_GAMES`. The redirect target is then resolved through `OPENSNAP_GAME_SERVER_MAP` plus the current process's local game endpoint, so one bootstrap can serve every game, each game server on its own host or port. Game servers may share one SQLite database: rooms and lobby state are kept per game.
-
-## Run Bootstrap Server
-
-Start the standalone bootstrap service:
-
-```bash
-python3 run.py bootstrap
-```
-
-Expected startup output includes:
-
-```text
-Starting openSNAP bootstrap server on 0.0.0.0:9090.
-```
-
-## Run Game Server
-
-Start the standalone game service:
-
-```bash
-python3 run.py game
-```
-
-## Run Web Service
-
-Start the web service (separate process):
-
-```bash
-python3 run.py web
-```
-
-Run web, bootstrap, and game services against the same shared store so account creation/login from the web page is immediately available to the UDP services.
-
-Expected startup output includes:
-
-```text
-openSNAP web listening on 0.0.0.0:80 using plugin <web-game-module>.
-```
-
-The web service includes plugin-defined routes based on the original SNAP web flows.
-
-The signup flow is user-driven and shared by every game (`opensnap_web/signup.py`): the page lets the player choose
-the username the browser saves to the memory card. Usernames are 4-10 letters, digits and single inner `_` (10 is the
-most the client browser keeps, and every game logs in with the whole ID). Passwords are 4-15 characters, the length of
-the in-game password keyboard of every client. The form uses simple PS2-era-compatible HTML input controls for old console
-browsers. The page acts as create/login: missing users are created in the shared store, existing users must provide
-the matching password.
-
-For reverse-engineering support, unknown routes trigger a full terminal request dump (method, URL, query, headers, form/body, and source address).
-
-Web layout: `opensnap_web/app.py` opens the shared store once and registers one Flask blueprint per selected game
-module; `opensnap_web/games/__init__.py` lists the modules; `common.py` holds the response, request-dump and route
-helpers and `signup.py` the shared signup pages. A game module (`games/monsterhunter/`, `games/automodellista/`)
-only declares its paths and pages.
-
-## Run DNS Service
-
-Start the standalone DNS service (separate process):
-
-```bash
-python3 run.py dns
-```
-
-The DNS service provides static A-record answers from `OPENSNAP_DNS_ENTRIES`.
-By default, `OPENSNAP_DNS_ENTRIES` includes entries required by bundled game modules.
-
-The value `@default` in DNS entries resolves to `OPENSNAP_DNS_DEFAULT_IP` when set, otherwise `OPENSNAP_GAME_ADVERTISE_HOST`, then `OPENSNAP_GAME_HOST` (if it is a concrete IPv4), then `127.0.0.1`.
-
-## Storage Configuration
-
-openSNAP keeps two kinds of state:
-
-- Shared store: accounts, the bootstrap-to-game session handoff, and game records for rankings (Auto Modellista
-  lap times, Monster Hunter EU quest records). Web, bootstrap, and game services must use the same shared store.
-  It is touched at signup, login, and record uploads, never per packet.
-- Runtime state: sessions with their packet counters, lobbies, and rooms. Each server process keeps its own in
-  memory, so it is gone after a restart (clients log in again anyway).
-
-Shared store settings:
-
-- `OPENSNAP_STORAGE_BACKEND`: `sqlite` (default), `mariadb` or `postgresql`.
-- `OPENSNAP_SQLITE_PATH`: SQLite database file (default: `opensnap.db`). Every service must point at the same file, so
-  SQLite suits services running on one machine.
-- `OPENSNAP_MARIADB_HOST`, `OPENSNAP_MARIADB_PORT` (default `3306`), `OPENSNAP_MARIADB_USER`,
-  `OPENSNAP_MARIADB_PASSWORD`, `OPENSNAP_MARIADB_DATABASE` (default `opensnap`), `OPENSNAP_MARIADB_SSL_CA` (optional CA
-  file for TLS): MariaDB/MySQL connection for services spread over several machines. Requires `pip install PyMySQL`.
-- `OPENSNAP_POSTGRESQL_HOST`, `OPENSNAP_POSTGRESQL_PORT` (default `5432`), `OPENSNAP_POSTGRESQL_USER`,
-  `OPENSNAP_POSTGRESQL_PASSWORD`, `OPENSNAP_POSTGRESQL_DATABASE` (default `opensnap`), `OPENSNAP_POSTGRESQL_SSL_CA`
-  (optional CA file; connects over TLS and verifies the server name): PostgreSQL connection, the alternative to
-  MariaDB for services spread over several machines. Requires `pip install "psycopg[binary]"`. The tables are
-  created on first connection.
-  openSNAP creates its tables on first start; the user only needs rights on that database. Keep the database
-  reachable only by your own servers.
-- `OPENSNAP_DEFAULT_USERS`: comma-separated `username:password[:seed[:team]]` entries inserted on startup.
-
-Older SQLite files are migrated automatically: the runtime tables earlier versions kept there are dropped, accounts
-are kept.
-
-Example:
-
-```bash
-OPENSNAP_SQLITE_PATH=./opensnap.sqlite python3 run.py game
-```
-
-## Game Plugin Configuration
-
-Game behavior is loaded through a plugin selected in server config.
-
-Environment variable:
-
-- `OPENSNAP_GAME_PLUGIN`: plugin name to load.
-
-Run with explicit plugin selection:
-
-```bash
-OPENSNAP_GAME_PLUGIN=<plugin_name> python3 run.py game
-```
-
-## Monster Hunter
-
-Run the game service with the `monsterhunter` plugin:
-
-```bash
-OPENSNAP_GAME_PLUGIN=monsterhunter python3 run.py game
-```
-
-The bootstrap recognizes Monster Hunter NA and EU logins by their title codes and routes both to the
-`monsterhunter` game server (its `OPENSNAP_GAME_SERVER_MAP` entry, or the local game endpoint). Both releases
-share the lobby and hunt protocol, so NA and EU players meet in the same Lands, Towns, and quests. EU text is
-UTF-8 while NA shows plain ASCII, so accented EU names and chat look garbled on NA screens.
-
-The PAL demo and the PAL test build also play on this server (see [Project Status](#project-status)). The NA
-public beta has its own server, below.
-
-Besides SNAP UDP, the client uses Capcom's APP TCP service for its online menu (Land list, Market state, Event
-download and quest-return receipts), so also run the Capcom APP process (see
-[Run Capcom APP Service](#run-capcom-app-service-monster-hunter-resident-evil-outbreak)). Game settings are grouped under
-"Plugin-specific configuration" in `.env.dist`:
-
-- `OPENSNAP_MH_WORLDS`: nested JSON object of World name ->
-  `{"enabled": true, "host": "...", "description": "...", "lands": [...]}`,
-  where each Land is `{"key": "...", "name": "...", "description": "...", "areas": N, "capacity": N, "color": "#RRGGBB"}`
-  (up to 16 Worlds, 56 Lands per World and 64 in total, 1-26 Areas per Land, Land keys up to 13 characters and
-  unique within their World, capacity default 750). The World and Land menus show the highlighted entry's
-  `description` (default "Select a world to login to." and "Select a land to login to."). The default is the original Brave World with the Red, Green
-  and Blue Lands, in the JP release's Land panel colors (all official colors are listed in `.env.dist`). Exactly
-  one World leaves `host` empty: the World served here. A World with a `host` runs on another game server (for
-  example another region); the client logs in to that address after choosing it, and this server only lists its
-  Lands (populations show as 0). Only enabled Worlds count (`enabled` defaults to `true`); the original Sincere
-  World is in `.env.dist` with `"enabled": false`, validated but not listed. Areas are named `<key>01`..`<key>NN`;
-  an Area holds at most 63 Towns (3 categories of 21) of `OPENSNAP_MAX_PLAYERS_PER_ROOM` players, and the client
-  creates every Town with a maximum of 8.
-- `OPENSNAP_DATA_DIR`: local data root (default: `data`). Monster Hunter reads `data/monsterhunter`:
-  - `events/manifest.json`: optional downloadable Event quests,
-    `{"events": [{"index": 0, "quest_id": 201, "title": "...", "file": "201.mib"}, ...]}`. One quest is
-    served per day in `index` order (by day of the year, like the Market), then the list repeats. Files are
-    NA/EU quest files of at most 32 KB, and `quest_id` must match the number inside the file.
-    `events/manifest.json.dist` is a sample; quest files (`*.mib`) and `manifest.json` are not in the
-    repository;
-  - `quests.json`: `{"<quest number>": {"name": "...", "category": "..."}}` for the Record pages (all NA/EU
-    disc quests and the Event quests, with the EU names). Categories: `hunt`, `gathering`, `capture`,
-    `special`, `event`. The Record menu opens an index that links to the monster page (top 3 hunters per
-    monster) and to each category's pages (10 quests per page by quest number, top 4 clears each). Quests
-    it does not list are shown by number under "Other quests";
-  - `information.json`: optional `{"title": "...", "pages": ["page1.txt"]}` online Information pages
-    (1-3 pages, 8192 bytes each, client page markup such as `<BODY>`). Without it one empty page is
-    published, which the client needs to continue its online setup (Event, Market, connection timing).
-    NA only; EU has no such pages.
-  - `files/`: pages the client asks for by name: the welcome page shown at the first online connection,
-    `files/02/TOP_INFOR.HTM` for NA and `files/03/<language>/TOP_INFOR.HTM` for EU (languages `01` English,
-    `02` French, `03` Italian, `04` Spanish, `05` German). A missing file is shown as nothing. The log names
-    every requested file.
-
-The data folder is not distributed with openSNAP.
-
-Players stay listed in their Town while they are out on a quest, and return to that Town when the quest ends.
-
-After a quest the EU client uploads its quest records: monsters hunted and the clear time. They are kept in the
-shared store (`records`, game `monsterhunter`, boards `hunts-<quest>` and `clear-<quest>`) and shown on the EU lobby's
-Record page (Information menu, `DATABASE.HTM`), which the server generates on request: the top hunters by monsters
-hunted and the fastest clears of every quest. Quests are listed by number until their names are decoded. A record
-from an address with several logged-in players cannot be told apart and is not kept.
-
-The Minegarde Market day changes automatically with the server's local date, following the 10-day
-rotation Claw, Normal, Half-off, Normal, Tools, Normal, Half-off, Normal, Fish & Food, Normal.
-
-Account registration uses the `monsterhunter` web module (`/mhweb/...`). DNAS is not served by openSNAP: point
-the DNAS host at an external DNAS-compatible service through `OPENSNAP_DNS_ENTRIES`.
-
-### Monster Hunter NA public beta
-
-The NA public beta (`SLUS_291.10`) runs the release's lobby and quest protocol, but its member profile is 216 bytes
-(the release's is 140) and it has no lobby keepalive. Each client reads other players' profiles in its own size,
-so the beta can't share a server with the release. The `monsterhunter_na_beta` plugin is the `monsterhunter` plugin
-with the beta's profile layout and no idle limit outside quests. Run it as its own game server:
-
-```bash
-OPENSNAP_GAME_PLUGIN=monsterhunter_na_beta python3 run.py game
-```
-
-The beta logs in with the release's title code, so it needs its own bootstrap. Its built-in bootstrap host is
-`snap01.reo.capcom.sf.yav4.com` (shared with Resident Evil Outbreak), while the release uses
-`bootstrap01.mh-beta.capcom.sf.yav4.com`:
-
-- The beta's bootstrap sets `OPENSNAP_BOOTSTRAP_GAMES=monsterhunter_na_beta,outbreak`.
-- When the release is served too, its bootstrap runs on another IP with `OPENSNAP_BOOTSTRAP_GAMES` listing
-  `monsterhunter`, and the DNS map points each hostname at its bootstrap. The SDK fixes the bootstrap port, so
-  each bootstrap needs its own IP.
-
-The Capcom APP process serves the beta too: it recognises the beta by its build stamp and gives it its own
-Worlds (`OPENSNAP_MH_NA_BETA_WORLDS`, same format as `OPENSNAP_MH_WORLDS`, default Brave World), hosted at the
-`monsterhunter_na_beta` entry of `OPENSNAP_GAME_SERVER_MAP`, and its own data folder (`data/monsterhunter_na_beta`).
-It registers accounts at `regweb.reo.capcom.sf.yav4.com/reweb/` (the Notice Board's signup link).
-
-## Resident Evil Outbreak
-
-Run the game service with the `outbreak` plugin:
-
-```bash
-OPENSNAP_GAME_PLUGIN=outbreak python3 run.py game
-```
-
-Both NTSC-U releases of Resident Evil Outbreak (File#1, `SLUS_207.65`) log in with the same title code and
-play together. The client logs in through `snap01.reo.capcom.sf.yav4.com`. Both the registration menu and the
-lobby's Notice Board open `regweb.reo.capcom.sf.yav4.com/reweb/index.jsp`, which the `outbreak` web module serves
-as the Notice Board:
-
-- Register / log in: the account signup (`/reweb/signup/`).
-- Fastest clears per scenario: each player's best clear time and character, in scenario mode and in free mode
-  (the game keeps its best times per mode; the reports carry no difficulty).
-- Total result points: every player's result points summed over all scenarios.
-
-The same rankings open from the lobby's DATABASE menu (`lbs://lbs/01/DATABASE.HTM`), which the browser fetches from the Capcom APP service. The rankings come from the result reports the APP service stores (below). The Monster Hunter public beta opens the
-same URL to register, so with `OPENSNAP_WEB_GAME_PLUGIN=generic` it also lands on the Notice Board and signs up
-through its link. A `monsterhunter`-only web server keeps serving the plain signup form there.
-
-Areas: the free-mode hall `obmft`, the five scenario-mode Areas `obms01`..`obms05`, and the free-mode Areas
-`obmf01`..`obmfNN`. Rooms hold up to 4 players (or `OPENSNAP_MAX_PLAYERS_PER_ROOM` if lower), and the room list
-shows at most 30 open rooms per Area. A started room leaves the list; its players stay in it for the scenario.
-While a player is in a scenario the server sends it no lobby events (room list, joins, leaves, profiles, chat):
-the scenario replaces the lobby code those events would run.
-
-Besides SNAP UDP, the client uses Capcom's APP TCP service: a welcome page and the NETBIO data files on every
-lobby entry, and a result report after each scenario (the game shows `ERR:D9xx` when that report fails), so also
-run the Capcom APP process
-(see [Run Capcom APP Service](#run-capcom-app-service-monster-hunter-resident-evil-outbreak)). Settings (under
-"Plugin-specific configuration" in `.env.dist`):
-
-- `OPENSNAP_OUTBREAK_FREE_AREAS`: number of free-mode Areas, 1-99 (default: `10`).
-- `OPENSNAP_OUTBREAK_AREA_CAPACITY`: players per Area (default: `100`).
-- `OPENSNAP_DATA_DIR`: Outbreak reads `data/outbreak/files/01/TOP_INFOR.HTM`, the welcome page, like Monster
-  Hunter's (same client page markup, `<BODY><SIZE=2><LF=1><CENTER>...<END>`, at most 4095 bytes). Without it the
-  page is empty.
-
-The NETBIO data files hold the scenario list with its descriptions, and the room rules: whether the host may change
-No. of Players, Waiting Time, Difficulty and Friendly Fire, their defaults, and scenario mode's join timer. Without
-them every free-mode rule is locked. The APP service builds both files in
-`opensnap_app/capcom/outbreak/netbio.py`, which documents their layout. The values are those of the alpha-server
-captures: the host may change Room Title, Password, Scenario, No. of Players, Waiting Time, Difficulty and Friendly
-Fire (off by default; the US manual predates it). The Scenario choices come from the player's save: scenarios unlock
-by clearing them, online or offline, so a fresh save offers only Outbreak.
-
-## Run Capcom APP Service (Monster Hunter, Resident Evil Outbreak)
-
-Capcom's titles also open short TCP connections to Capcom's own APP service, separate from SN@P: Monster Hunter
-for its World and Land menus, Market, Events and quest records, Outbreak for its lobby welcome page, data files and
-scenario results. Every Capcom title connects to `app01.reo.capcom.sf.yav4.com:10127`, so one process serves them all:
-
-```bash
-python3 run.py app capcom
-```
-
-Point `app01.reo.capcom.sf.yav4.com` at it (see the DNS map in `.env.dist`). A game server whose game needs it
-says so in its startup log. It tells the titles apart by the build byte of each connection's first answer
-(Outbreak 1, Monster Hunter NA 2, EU 3).
-
-The Monster Hunter game server publishes its logged-in players and their Areas in the shared store, and the APP
-service reads them there: to follow each player's APP connections, count Land populations and credit quest
-records. So the APP service uses the same storage settings as the game servers, and the same game settings
-(`OPENSNAP_MH_WORLDS`, `OPENSNAP_DATA_DIR`). It sends the client on to the
-Monster Hunter game server found like the bootstrap finds it: its `OPENSNAP_GAME_SERVER_MAP` entry, or this
-machine's game endpoint.
-
-- `OPENSNAP_CAPCOM_APP_HOST`: bind host (default: `0.0.0.0`).
-- `OPENSNAP_CAPCOM_APP_PORT`: TCP port (default: `10127`, which the clients hardcode).
-
-## Web Service Configuration
-
-Environment variables for the Flask service:
-
-- `OPENSNAP_WEB_HOST`: bind host (default: `0.0.0.0`).
-- `OPENSNAP_WEB_PORT`: bind port (default: `80`).
-- `OPENSNAP_WEB_HTTPS_HOST`: HTTPS bind host for `rankweb` (default: value of `OPENSNAP_WEB_HOST`).
-- `OPENSNAP_WEB_HTTPS_PORT`: HTTPS bind port for `rankweb` (default: `443`).
-- `OPENSNAP_WEB_HTTPS_CERTFILE`: certificate path for the optional HTTPS listener.
-- `OPENSNAP_WEB_HTTPS_KEYFILE`: private key path for the optional HTTPS listener.
-- `OPENSNAP_WEB_GAME_PLUGIN`: web route mode/profile (default: `generic`).
-  - `generic`: one web server serves routes from all bundled web modules.
-  - explicit module name: register only that module (`automodellista`, `automodellista_beta1`, `monsterhunter`,
-    `outbreak`).
-
-Example:
-
-```bash
-OPENSNAP_WEB_PORT=80 python3 run.py web
-```
-
-Override to a single explicit profile if needed:
-
-```bash
-python3 run.py web --web-plugin automodellista_beta1
-```
-
-Games leave the SNAP UDP flow after post-game lobby leave and enters
-its web/database flow. The embedded info pages use `http://gameweb...`, while
-the ranking upload path uses `https://rankweb...`. Run the web service for the
-post-game return path, and configure the optional HTTPS listener if you want to
-serve the embedded `rankweb` URL locally.
-
-Auto Modellista rankings: each upload's best lap is kept per course for an existing account, and the ranking
-page lists each player's best lap, fastest first: 10 per course, plus 50 on the release event board.
-
-## DNS Service Configuration
-
-Environment variables for the DNS service:
-
-- `OPENSNAP_DNS_HOST`: bind host (default: `0.0.0.0`).
-- `OPENSNAP_DNS_PORT`: bind port (default: `53`).
-- `OPENSNAP_DNS_TTL`: TTL for answered A records (default: `60`).
-- `OPENSNAP_DNS_DEFAULT_IP`: optional fallback IPv4 for default module records.
-- `OPENSNAP_DNS_ENTRIES`: static DNS entries as a dict (JSON object or Python dict literal), where keys are hostnames and values are IPv4 strings or `@default`.
-  Wildcards are supported in keys (for example `*.games.sega.net`).
-  The `.env` parser supports multi-line dict blocks so you can group entries per game and add comments.
-
-Example:
-
-```dotenv
-OPENSNAP_DNS_ENTRIES={
-  # Game A
-  "bootstrap.game-a.example.net": "@default",
-  "gameweb.game-a.example.net": "@default",
-  "regweb.game-a.example.net": "@default"
-}
-```
-
-Binding to port `53` needs elevated permissions on Linux (for example with `sudo`).
-This restriction does not apply on Windows.
-macOS behavior is environment-dependent.
-
-For domains not defined by static entries, openSNAP falls back to the host system DNS resolver.
-
-## Logging Configuration
-
-`openSNAP` uses Python's standard logging module with runtime level selection.
-
-Environment variables:
-
-- `OPENSNAP_LOG_LEVEL`: one of `debug`, `info`, `warn`, `warning`, `error`, `critical` (default: `debug`).
-- `OPENSNAP_LOG_PATH`: optional log directory path. When set, logs are written to both stdout and a per-service file in that directory.
-  Bootstrap uses `opensnap-bootstrap.log`, game uses `opensnap-game.log`, DNS uses `opensnap-dns-log`, and web uses `opensnap-web.log`.
-- `OPENSNAP_LOG_HEXDUMP_LIMIT`: max bytes rendered in packet hexdumps (default: `16384`). Set to `0` for unlimited output.
-
-Examples:
-
-```bash
-OPENSNAP_LOG_LEVEL=debug python3 run.py game
-```
-
-```bash
-OPENSNAP_LOG_LEVEL=debug OPENSNAP_LOG_HEXDUMP_LIMIT=4096 python3 run.py game
-```
-
-```bash
-OPENSNAP_LOG_LEVEL=debug OPENSNAP_LOG_PATH=./logs python3 run.py game
-```
-
-With `debug` level enabled, received UDP datagrams include a formatted hexdump in logs.
-
-## WSGI Deployment
-
-The web service is WSGI-compatible and exposes these callables:
-
-- `opensnap_web.wsgi:app`
-- `opensnap_web.wsgi:application`
-
-Example with Gunicorn:
+All settings live in `.env`, documented in `.env.dist`. `.env` is git-ignored.
+
+## Services
+
+openSNAP runs as separate processes. Run the ones your games need, all using the same [shared store](#storage):
+
+| Command | Service | Default port |
+| --- | --- | --- |
+| `python3 run.py bootstrap` | Bootstrap login, used by every game | UDP 9090 (fixed by the games) |
+| `python3 run.py game` | Game server for one plugin (`python3 run.py` alone does the same) | UDP 9091 |
+| `python3 run.py web` | Signup pages and rankings | TCP 80 (optional HTTPS 443) |
+| `python3 run.py dns` | DNS that points the games' hostnames at your servers | UDP 53 |
+| `python3 run.py app capcom` | Capcom APP service (Monster Hunter, Resident Evil Outbreak) | TCP 10127 (fixed by the games) |
+
+Open or forward these ports if players connect from outside your network.
+
+### Bootstrap and game servers
+
+Every game logs in on the bootstrap first. The bootstrap identifies the game from the login (its SDK title code
+and packet footer) and sends the client on to that game's server. One bootstrap serves every game; each game runs
+its own game server.
+
+- `OPENSNAP_GAME_PLUGIN`: plugin the game server loads (see the table above).
+- `OPENSNAP_GAME_SERVER_MAP`: where the bootstrap sends each game, e.g.
+  `{"automodellista":"192.168.1.151:9091","monsterhunter":"192.168.1.152:10070"}`. A game missing from the map goes
+  to this machine's game server.
+- `OPENSNAP_BOOTSTRAP_GAMES`: games this bootstrap accepts: `generic` (default, all) or a comma-separated list. It
+  also separates builds that share a title code (see [Monster Hunter NA public beta](#monster-hunter-na-public-beta)).
+- `OPENSNAP_BOOTSTRAP_HOST`, `OPENSNAP_BOOTSTRAP_PORT`: bootstrap bind address (default `0.0.0.0:9090`).
+- `OPENSNAP_GAME_HOST`, `OPENSNAP_GAME_PORT`: game server bind address (default `0.0.0.0:9091`). Any game port
+  works: the bootstrap tells it to the client.
+- `OPENSNAP_BOOTSTRAP_ADVERTISE_HOST`, `OPENSNAP_GAME_ADVERTISE_HOST`: IPv4 given to clients when the bind address
+  isn't reachable as is (empty: derived from the bind host and routing).
+- `OPENSNAP_SERVER_SECRET`, `OPENSNAP_BOOTSTRAP_KEY` (default `SNAP-SWAN`): bootstrap login secrets.
+- `OPENSNAP_MAX_ROOMS_PER_LOBBY`, `OPENSNAP_MAX_PLAYERS_PER_ROOM`: room limits.
+- `OPENSNAP_TICK_INTERVAL_SECONDS`: housekeeping interval (default `10.0`).
+
+### Web service
+
+Serves account signup for every game, plus game pages and rankings.
+
+- `OPENSNAP_WEB_HOST`, `OPENSNAP_WEB_PORT`: bind address (default `0.0.0.0:80`).
+- `OPENSNAP_WEB_HTTPS_HOST`, `OPENSNAP_WEB_HTTPS_PORT`, `OPENSNAP_WEB_HTTPS_CERTFILE`, `OPENSNAP_WEB_HTTPS_KEYFILE`:
+  optional HTTPS listener (port 443), used by Auto Modellista's `rankweb` uploads.
+- `OPENSNAP_WEB_GAME_PLUGIN`: `generic` (default, every game's pages) or one module: `automodellista`,
+  `automodellista_beta1`, `monsterhunter`, `outbreak`. Also `python3 run.py web --web-plugin <module>`.
+
+Signup creates the account on first use and logs in afterwards. Usernames are 4-10 letters, digits and single inner
+`_` (the longest ID the game browsers keep). Passwords are 4-15 characters (the in-game keyboard limit).
+
+Requests to unknown paths are logged in full, to help with reverse engineering.
+
+For a WSGI server, use `opensnap_web.wsgi:app` (or `application`). It reads `.env` and logs like `run.py web`; run
+it from the repository directory so relative paths in `.env` resolve.
 
 ```bash
 gunicorn opensnap_web.wsgi:app --bind 0.0.0.0:80
 ```
 
-Example with Nginx Unit:
-
-- module: `opensnap_web.wsgi`
-- callable: `app` (or `application`)
-
-Example with Apache mod_wsgi (one process with threads, since the app opens one shared-store connection):
-
 ```apache
+# Apache mod_wsgi: one process, since the app opens one shared-store connection.
 WSGIDaemonProcess opensnap processes=1 threads=8 home=/path/to/openSNAP python-home=/path/to/openSNAP/.venv python-path=/path/to/openSNAP
 WSGIProcessGroup opensnap
 WSGIApplicationGroup %{GLOBAL}
 WSGIScriptAlias / /path/to/openSNAP/opensnap_web/wsgi.py
 ```
 
-The entry point reads `.env` and sets up logging like `run.py web`. Relative paths in `.env` (SQLite file, data and
-log paths) resolve against the working directory, so run it from the repository (`home=` above, Gunicorn
-`--chdir`). The WSGI server owns the listen address, port and TLS.
+### DNS service
 
-## Run Tests
+Answers the games' hostnames with your servers' addresses; other names go to the system resolver.
 
-Run the full suite:
+- `OPENSNAP_DNS_ENTRIES`: hostname -> IPv4 map. `.env.dist` lists every hostname the supported games use, grouped
+  per game. Wildcards work (`*.games.sega.net`). `@default` means `OPENSNAP_DNS_DEFAULT_IP`, else
+  `OPENSNAP_GAME_ADVERTISE_HOST`, else `OPENSNAP_GAME_HOST` (if an IPv4), else `127.0.0.1`.
+- `OPENSNAP_DNS_HOST`, `OPENSNAP_DNS_PORT` (default `0.0.0.0:53`), `OPENSNAP_DNS_TTL` (default `60`).
+
+Port 53 needs root on Linux.
+
+### Capcom APP service
+
+Capcom's games also talk to Capcom's own APP service over TCP, beside SN@P. They all connect to
+`app01.reo.capcom.sf.yav4.com:10127`, so one process serves every Capcom game and tells them apart from each
+connection's first answer.
+
+- Monster Hunter: World and Land menus, Market, Events, quest records.
+- Resident Evil Outbreak: lobby welcome page, data files, scenario results and the DATABASE rankings.
+
+It needs the same storage and game settings as the game servers (`OPENSNAP_MH_WORLDS`, `OPENSNAP_DATA_DIR`), and
+finds the Monster Hunter game server through `OPENSNAP_GAME_SERVER_MAP` like the bootstrap does.
+
+- `OPENSNAP_CAPCOM_APP_HOST`, `OPENSNAP_CAPCOM_APP_PORT`: bind address (default `0.0.0.0:10127`).
+
+## Storage
+
+The shared store holds accounts, the bootstrap-to-game login handoff and the records behind the rankings. Every
+service must use the same one. Lobbies, rooms and sessions live in each process's memory and are lost on restart
+(players simply log in again).
+
+- `OPENSNAP_STORAGE_BACKEND`: `sqlite` (default), `mariadb` or `postgresql`.
+- `OPENSNAP_SQLITE_PATH`: SQLite file (default `opensnap.db`), for services on one machine.
+- `OPENSNAP_MARIADB_HOST`, `_PORT` (3306), `_USER`, `_PASSWORD`, `_DATABASE` (`opensnap`), `_SSL_CA` (optional):
+  MariaDB/MySQL, for services on several machines. Needs `pip install PyMySQL`.
+- `OPENSNAP_POSTGRESQL_HOST`, `_PORT` (5432), `_USER`, `_PASSWORD`, `_DATABASE` (`opensnap`), `_SSL_CA` (optional,
+  enables verified TLS): PostgreSQL, the alternative to MariaDB. Needs `pip install "psycopg[binary]"`.
+- `OPENSNAP_DEFAULT_USERS`: `username:password[:seed[:team]]` accounts created at startup (comma-separated).
+
+Tables are created on first start. Keep the database reachable only by your servers.
+
+## Games
+
+### Auto Modellista
+
+```bash
+OPENSNAP_GAME_PLUGIN=automodellista python3 run.py game        # release and public beta 2
+OPENSNAP_GAME_PLUGIN=automodellista_beta1 python3 run.py game  # public beta 1
+```
+
+After a race the game leaves SN@P for web pages: `http://gameweb...` for information and `https://rankweb...` for
+the lap-time upload, so run the web service, with HTTPS for uploads. Each account's best lap per course is kept;
+the rankings show the 10 fastest per course and 50 on the release's event board.
+
+### Monster Hunter
+
+```bash
+OPENSNAP_GAME_PLUGIN=monsterhunter python3 run.py game
+```
+
+NA and EU players meet in the same Lands, Towns and quests; the PAL demo and test build join them. Accounts are
+created at the `monsterhunter` web pages (`/mhweb/...`).
+
+Settings:
+
+- `OPENSNAP_MH_WORLDS`: the Worlds and Lands of the online menu, as JSON:
+  World name -> `{"enabled": true, "host": "...", "description": "...", "lands": [...]}`, each Land
+  `{"key": "...", "name": "...", "description": "...", "areas": N, "capacity": N, "color": "#RRGGBB"}`.
+  - Default: the original Brave World with the Red, Green and Blue Lands. `.env.dist` also lists the official Land
+    colors and the original Sincere World (disabled).
+  - Exactly one enabled World has an empty `host`: the one this server hosts. A World with a `host` is another game
+    server, which this server only lists.
+  - Limits: 16 Worlds, 56 Lands per World and 64 in total, 1-26 Areas per Land, Land keys of up to 13 characters
+    (unique per World), capacity 750 by default. Areas are named `<key>01`..`<key>NN` and hold up to 63 Towns.
+- `OPENSNAP_DATA_DIR` (default `data`): Monster Hunter reads `data/monsterhunter/`:
+  - `files/`: welcome pages, `02/TOP_INFOR.HTM` (NA) and `03/<language>/TOP_INFOR.HTM` (EU: `01` English, `02`
+    French, `03` Italian, `04` Spanish, `05` German). Samples are included.
+  - `events/manifest.json`: downloadable Event quests, one per day in `index` order:
+    `{"events": [{"index": 0, "quest_id": 201, "title": "...", "file": "201.mib"}]}`. Quest files (NA/EU, up to
+    32 KB, `quest_id` matching the file) are not included; see `manifest.json.dist`.
+  - `quests.json`: quest names and categories (`hunt`, `gathering`, `capture`, `special`, `event`) for the Record
+    pages. Included.
+  - `information.json`: optional NA Information pages, `{"title": "...", "pages": ["page1.txt"]}` (1-3 pages, 8 KB
+    each, game page markup).
+
+Behaviour:
+
+- The Minegarde Market follows the original 10-day rotation, by the server's date.
+- Players stay listed in their Town during a quest and return to it afterwards.
+- Quest records (monsters hunted, clear times) are kept and shown on the in-game Record pages: top hunters per
+  monster and fastest clears per quest. The PAL test build's monster kill totals get a page of their own. A record
+  from an address with several players logged in can't be attributed, so it is skipped.
+
+#### Monster Hunter NA public beta
+
+```bash
+OPENSNAP_GAME_PLUGIN=monsterhunter_na_beta python3 run.py game
+```
+
+The beta's player profile is larger than the release's (216 bytes against 140), so it can't share a server with
+it. It also logs in with the release's title code, so it needs its own bootstrap:
+
+- The beta connects to `snap01.reo.capcom.sf.yav4.com` (shared with Resident Evil Outbreak); the release uses
+  `bootstrap01.mh-beta.capcom.sf.yav4.com`.
+- The beta's bootstrap sets `OPENSNAP_BOOTSTRAP_GAMES=monsterhunter_na_beta,outbreak`. If the release is served too,
+  its bootstrap needs another IP (the bootstrap port is fixed) with `OPENSNAP_BOOTSTRAP_GAMES=monsterhunter`, and
+  the DNS map points each hostname at its bootstrap.
+
+The Capcom APP service recognises the beta and gives it its own Worlds (`OPENSNAP_MH_NA_BETA_WORLDS`, same format,
+default Brave World) on the `monsterhunter_na_beta` entry of `OPENSNAP_GAME_SERVER_MAP`, and its own data folder
+(`data/monsterhunter_na_beta`). Beta players sign up on the Outbreak Notice Board page.
+
+### Resident Evil Outbreak
+
+```bash
+OPENSNAP_GAME_PLUGIN=outbreak python3 run.py game
+```
+
+Both releases (v1 and v2) play together.
+
+- Lobby: the free-mode hall, five scenario-mode Areas and `OPENSNAP_OUTBREAK_FREE_AREAS` free-mode Areas (1-99,
+  default 10), each holding `OPENSNAP_OUTBREAK_AREA_CAPACITY` players (default 100). Rooms hold up to 4.
+- Room rules: the host can change the room title, password, scenario, number of players, waiting time, difficulty
+  and friendly fire (off by default).
+- Kept from the original game:
+  - Scenarios unlock by clearing them, so a fresh save only offers "Outbreak".
+  - A free-mode room disbands when its waiting time ends with fewer than 2 players. Scenario mode starts anyway,
+    so solo play works there.
+- Rankings: every scenario result is stored. The fastest clears per scenario (scenario and free mode) and total
+  result points appear in the lobby's DATABASE menu and on the Notice Board.
+- Web: the registration menu and the Notice Board open `regweb.reo.capcom.sf.yav4.com/reweb/`, served by the
+  `outbreak` web module: account signup plus the rankings.
+- Capcom APP: on each lobby entry the game downloads a welcome page and two data files (the scenario list and the
+  room rules, generated by `opensnap_app/capcom/outbreak/netbio.py`); after each scenario it uploads its result.
+  The game shows `ERR:D9xx` when that upload fails.
+- `OPENSNAP_DATA_DIR`: the welcome page is `data/outbreak/files/01/TOP_INFOR.HTM` (included; at most 4095 bytes,
+  game page markup such as `<BODY><SIZE=2><CENTER>...<END>`).
+
+## Logging
+
+- `OPENSNAP_LOG_LEVEL`: `debug` (default), `info`, `warning`, `error` or `critical`. `debug` adds packet hexdumps.
+- `OPENSNAP_LOG_PATH`: also write logs to this directory, one file per service (`opensnap-game.log`, ...).
+- `OPENSNAP_LOG_HEXDUMP_LIMIT`: bytes per hexdump (default `16384`, `0` for no limit).
+
+## Tests
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-Note: replay regression tests use optional local packet-capture logs. If those logs are not present, replay tests are skipped automatically.
+Replay tests use local packet captures and are skipped when those are missing.
 
-## Project Layout
+## Project layout
 
-- `opensnap/protocol`: wire models, constants, and packet codec.
-- `opensnap/core`: engine, auth, routing, and shared state services.
-- `opensnap/storage`: backend factory and storage implementations.
-- `opensnap/plugins`: extension points for game-specific behavior, one package per game, plus `common`
-  (game-agnostic SNAP helpers).
-- `opensnap_web`: separate web bootstrap/login service package.
-- `opensnap_dns`: separate standalone DNS service package.
-- `opensnap_app`: companion services some games use beside SN@P, each its own process (`run.py app <name>`):
-  `capcom` (Capcom's APP protocol, with one package per title: `monsterhunter`, `outbreak`).
+- `opensnap/protocol`: packet format and codec.
+- `opensnap/core`: engine, login, routing and shared state.
+- `opensnap/storage`: shared-store backends.
+- `opensnap/plugins`: one package per game, plus `common` helpers.
+- `opensnap_web`: web service; one module per game in `games/`, shared signup in `signup.py`.
+- `opensnap_dns`: DNS service.
+- `opensnap_app`: companion services beside SN@P (`run.py app <name>`); `capcom` holds the Capcom APP protocol, one
+  package per game.
+- `data`: game data served at runtime.
 - `tests`: unit and regression tests.
+
+## History
+
+SN@P (SEGA Network Application Package) grew out of KAGE, SEGA's online middleware for Dreamcast games. In
+December 2002 SEGA opened it to PlayStation 2 and GameCube developers. In August 2003 Nokia acquired it, and it
+became SNAP Mobile for the N-Gage.
+
+- [Nokia/SEGA transfer announcement (Aug 19, 2003)](https://www.globenewswire.com/news-release/2003/08/19/1847054/0/en/Nokia-and-SEGA-reach-agreement-on-the-transfer-of-select-SEGA-com-leading-technology.html)
+- [SEGA middleware rollout (Dec 4, 2002)](https://www.gamedeveloper.com/game-platforms/sega-networking-middleware-rolls-out-to-ps2-gamecube-developers)
+- [Nokia and Sun bring SNAP to Java handsets (Jul 1, 2004)](https://www.gamespot.com/articles/nokia-and-sun-bringing-snap-to-java-handsets/1100-6101766/)
 
 ## Acknowledgements
 
-- This project has been possible thanks to No23 and his previous private work on `snapsi`.
-- flyinghead's `kage_server` repository was used as a reference while understanding parts of the protocol behavior.
-- LLMs were used to help reverse engineer binary ELF game files with the aid of `objdump`, `radare2`, `mips-linux-gnu-objdump`, and `readelf` CLI tools.
+- No23, for his earlier private work on `snapsi`.
+- flyinghead's `kage_server`, used as a protocol reference.
+- LLMs helped reverse engineer the game binaries with `objdump`, `radare2`, `mips-linux-gnu-objdump` and `readelf`.
