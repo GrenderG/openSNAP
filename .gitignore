@@ -260,3 +260,18 @@ data/tls/
 
 # Local MCP configuration.
 .mcp.json
+
+# AI coding agent local state and settings.
+.claude/
+.codex/
+.gemini/
+.cursor/
+.aider*
+.windsurf/
+.continue/
+.junie/
+.roo/
+.kilocode/
+.clinerules/
+CLAUDE.md
+GEMINI.md
