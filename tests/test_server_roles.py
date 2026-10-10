@@ -13,7 +13,7 @@ from opensnap.protocol.codec import encode_messages
 from opensnap.protocol.constants import FLAG_CHANNEL_BITS
 from opensnap.protocol.fields import get_u32
 from opensnap.protocol.models import Endpoint, SnapMessage
-from tests.support import MONSTER_HUNTER_NA_TITLE_CODE, login_client_payload, serving
+from tests.support import create_accounts, MONSTER_HUNTER_NA_TITLE_CODE, login_client_payload, serving
 
 
 class ServerRoleTests(unittest.TestCase):
@@ -29,6 +29,7 @@ class ServerRoleTests(unittest.TestCase):
                 sqlite_path=f'{self._temp_directory.name}/server-roles.sqlite',
             ),
         )
+        create_accounts(self._config, 'test')
 
     def test_bootstrap_session_survives_game_server_startup_and_rebinds_endpoint(self) -> None:
         bootstrap_engine = SnapProtocolEngine(config=self._config, role='bootstrap')
@@ -42,7 +43,7 @@ class ServerRoleTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=login_client_payload(b'test\n'),
+            payload=login_client_payload(b'test'),
         )
         login_result = bootstrap_engine.handle_datagram(_encode(login_request), bootstrap_endpoint)
         self.assertFalse(login_result.errors)
@@ -128,7 +129,7 @@ class ServerRoleTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=login_client_payload(b'test\n'),
+            payload=login_client_payload(b'test'),
         )
 
         result = engine.handle_datagram(_encode(request), endpoint)
@@ -162,7 +163,7 @@ class ServerRoleTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=login_client_payload(b'test\n', MONSTER_HUNTER_NA_TITLE_CODE),
+            payload=login_client_payload(b'test', MONSTER_HUNTER_NA_TITLE_CODE),
         )
         login_result = engine.handle_datagram(_encode(login_request), endpoint)
         self.assertFalse(login_result.errors)
@@ -213,7 +214,7 @@ class ServerRoleTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=login_client_payload(b'test\n', MONSTER_HUNTER_NA_TITLE_CODE),
+            payload=login_client_payload(b'test', MONSTER_HUNTER_NA_TITLE_CODE),
         )
 
         result = engine.handle_datagram(_encode(request), endpoint)
@@ -226,7 +227,7 @@ class ServerRoleTests(unittest.TestCase):
     def test_bootstrap_drops_logins_from_unknown_titles(self) -> None:
         engine = SnapProtocolEngine(config=self._config, role='bootstrap')
         endpoint = Endpoint(host='127.0.0.1', port=50016)
-        request = _login_request(endpoint, login_client_payload(b'test\n', 0x1234))
+        request = _login_request(endpoint, login_client_payload(b'test', 0x1234))
 
         with self.assertLogs('opensnap.core.bootstrap', 'WARNING') as captured:
             result = engine.handle_datagram(_encode(request), endpoint)
@@ -241,7 +242,7 @@ class ServerRoleTests(unittest.TestCase):
         endpoint = Endpoint(host='127.0.0.1', port=50017)
 
         with self.assertLogs('opensnap.core.bootstrap', 'WARNING') as captured:
-            result = engine.handle_datagram(_encode(_login_request(endpoint, login_client_payload(b'test\n'))), endpoint)
+            result = engine.handle_datagram(_encode(_login_request(endpoint, login_client_payload(b'test'))), endpoint)
 
         self.assertFalse(result.messages)
         self.assertIn('SN@P title 0xcaad (footer 0xba476611) is unknown or not served here', '\n'.join(captured.output))

@@ -167,9 +167,9 @@ class OutbreakPlugin(GamePlugin):
     # Login.
 
     def _handle_login_to_kics(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        handoff = context.handoffs.get(message.session_id) or context.handoffs.get_by_endpoint(message.endpoint)
-        previous = context.sessions.get(message.session_id) or context.sessions.get_by_endpoint(message.endpoint)
-        if previous is not None and handoff is not None and previous.session_id == handoff.session_id:
+        handoff = game_handlers.find_handoff(context, message)
+        previous = None if handoff is None else context.sessions.get(handoff.session_id)
+        if previous is not None:
             # The shared handler silently clears room state on a repeated login.
             self._leave_room(context, previous, notify=False)
 
@@ -446,7 +446,7 @@ class OutbreakPlugin(GamePlugin):
         Area and room up by `OID` (`0x0058ad74`).
         """
 
-        name = get_c_string(message.payload, 0)[:16].rstrip('\n').rstrip(SEARCH_NAME_PADDING)
+        name = get_c_string(message.payload, 0)[:16].rstrip(SEARCH_NAME_PADDING)
         records = []
         for player in tuple(self._players.values()):
             member = context.sessions.get(player.session_id)

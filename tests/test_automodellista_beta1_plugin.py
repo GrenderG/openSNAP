@@ -18,7 +18,7 @@ from opensnap.protocol.constants import (
     FOOTER_BYTES_KAGE,
 )
 from opensnap.protocol.models import Endpoint, SnapMessage, WIRE_FORMAT_AM_BETA1_LEGACY
-from tests.support import login_client_payload, serving
+from tests.support import create_accounts, login_client_payload, serving
 
 LEGACY_ROOM_ENTRY_COMMAND = 0x6406
 
@@ -41,6 +41,7 @@ class AutoModellistaBeta1PluginTests(unittest.TestCase):
                 sqlite_path=f'{self._temp_directory.name}/automodellista-beta1.sqlite',
             ),
         )
+        create_accounts(self._config, 'test')
         self._engine = SnapProtocolEngine(
             config=self._config,
             plugin=AutoModellistaBeta1Plugin(),
@@ -247,7 +248,7 @@ class AutoModellistaBeta1PluginTests(unittest.TestCase):
         self.assertEqual(host_join_callback.session_id, host_session)
         self.assertEqual(len(host_join_callback.payload), 40)
         self.assertEqual(struct.unpack_from('>L', host_join_callback.payload, 16)[0], joiner_session)
-        self.assertEqual(host_join_callback.payload[0:16].rstrip(b'\x00').decode('utf-8'), 'test\n')
+        self.assertEqual(host_join_callback.payload[0:16].rstrip(b'\x00').decode('utf-8'), 'test')
 
         host_user_callback = next(
             message for message in host_messages
@@ -382,7 +383,7 @@ def _create_session_via_login(engine: SnapProtocolEngine, endpoint: Endpoint, us
         session_id=0,
         sequence_number=0,
         acknowledge_number=0,
-        payload=login_client_payload(f'{username}\n'.encode('utf-8')),
+        payload=login_client_payload(username.encode('utf-8')),
     )
     # Beta1 builds its SN@P packets with the legacy footer, which identifies it.
     result = engine.handle_datagram(engine.encode_messages([request], footer_bytes=FOOTER_BYTES_KAGE), endpoint)

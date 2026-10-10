@@ -6,12 +6,18 @@ import socket
 import struct
 
 from opensnap.core.context import HandlerContext
+from opensnap.core.sessions import SessionHandoff
 from opensnap.protocol import commands
 from opensnap.protocol.constants import FLAG_CHANNEL_BITS, FLAG_RESPONSE, FLAG_ROOM
 from opensnap.protocol.fields import get_c_string
 from opensnap.protocol.models import SnapMessage
 
 LOGGER = logging.getLogger('opensnap.core.game')
+
+# `kkLoginToKICS` login ID field (`+16`): the client's ID followed by `-` (live MH
+# and Outbreak payloads); usernames hold no `-`.
+KICS_LOGIN_OFFSET = 16
+KICS_LOGIN_PADDING = '-'
 
 
 def handle_send_echo(context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -40,7 +46,7 @@ def handle_send_echo(context: HandlerContext, message: SnapMessage) -> list[Snap
 def handle_login_to_kics(context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
     """Handle `kkLoginToKICS` on the game endpoint."""
 
-    handoff = context.handoffs.get(message.session_id) or context.handoffs.get_by_endpoint(message.endpoint)
+    handoff = find_handoff(context, message)
     if handoff is None:
         LOGGER.warning(
             'Ignoring login-to-kics from %s:%d: no authenticated session is bound to this endpoint.',
@@ -123,6 +129,23 @@ def handle_login_to_kics(context: HandlerContext, message: SnapMessage) -> list[
     ] + outbound
 
 
+def find_handoff(context: HandlerContext, message: SnapMessage) -> SessionHandoff | None:
+    """Find the bootstrap login that one `kkLoginToKICS` continues.
+
+    The header session word is the client's own (`0x026407d0` for every
+    console with the default `192.0.2.100:2000` setup), and the source port
+    may differ from the bootstrap's: emulators and some NATs open the game
+    connection from a new port (`logincapture.pcapng`: bootstrap from 61357,
+    KICS from 61358). The client host and login ID still identify the login.
+    """
+
+    handoff = context.handoffs.get(message.session_id) or context.handoffs.get_by_endpoint(message.endpoint)
+    if handoff is not None:
+        return handoff
+    username = parse_kics_login_payload(message.payload).login
+    return context.handoffs.get_by_login(message.endpoint.host, username) if username else None
+
+
 def _reset_room_state_for_relogin(context: HandlerContext, session) -> None:
     """Silently clear stale room membership when a client re-enters via KICS login."""
 
@@ -170,7 +193,7 @@ def parse_kics_login_payload(payload: bytes) -> KicsLoginPayload:
         mtu_hint=_read_u32(payload, 4),
         client_flags=_read_u32(payload, 8),
         version_code=_read_u32(payload, 12),
-        login=get_c_string(payload, 16).rstrip('\n'),
+        login=get_c_string(payload, KICS_LOGIN_OFFSET).rstrip(KICS_LOGIN_PADDING),
         region_code=_read_u32(payload, 0x20),
         marker_bb=_read_u32(payload, 0x24),
         marker_dd=_read_u32(payload, 0x28),

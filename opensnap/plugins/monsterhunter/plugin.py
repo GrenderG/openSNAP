@@ -252,9 +252,9 @@ class MonsterHunterPlugin(GamePlugin):
     def _handle_login_to_kics(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         """Admit the player to the Land after the shared KICS login."""
 
-        handoff = context.handoffs.get(message.session_id) or context.handoffs.get_by_endpoint(message.endpoint)
-        previous = context.sessions.get(message.session_id) or context.sessions.get_by_endpoint(message.endpoint)
-        if previous is not None and handoff is not None and previous.session_id == handoff.session_id:
+        handoff = game_handlers.find_handoff(context, message)
+        previous = None if handoff is None else context.sessions.get(handoff.session_id)
+        if previous is not None:
             # The shared handler silently clears room state on a repeated
             # login; also drop Monster Hunter Town listings. A different
             # (superseded) session is ended by the shared handler instead.
@@ -433,7 +433,7 @@ class MonsterHunterPlugin(GamePlugin):
         """
 
         session = resolve_session(context, message, _LOGGER)
-        name = get_c_string(message.payload, 0)[:16].rstrip('\n').rstrip(SEARCH_NAME_PADDING)
+        name = get_c_string(message.payload, 0)[:16].rstrip(SEARCH_NAME_PADDING)
         records = []
         for player in tuple(self._players.values()):
             member = context.sessions.get(player.session_id)
@@ -1075,7 +1075,15 @@ class MonsterHunterPlugin(GamePlugin):
 
 
 def _member_record(session: Session, profile: bytes) -> bytes:
-    """Member record used by join callbacks and rosters (`0x00619430`)."""
+    """Member record used by join callbacks and rosters (`0x00619430`).
+
+    The name must equal the member's own client ID (its login field) byte for
+    byte: rosters fill the Town member table (`0x006182f0` -> `0x006185a0` ->
+    `0x00604230`), the Town master is the smallest name there (`0x005ed948`),
+    and a hunter is the master when that equals its own ID (`0x003c6350`,
+    `0x005e7090`, `0x005d73c0`); a Town without a master answers no seat
+    request ("Sit down", record 4).
+    """
 
     return pack_fixed(session.username, 16) + struct.pack('>2L', session.session_id, len(profile)) + profile
 

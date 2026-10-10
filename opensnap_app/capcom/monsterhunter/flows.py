@@ -100,20 +100,6 @@ class AppFlowTracker:
             elif session_id in self._phase_by_session:
                 self._phase_by_session[session_id] = phase
 
-    def attribute(self, host: str, owner: int | None) -> int | None:
-        """Return the session an APP request belongs to, or None if ambiguous.
-
-        Unattributed connections (later LAND reconnects) belong to the host's
-        only logged-in session; with several sessions behind one address the
-        player cannot be told apart.
-        """
-
-        if owner is not None:
-            return owner
-        with self._lock:
-            sessions = [session_id for session_id, address in self._host_by_session.items() if address == host]
-        return sessions[0] if len(sessions) == 1 else None
-
     def release(self, host: str, session_id: int | None) -> None:
         """Finish one LAND connection; later unattributed reconnects use LAND."""
 

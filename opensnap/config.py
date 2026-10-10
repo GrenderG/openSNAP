@@ -24,23 +24,10 @@ DEFAULT_MAX_ROOMS_PER_LOBBY = 50
 DEFAULT_MAX_PLAYERS_PER_ROOM = 8
 DEFAULT_STORAGE_BACKEND = 'sqlite'
 DEFAULT_SQLITE_PATH = 'opensnap.db'
-DEFAULT_SQLITE_USERS = 'test:1111'
 DEFAULT_MARIADB_PORT = 3306
 DEFAULT_MARIADB_DATABASE = 'opensnap'
 DEFAULT_POSTGRESQL_PORT = 5432
 DEFAULT_POSTGRESQL_DATABASE = 'opensnap'
-
-
-@dataclass(frozen=True, slots=True)
-class UserConfig:
-    """Static user account settings."""
-
-    user_id: int
-    username: str
-    password: str
-    # Empty seed means "generate one secure seed per account".
-    seed: str = ''
-    team: str = ''
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,7 +151,6 @@ class AppConfig:
 
     server: ServerConfig
     storage: StorageConfig
-    users: tuple[UserConfig, ...]
     lobbies: tuple[LobbyConfig, ...]
 
 
@@ -265,7 +251,6 @@ def default_app_config() -> AppConfig:
             postgresql_database=_read_text_env(('OPENSNAP_POSTGRESQL_DATABASE',), DEFAULT_POSTGRESQL_DATABASE),
             postgresql_ssl_ca=_read_text_env(('OPENSNAP_POSTGRESQL_SSL_CA',), ''),
         ),
-        users=_read_default_users(),
         # Lobby naming keeps three game groups plus event and club-meeting groups.
         # m-* is mountain, c-* is city, s-* is circuit, plus event and cm.
         lobbies=_default_lobbies()[:max_lobbies],
@@ -297,49 +282,6 @@ def _default_lobbies() -> tuple[LobbyConfig, ...]:
         LobbyConfig(lobby_id=19, name='event'),
         LobbyConfig(lobby_id=20, name='cm'),
     )
-
-
-def _read_default_users() -> tuple[UserConfig, ...]:
-    """Read default SQLite users from environment override."""
-
-    users_raw = os.getenv('OPENSNAP_DEFAULT_USERS', DEFAULT_SQLITE_USERS).strip()
-    users = _parse_default_users(users_raw)
-    if users:
-        return users
-    return _parse_default_users(DEFAULT_SQLITE_USERS)
-
-
-def _parse_default_users(raw: str) -> tuple[UserConfig, ...]:
-    """Parse `username:password[:seed[:team]]` default-user entries."""
-
-    users: list[UserConfig] = []
-    for entry in raw.split(','):
-        token = entry.strip()
-        if not token:
-            continue
-
-        parts = token.split(':')
-        if len(parts) < 2:
-            continue
-
-        username = parts[0].strip()
-        password = parts[1].strip()
-        if not username or not password:
-            continue
-
-        seed = parts[2].strip() if len(parts) >= 3 else ''
-        team = ':'.join(parts[3:]).strip() if len(parts) >= 4 else ''
-        users.append(
-            UserConfig(
-                user_id=len(users) + 1,
-                username=username,
-                password=password,
-                seed=seed,
-                team=team,
-            )
-        )
-
-    return tuple(users)
 
 
 def _read_bootstrap_games(value: str) -> tuple[str, ...]:

@@ -15,9 +15,9 @@ whose tag table `0x0060dbc0` and handler `0x005ace5c` match MH's):
   `0x0023c170`, AM `0x006d9e20`, Beta1 `0x008c6528`), so no button; its
   `INPUT-IDS` text ends at `<!--INPUT-IDE-->` (at most 15 characters, MH
   `0x0023c0b0`, AM `0x006d9d44`, Beta1 `0x008c644c`) and goes to the same ID
-  store as on a `COMP-SIGNUP` page. The username is followed by a newline
-  inside that text, as on the original pages: the ID is sent as the login
-  field, and the bootstrap's `0x2d` login echo (with its newline) must match it.
+  store as on a `COMP-SIGNUP` page. The bytes are copied as they are (also
+  Outbreak `0x005ad114`), so the page writes the username alone: the ID is
+  sent as the login field and must equal the bootstrap's `0x2d` login echo.
 Return link: a link whose `HREF` starts with one of the browser's exit names
 ends the browser like its pad menu does (the `HREF` is kept raw, MH
 `0x00641630`; link press `0x0063dfa0` -> exit `0x0063f5b0`), after which the
@@ -34,8 +34,7 @@ game saves the stored ID. Names and the exit reason they leave the game:
   without a reason (`0x008c4da0`), like its pad menu.
 
 Binary limits:
-- Username: the browser keeps at most 15 characters of the `INPUT-IDS` text,
-  newline included
+- Username: the browser keeps at most 15 characters of the `INPUT-IDS` text
   (10 on a `COMP-SIGNUP` page: AM `0x006d9d04`, Beta1 `0x008c641c`, MH
   `0x0023c070`) and stores it in the 16-byte `receive_login_name` (AM
   `0x006cba88`). Every game logs in with that whole ID: Monster Hunter passes
@@ -206,10 +205,7 @@ def _signup_response(service: SignupService, username: str, password: str, retur
             f'<center><a href="{return_link}">Return to the game</a></center>\n',
         )
         + '<!--AM-USA-COMP-SIGNUP-->\n'
-        # The saved ID keeps the newline: it is the login field the client
-        # sends, and `kkBootStrapLoginSuccess` `strcmp`s it with the `0x2d`
-        # login echo, which ends with a newline (bootstrap handlers).
-        f'<!--INPUT-IDS-->{result.username}\n<!--INPUT-IDE-->\n'
+        f'<!--INPUT-IDS-->{result.username}<!--INPUT-IDE-->\n'
     )
 
 

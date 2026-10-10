@@ -140,7 +140,6 @@ service must use the same one. Lobbies, rooms and sessions live in each process'
   MariaDB/MySQL, for services on several machines. Needs `pip install PyMySQL`.
 - `OPENSNAP_POSTGRESQL_HOST`, `_PORT` (5432), `_USER`, `_PASSWORD`, `_DATABASE` (`opensnap`), `_SSL_CA` (optional,
   enables verified TLS): PostgreSQL, the alternative to MariaDB. Needs `pip install "psycopg[binary]"`.
-- `OPENSNAP_DEFAULT_USERS`: `username:password[:seed[:team]]` accounts created at startup (comma-separated).
 
 Tables are created on first start. Keep the database reachable only by your servers.
 

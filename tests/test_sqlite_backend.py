@@ -16,7 +16,7 @@ from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.protocol import commands
 from opensnap.protocol.constants import FLAG_CHANNEL_BITS, FLAG_RELIABLE
 from opensnap.protocol.models import Endpoint, SnapMessage
-from tests.support import login_client_payload, serving
+from tests.support import create_accounts, login_client_payload, serving
 
 
 class SqliteBackendTests(unittest.TestCase):
@@ -29,6 +29,7 @@ class SqliteBackendTests(unittest.TestCase):
                 serving(default_app_config(), 'automodellista'),
                 storage=StorageConfig(backend='sqlite', sqlite_path=database_path),
             )
+            create_accounts(config, 'test')
             engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
             endpoint = Endpoint(host='127.0.0.1', port=50100)
 
@@ -42,7 +43,7 @@ class SqliteBackendTests(unittest.TestCase):
                         session_id=0,
                         sequence_number=0,
                         acknowledge_number=0,
-                        payload=login_client_payload(b'test\n'),
+                        payload=login_client_payload(b'test'),
                     )
                 ),
                 endpoint,
@@ -125,16 +126,15 @@ class SqliteBackendTests(unittest.TestCase):
                 serving(default_app_config(), 'automodellista'),
                 storage=StorageConfig(backend='sqlite', sqlite_path=database_path),
             )
-            SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+            create_accounts(config, 'alice', 'bob')
 
             with sqlite3.connect(database_path) as connection:
                 rows = connection.execute('SELECT seed FROM users ORDER BY user_id').fetchall()
 
-            self.assertEqual(len(rows), len(config.users))
             seeds = [str(row[0]) for row in rows]
-            self.assertTrue(all(seed for seed in seeds))
-            if len(seeds) > 1:
-                self.assertGreater(len(set(seeds)), 1)
+            self.assertEqual(len(seeds), 2)
+            self.assertTrue(all(seeds))
+            self.assertGreater(len(set(seeds)), 1)
 
     def test_split_bootstrap_and_game_servers_continue_unreliable_numbering(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -142,6 +142,7 @@ class SqliteBackendTests(unittest.TestCase):
                 serving(default_app_config(), 'automodellista'),
                 storage=StorageConfig(backend='sqlite', sqlite_path=f'{temp_directory}/opensnap.sqlite'),
             )
+            create_accounts(config, 'test')
             # Separate processes (or machines) sharing only the shared store.
             bootstrap = SnapProtocolEngine(config=config, role='bootstrap')
             game = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin(), role='game')
@@ -173,6 +174,7 @@ class SqliteBackendTests(unittest.TestCase):
                 serving(default_app_config(), 'automodellista'),
                 storage=StorageConfig(backend='sqlite', sqlite_path=f'{temp_directory}/opensnap.sqlite'),
             )
+            create_accounts(config, 'test')
             engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
             self.addCleanup(engine.close)
             endpoint = Endpoint(host='127.0.0.1', port=2000)
@@ -213,7 +215,7 @@ def _bootstrap_login(engine: SnapProtocolEngine, config, endpoint: Endpoint) -> 
                 session_id=0,
                 sequence_number=0,
                 acknowledge_number=0,
-                payload=login_client_payload(b'test\n'),
+                payload=login_client_payload(b'test'),
             )
         ),
         endpoint,

@@ -10,7 +10,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.decrepit.ciphers import algorithms as decrepit_algorithms
 from cryptography.hazmat.primitives.ciphers import Cipher, modes
 
-from opensnap.config import GameServerTargetConfig, StorageConfig, UserConfig, default_app_config
+from opensnap.config import GameServerTargetConfig, StorageConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.protocol import commands
@@ -29,7 +29,7 @@ from opensnap.protocol.constants import (
 )
 from opensnap.protocol.fields import get_c_string, get_u32
 from opensnap.protocol.models import Endpoint, SnapMessage
-from tests.support import login_client_payload, serving
+from tests.support import create_accounts, login_client_payload, serving
 
 
 class EngineFlowTests(unittest.TestCase):
@@ -45,6 +45,7 @@ class EngineFlowTests(unittest.TestCase):
                 sqlite_path=f'{self._temp_directory.name}/engine-flow.sqlite',
             ),
         )
+        create_accounts(self._config, 'test', 'test2')
 
     def test_login_and_kics_flow(self) -> None:
         config = self._config
@@ -59,7 +60,7 @@ class EngineFlowTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=login_client_payload(b'test\n'),
+            payload=login_client_payload(b'test'),
         )
         login_result = engine.handle_datagram(_encode(login_request), endpoint)
         self.assertFalse(login_result.errors)
@@ -82,7 +83,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(check_result.messages), 1)
         self.assertEqual(check_result.messages[0].command, commands.CMD_BOOTSTRAP_LOGIN_SUCCESS)
         success_clear = _decrypt_blowfish(config.server.bootstrap_key, check_result.messages[0].payload)
-        self.assertEqual(get_c_string(success_clear, 0), 'test\n')
+        self.assertEqual(get_c_string(success_clear, 0), 'test')
         self.assertNotEqual(get_u32(success_clear, 40), 0)
         self.assertEqual(get_u32(success_clear, 44), config.server.game.port)
         self.assertEqual(get_u32(success_clear, 48), config.server.game.port)
@@ -123,7 +124,7 @@ class EngineFlowTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=login_client_payload(b'test\n'),
+            payload=login_client_payload(b'test'),
         )
         login_result = engine.handle_datagram(_encode(login_request), endpoint)
         self.assertFalse(login_result.errors)
@@ -146,7 +147,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(check_result.messages), 1)
         self.assertEqual(check_result.messages[0].command, commands.CMD_BOOTSTRAP_LOGIN_SUCCESS)
         success_clear = _decrypt_blowfish(config.server.bootstrap_key, check_result.messages[0].payload)
-        self.assertEqual(get_c_string(success_clear, 0), 'test\n')
+        self.assertEqual(get_c_string(success_clear, 0), 'test')
 
         team_payload = bytearray(0x130)
         team_payload[0x128:0x12F] = b'team-a\x00'
@@ -179,7 +180,7 @@ class EngineFlowTests(unittest.TestCase):
             session_id=0,
             sequence_number=0,
             acknowledge_number=0,
-            payload=login_client_payload(b'test\n'),
+            payload=login_client_payload(b'test'),
         )
         login_result = engine.handle_datagram(_encode(login_request), endpoint)
         self.assertFalse(login_result.errors)
@@ -204,28 +205,6 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(check_result.messages[0].command, commands.CMD_BOOTSTRAP_LOGIN_FAIL)
         self.assertEqual(get_u32(check_result.messages[0].payload, 0), 0)
         self.assertEqual(get_u32(check_result.messages[0].payload, 4), BOOTSTRAP_LOGIN_FAIL_REASON_INVALID_PASSWORD)
-
-    def test_login_client_accepts_repeated_login_payload(self) -> None:
-        config = self._config
-        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
-        endpoint = Endpoint(host='127.0.0.1', port=50004)
-
-        duplicated_login = b'test\ntest\n'
-        login_request = SnapMessage(
-            endpoint=endpoint,
-            type_flags=FLAG_CHANNEL_BITS,
-            packet_number=0,
-            command=commands.CMD_LOGIN_CLIENT,
-            session_id=0,
-            sequence_number=0,
-            acknowledge_number=0,
-            payload=login_client_payload(duplicated_login),
-        )
-        login_result = engine.handle_datagram(_encode(login_request), endpoint)
-
-        self.assertFalse(login_result.errors)
-        self.assertEqual(len(login_result.messages), 1)
-        self.assertEqual(login_result.messages[0].command, commands.CMD_BOOTSTRAP_LOGIN_SWAN)
 
     def test_login_client_with_kage_footer_uses_kage_bootstrap_variant(self) -> None:
         config = replace(
@@ -803,7 +782,7 @@ class EngineFlowTests(unittest.TestCase):
             )
             self.assertEqual(callback_session_id, joiner_session)
             self.assertEqual(callback_unknown, 0)
-            self.assertEqual(callback_username.rstrip(b'\x00').decode('utf-8'), 'test\n')
+            self.assertEqual(callback_username.rstrip(b'\x00').decode('utf-8'), 'test')
             self.assertEqual(callback_team.rstrip(b'\x00').decode('utf-8'), '')
 
     def test_lobby_join_result_wrapper_uses_operation_id(self) -> None:
@@ -2551,12 +2530,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(room_count, 0)
 
     def test_transport_timeout_dissolves_room_when_host_times_out(self) -> None:
-        config = replace(
-            self._config,
-            users=self._config.users + (
-                UserConfig(user_id=2, username='test2', password='1111', seed='', team=''),
-            ),
-        )
+        config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         host_endpoint = Endpoint(host='127.0.0.1', port=50043)
         guest_endpoint = Endpoint(host='127.0.0.1', port=50044)
@@ -2579,12 +2553,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(guest.room_id, 0)
 
     def test_transport_timeout_notifies_room_host_when_guest_times_out(self) -> None:
-        config = replace(
-            self._config,
-            users=self._config.users + (
-                UserConfig(user_id=2, username='test2', password='1111', seed='', team=''),
-            ),
-        )
+        config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         host_endpoint = Endpoint(host='127.0.0.1', port=50045)
         guest_endpoint = Endpoint(host='127.0.0.1', port=50046)
@@ -2609,12 +2578,7 @@ class EngineFlowTests(unittest.TestCase):
 
     def test_logout_from_a_room_notifies_the_host_and_keeps_the_session(self) -> None:
         # Error exits (`To_ErrorLogOut`, `to_net_warning`) log out without a room leave.
-        config = replace(
-            self._config,
-            users=self._config.users + (
-                UserConfig(user_id=2, username='test2', password='1111', seed='', team=''),
-            ),
-        )
+        config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         host_endpoint = Endpoint(host='127.0.0.1', port=50047)
         guest_endpoint = Endpoint(host='127.0.0.1', port=50048)
@@ -3130,7 +3094,7 @@ def _create_session_via_login(engine: SnapProtocolEngine, endpoint: Endpoint, us
         session_id=0,
         sequence_number=0,
         acknowledge_number=0,
-        payload=login_client_payload(f'{username}\n'.encode('utf-8')),
+        payload=login_client_payload(username.encode('utf-8')),
     )
     result = engine.handle_datagram(_encode(login_request), endpoint)
     assert not result.errors

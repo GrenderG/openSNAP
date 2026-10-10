@@ -12,7 +12,7 @@ from opensnap.storage.sql import (
     SqlOnlinePlayerStore,
     SqlRecordStore,
     SqlSessionHandoffStore,
-    seed_users,
+    upgrade_password_records,
 )
 from opensnap.storage.sqlite import SqliteConnection
 
@@ -30,7 +30,7 @@ def create_storage(config: AppConfig) -> StorageBundle:
     """Open the configured shared store (accounts, session handoffs, records, online players)."""
 
     connection = open_connection(config)
-    seed_users(connection, config.users)
+    upgrade_password_records(connection)
     return StorageBundle(
         accounts=SqlAccountStore(connection),
         handoffs=SqlSessionHandoffStore(connection),

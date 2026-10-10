@@ -13,7 +13,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from opensnap.config import StorageConfig, UserConfig, default_app_config
+from opensnap.config import StorageConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.core.sessions import Session
 from opensnap.plugins.monsterhunter import MonsterHunterPlugin
@@ -58,7 +58,7 @@ from opensnap_app.capcom.protocol import (
     pop_app_frame,
 )
 from opensnap_app.capcom.server import CapcomAppServer
-from tests.support import MONSTER_HUNTER_NA_TITLE_CODE, login_client_payload, serving
+from tests.support import MONSTER_HUNTER_NA_TITLE_CODE, create_accounts, login_client_payload, serving
 
 TOWN_RULES = (3 << 8) | 4
 QUEST_RULES = 2
@@ -76,7 +76,6 @@ class MonsterHunterFlowTests(unittest.TestCase):
     def setUp(self) -> None:
         temp_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temp_directory.cleanup)
-        users = tuple(UserConfig(user_id=index + 1, username=f'hunter{index}', password='1111') for index in range(4))
         config = serving(default_app_config(), self.plugin_class.name)
         # The bootstrap serves this game only, as a deployment does for the beta, whose
         # title code is the release's (`OPENSNAP_BOOTSTRAP_GAMES`).
@@ -84,8 +83,8 @@ class MonsterHunterFlowTests(unittest.TestCase):
             config,
             server=replace(config.server, bootstrap_games=(self.plugin_class.name,)),
             storage=StorageConfig(backend='sqlite', sqlite_path=f'{temp_directory.name}/mh.sqlite'),
-            users=users,
         )
+        create_accounts(self.config, *(f'hunter{index}' for index in range(4)))
         self.plugin = self.plugin_class()
         self.layout = self.plugin.profile.member_profile
         self.engine = SnapProtocolEngine(config=self.config, plugin=self.plugin, role='combined')
@@ -99,7 +98,7 @@ class MonsterHunterFlowTests(unittest.TestCase):
             endpoint,
             0,
             commands.CMD_LOGIN_CLIENT,
-            login_client_payload(f'{username}\n'.encode(), MONSTER_HUNTER_NA_TITLE_CODE),
+            login_client_payload(username.encode(), MONSTER_HUNTER_NA_TITLE_CODE),
             FLAG_CHANNEL_BITS,
         )
         session_id = login[0].session_id
@@ -129,6 +128,28 @@ class MonsterHunterFlowTests(unittest.TestCase):
     def _send(self, player, command, payload=b'', type_flags=FLAG_ROOM | FLAG_RELIABLE, sequence=None):
         endpoint, session_id = player
         return self._send_raw(endpoint, session_id, command, payload, type_flags, sequence)
+
+    def test_kics_from_a_new_source_port_continues_the_bootstrap_login(self) -> None:
+        # `logincapture.pcapng`: bootstrap from port 61357, KICS from 61358 with the
+        # client's own header session word and its login ID at `+16`.
+        bootstrap = Endpoint(host='10.0.0.9', port=61357)
+        login = self._send_raw(bootstrap, 0, commands.CMD_LOGIN_CLIENT,
+                               login_client_payload(b'hunter3', MONSTER_HUNTER_NA_TITLE_CODE), FLAG_CHANNEL_BITS)
+        session_id = login[0].session_id
+        kics = bytearray(0x130)
+        kics[16:24] = b'hunter3-'
+
+        reply = self._send_raw(Endpoint(host='10.0.0.9', port=61358), 0x026407D0, commands.CMD_LOGIN_TO_KICS,
+                               bytes(kics), FLAG_CHANNEL_BITS)
+
+        self.assertEqual([message.command for message in reply], [commands.CMD_RESULT_LOGIN_TO_KICS])
+        self.assertEqual(struct.unpack_from('>L', reply[0].payload, 8)[0], session_id)
+        self.assertEqual(self.engine._sessions.get(session_id).endpoint.port, 61358)  # noqa: SLF001
+
+        # The same login ID from another host is not that login.
+        other = self._send_raw(Endpoint(host='10.0.0.10', port=61358), 0x026407D0, commands.CMD_LOGIN_TO_KICS,
+                               bytes(kics), FLAG_CHANNEL_BITS)
+        self.assertEqual(other, [])
 
     def test_logins_and_areas_are_published_for_the_capcom_app(self) -> None:
         online = self.engine._storage.online_players  # noqa: SLF001
@@ -530,6 +551,18 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self.assertEqual([notice.endpoint for notice in notices], [waiting[0]])
         self.assertNotIn(guest[1], self._roster(waiting, town_id))
 
+    def test_town_roster_names_match_each_login_field(self) -> None:
+        # A solo Town creator is its Town's master only if the roster spells its
+        # name exactly as its client ID, the login field (`0x005ed948` vs `0x003c6350`).
+        host = self.players[0]
+        self._publish(host, self._profile(1))
+        town_id = self._create(host, TOWN_RULES)
+
+        roster = self._send(host, commands.CMD_QUERY_USER, struct.pack('>L', town_id))[0]
+
+        self.assertEqual(struct.unpack_from('>3L', roster.payload), (town_id, 1, 1))
+        self.assertEqual(roster.payload[12:28], pack16('hunter0'))
+
     def test_join_callback_carries_member_profile(self) -> None:
         host, guest, _ = self.players
         self._publish(host, self._profile(1))
@@ -540,7 +573,7 @@ class MonsterHunterFlowTests(unittest.TestCase):
 
         callback = [message for message in messages if message.command == commands.CMD_JOIN][0]
         self.assertEqual(callback.endpoint, host[0])
-        self.assertEqual(callback.payload[:16], b'hunter1'.ljust(16, b'\x00'))
+        self.assertEqual(callback.payload[:16], pack16('hunter1'))
         self.assertEqual(struct.unpack_from('>2L', callback.payload, 16), (guest[1], self.layout.size))
         self.assertEqual(callback.payload[24:], self._profile(2))
 
@@ -1088,7 +1121,8 @@ class AppServiceTests(unittest.TestCase):
         return frame
 
     def _open(
-        self, client: socket.socket, buffer: bytearray, *, build: int = 2, flags: int = 1, version: bytes = b'0502180939'
+        self, client: socket.socket, buffer: bytearray, *, build: int = 2, flags: int = 1, version: bytes = b'0502180939',
+        login: bytes = b'hunter',
     ) -> None:
         """Answer the server's opening 1002 like the client build does (`0x002aeb40`).
 
@@ -1098,7 +1132,7 @@ class AppServiceTests(unittest.TestCase):
 
         opening = self._receive(client, buffer)
         self.assertEqual((frame_command(opening), frame_payload(opening)), (0x1002, b'\x00\x00'))
-        reply = encode_app_field(b'HUNTER', 2) + bytes([build, flags]) + encode_app_field(version, 2) + bytes(4)
+        reply = encode_app_field(login, 2) + bytes([build, flags]) + encode_app_field(version, 2) + bytes(4)
         client.sendall(app_frame(2, 0x1002, sequence=2, payload=reply))
         if build == 3 and version != TLES_STAMP:
             self._receive_version(client, buffer)
@@ -1373,6 +1407,20 @@ class AppServiceTests(unittest.TestCase):
         self.assertNotIn('kills-18', boards)
         self.assertNotIn('kills-32', boards)
 
+    def test_quest_records_go_to_the_login_that_sent_them(self) -> None:
+        # Two players behind one address: only the connection's 1002 login tells them apart.
+        self._login(self.sessions[1])
+        self._login(self.sessions[2])
+        clear = struct.pack('>BBHBL', 2, 4, 0x0105, 0, 754)
+        for login in (b'other', b'nobody'):
+            client, buffer = self._connect()
+            self._open(client, buffer, build=3, flags=0x15, login=login)
+            self.assertEqual(self._exchange(client, buffer, 0x6307, clear), b'')
+            client.close()
+
+        boards = self.records.best_by_board('monsterhunter', 10)
+        self.assertEqual([record.player for record in boards['clear-261']], ['other'])
+
     def _download_page(self, name: bytes, *, eu: bool) -> str:
         client, buffer = self._connect()
         # Record menu: APP mode 3 asks for the path after `lbs://lbs/`.
@@ -1516,20 +1564,6 @@ class AppServiceTests(unittest.TestCase):
             page = pages.render(name)
             self.assertLessEqual(len(page), RECORD_PAGE_SAFE_SIZE, name)
             self.assertLessEqual(page.count(b'<td'), RECORD_PAGE_SAFE_CELLS, name)
-
-    def test_quest_record_without_a_single_player_is_acknowledged_only(self) -> None:
-        self._login(self.sessions[1])
-        self._login(self.sessions[2])
-        for session_id in (1, 2):
-            self.assertEqual(self.flows.claim('127.0.0.1')[0], session_id)
-            self.flows.release('127.0.0.1', session_id)
-        # Two players behind one address: later reconnects are unattributed.
-        self.assertEqual(self.flows.claim('127.0.0.1'), (None, AppPhase.LAND))
-        client, buffer = self._connect()
-        self._open(client, buffer, build=3, flags=0x11)
-        clear = struct.pack('>BBHBL', 2, 0, 1, 0, 60)
-        self.assertEqual(self._exchange(client, buffer, 0x6307, clear), b'')
-        self.assertEqual(self.records.best_by_board('monsterhunter', 10), {})
 
     def test_na_world_connection_is_recognised_without_a_tracked_session(self) -> None:
         # MH logs out of SNAP between KICS and World selection, which resets the

@@ -5,6 +5,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from opensnap.config import default_app_config
+from tests.support import create_accounts
+
 try:
     from opensnap_web.app import create_web_app
     from opensnap_web.config import WebServerConfig
@@ -22,11 +25,11 @@ class WebRouteTests(unittest.TestCase):
         self.addCleanup(self._temp_directory.cleanup)
         env_overrides = {
             'OPENSNAP_SQLITE_PATH': f'{self._temp_directory.name}/web.sqlite',
-            'OPENSNAP_DEFAULT_USERS': 'test:1111',
         }
         patcher = patch.dict(os.environ, env_overrides, clear=False)
         patcher.start()
         self.addCleanup(patcher.stop)
+        create_accounts(default_app_config(), 'test')
 
         config = WebServerConfig(
             host='127.0.0.1',
@@ -52,7 +55,7 @@ class WebRouteTests(unittest.TestCase):
         text = response.get_data(as_text=True)
         self.assertIn('Account ready', text)
         self.assertIn('<!--INPUT-IDS-->alpha_9', text)
-        self.assertTrue(text.endswith('<!--INPUT-IDS-->alpha_9\n<!--INPUT-IDE-->\n'))
+        self.assertTrue(text.endswith('<!--INPUT-IDS-->alpha_9<!--INPUT-IDE-->\n'))
 
     def test_signup_route_accepts_maximum_length_credentials(self) -> None:
         # The browser keeps 10 ID characters; clients type up to 15 password characters.
@@ -74,7 +77,7 @@ class WebRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         text = response.get_data(as_text=True)
         self.assertIn('<!--INPUT-IDS-->alpha_9', text)
-        self.assertTrue(text.endswith('<!--INPUT-IDS-->alpha_9\n<!--INPUT-IDE-->\n'))
+        self.assertTrue(text.endswith('<!--INPUT-IDS-->alpha_9<!--INPUT-IDE-->\n'))
 
     def test_invalid_signup_username_returns_error_page(self) -> None:
         response = self._client.get('/amweb/create_id_invalid!name.html?password=abc123')
@@ -168,7 +171,7 @@ class WebRouteTests(unittest.TestCase):
             self.assertIn('action="create_id.html"', self._client.get(index).get_data(as_text=True))
         response = self._client.post('/create_id.html', data={'username': 'rootuser', 'password': 'abcd'})
         self.assertEqual(response.status_code, 200)
-        self.assertIn('<!--INPUT-IDS-->rootuser\n<!--INPUT-IDE-->', response.get_data(as_text=True))
+        self.assertIn('<!--INPUT-IDS-->rootuser<!--INPUT-IDE-->', response.get_data(as_text=True))
         text = self._client.get('/create_id.html?username=abc&password=abcd').get_data(as_text=True)
         self.assertIn('<a href="/">Try again</a>', text)
 
@@ -196,7 +199,7 @@ class WebRouteTests(unittest.TestCase):
         text = response.get_data(as_text=True)
         self.assertIn('Account ready', text)
         self.assertIn('<!--INPUT-IDS-->betauser', text)
-        self.assertTrue(text.endswith('<!--INPUT-IDS-->betauser\n<!--INPUT-IDE-->\n'))
+        self.assertTrue(text.endswith('<!--INPUT-IDS-->betauser<!--INPUT-IDE-->\n'))
 
     def test_login_php_route_is_available(self) -> None:
         response = self._client.get('/login.php')

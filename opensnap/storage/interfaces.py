@@ -52,6 +52,9 @@ class SessionHandoffStore(Protocol):
     def get_by_endpoint(self, endpoint: Endpoint) -> SessionHandoff | None:
         """Get handoff by client endpoint."""
 
+    def get_by_login(self, host: str, username: str) -> SessionHandoff | None:
+        """Get the newest handoff of one account logged in from one client host."""
+
     def remove(self, session_id: int) -> None:
         """Remove one handoff."""
 

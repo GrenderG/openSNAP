@@ -37,8 +37,7 @@ def handle_login_client(context: HandlerContext, message: SnapMessage) -> list[S
     )
     if game_identifier is None:
         return []
-    raw_login = _get_login_client_raw_name(message.payload)
-    login = _parse_login_client_name(raw_login)
+    login = _get_login_client_raw_name(message.payload)
     if not login:
         LOGGER.warning(
             'Rejecting login-client from %s:%d: could not parse username from payload len=%d.',
@@ -85,7 +84,7 @@ def handle_login_client(context: HandlerContext, message: SnapMessage) -> list[S
     session = context.sessions.adopt(handoff)
 
     if _is_kage_bootstrap_variant(message):
-        kage_key = _resolve_kage_bootstrap_key(raw_login=raw_login, account=account)
+        kage_key = _resolve_kage_bootstrap_key(raw_login=login, account=account)
         if not kage_key:
             return [
                 context.reply(
@@ -101,7 +100,7 @@ def handle_login_client(context: HandlerContext, message: SnapMessage) -> list[S
             client_host=message.endpoint.host,
         )
         success_payload = _build_kage_login_success_payload(
-            login_field=raw_login,
+            login_field=login,
             server_host=advertised_game_host,
             server_port=game_target.port,
             key_material=kage_key,
@@ -138,7 +137,7 @@ def _resolve_kage_bootstrap_key(*, raw_login: str, account) -> bytes:
     if account.bootstrap_login_key:
         return account.bootstrap_login_key
 
-    login_fallback = _parse_login_client_name(raw_login).encode('utf-8')
+    login_fallback = raw_login.encode('utf-8')
     if login_fallback:
         LOGGER.debug(
             (
@@ -308,23 +307,6 @@ def _get_login_client_raw_name(payload: bytes) -> str:
     return get_c_string(payload, 0)
 
 
-def _parse_login_client_name(raw_login: str) -> str:
-    """Parse the account name from the raw `kkLoginClient` login field.
-
-    Some clients send one newline-terminated login string at payload offset 0.
-    Another observed variant packs two newline-terminated copies back-to-back
-    before the first NUL. The account lookup key is still the first line.
-    """
-
-    if not raw_login:
-        return ''
-
-    for candidate in raw_login.splitlines():
-        if candidate:
-            return candidate
-    return raw_login.rstrip('\r\n')
-
-
 def _is_kage_bootstrap_variant(message: SnapMessage) -> bool:
     """Return whether one message uses the KAGE bootstrap payload layout."""
 
@@ -431,9 +413,9 @@ def _build_login_success_payload(
     # `SLUS_206.42` `kkLoginClient` stores the raw login field at `app + 1188`
     # (`strncpy` at `0x002ef58c`), and `kkBootStrapLoginSuccess` compares the
     # decrypted `0x2d` login field against that stored buffer with `strcmp`
-    # (`0x002ec7b8..0x002ec7d0`). The raw client field is newline-terminated, so
-    # this echoed field must preserve that newline byte to satisfy the protocol.
-    login_bytes = f'{login}\n'.encode('utf-8')
+    # (`0x002ec7b8..0x002ec7d0`), so the echo is the account name exactly as the
+    # signup page saved it as the client's ID.
+    login_bytes = login.encode('utf-8')
     ip_int = int.from_bytes(socket.inet_aton(server_host), byteorder='big', signed=False)
     plaintext = struct.pack('>40s6L', login_bytes, ip_int, server_port, server_port, 0, 0, 0)
     return _encrypt_blowfish_ecb(bootstrap_key, plaintext)

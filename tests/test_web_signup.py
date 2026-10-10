@@ -19,10 +19,7 @@ class SignupServiceTests(unittest.TestCase):
             database_path = f'{temp_directory}/web-signup.sqlite'
             with patch.dict(
                 os.environ,
-                {
-                    'OPENSNAP_SQLITE_PATH': database_path,
-                    'OPENSNAP_DEFAULT_USERS': 'test:1111',
-                },
+                {'OPENSNAP_SQLITE_PATH': database_path},
                 clear=True,
             ):
                 storage = create_storage(default_app_config())
@@ -49,24 +46,6 @@ class SignupServiceTests(unittest.TestCase):
             self.assertIsNotNone(row)
             self.assertTrue(str(row[0]).startswith('v1$'))
             self.assertNotEqual(str(row[0]), 'pass123')
-
-    def test_default_user_from_env_exists(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_directory:
-            database_path = f'{temp_directory}/web-default-users.sqlite'
-            with patch.dict(
-                os.environ,
-                {
-                    'OPENSNAP_SQLITE_PATH': database_path,
-                    'OPENSNAP_DEFAULT_USERS': 'test:1111',
-                },
-                clear=True,
-            ):
-                storage = create_storage(default_app_config())
-                self.addCleanup(storage.close)
-                service = SignupService(storage.accounts)
-                result = service.create_or_login(username='test', password='1111')
-                self.assertTrue(result.ok)
-                self.assertFalse(result.created)
 
 
 if __name__ == '__main__':

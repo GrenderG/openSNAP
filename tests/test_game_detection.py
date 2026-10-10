@@ -67,7 +67,7 @@ def _detect(message: SnapMessage, games: tuple[str, ...] = ()) -> str | None:
 def _login_payload(title_code: int) -> bytes:
     """`kkLoginClient` layout: login (40), auth string (60), title code, zero, address, ports."""
 
-    login = b'test\n'.ljust(40, b'\x00') + b'test\n@cei-auth'.ljust(60, b'\x00')
+    login = b'test'.ljust(40, b'\x00') + b'test@cei-auth'.ljust(60, b'\x00')
     return login + struct.pack('>5L', title_code, 0, 0xC0000264, 2000, 1000)
 
 

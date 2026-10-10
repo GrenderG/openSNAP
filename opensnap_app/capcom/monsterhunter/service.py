@@ -203,7 +203,10 @@ class AppService:
         self._flows.sync(self._players())
         owner, phase = self._flows.claim(host)
         test_build = answer.build == APP_BUILD_EU and answer.version[:len(TLES_VERSION)] == TLES_VERSION
-        client = _MhClient(connection, phase, owner, APP_BUILD_NA if test_build else answer.build, test_build)
+        client = _MhClient(
+            connection, phase, owner, APP_BUILD_NA if test_build else answer.build, test_build,
+            login=answer.login.split(b'\x00', 1)[0].decode('ascii', errors='replace'),
+        )
         language = answer.flags & APP_LANGUAGE_MASK if client.build == APP_BUILD_EU else 0
         _LOGGER.info(
             'APP connection from %s:%d build %s%s phase=%s owner=%s.',
@@ -379,11 +382,22 @@ class AppService:
 
         test_build = client.test_build
         record = decode_test_build_quest_record(payload) if test_build else decode_quest_record(payload)
-        session_id = self._flows.attribute(client.app.host, client.owner)
-        player = next((player for player in self._players() if player.session_id == session_id), None)
+        # The connection names its player: the 1002 answer's login is the client
+        # ID it logged in with (MH NA `0x002aeb40`). The address alone cannot tell
+        # apart players who share one, e.g. two consoles in one home.
+        player = next(
+            (
+                player for player in self._players()
+                if player.host == client.app.host and player.username == client.login
+            ),
+            None,
+        )
         if player is None:
             _LOGGER.warning(
-                'Quest record from %s has no single logged-in player; not stored: %s', client.app.host, record
+                'Quest record from %s login %r has no logged-in player; not stored: %s',
+                client.app.host,
+                client.login,
+                record,
             )
             return
         store = store_test_build_quest_record if test_build else store_quest_record
@@ -497,3 +511,5 @@ class _MhClient:
     build: int
     # `TLES_527.07`: the NA client plus its own 6307 (`0x002b2da0`).
     test_build: bool = False
+    # Login ID from the client's 1002 answer.
+    login: str = ''

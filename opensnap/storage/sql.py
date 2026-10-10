@@ -12,7 +12,6 @@ import json
 import time
 from typing import Any, Protocol
 
-from opensnap.config import UserConfig
 from opensnap.core.accounts import (
     Account,
     build_account,
@@ -52,15 +51,9 @@ class SqlConnection(Protocol):
         """Release the connection."""
 
 
-def seed_users(connection: SqlConnection, users: tuple[UserConfig, ...]) -> None:
-    """Insert configured default users and encode legacy cleartext passwords."""
+def upgrade_password_records(connection: SqlConnection) -> None:
+    """Encode accounts still stored with legacy cleartext passwords."""
 
-    for user in users:
-        seed = normalize_seed(user.seed)
-        connection.insert_or_ignore(
-            'INSERT INTO users (username, password, seed, team) VALUES (?, ?, ?, ?)',
-            (user.username, normalize_password_record(user.password, seed), seed, user.team),
-        )
     for row in connection.query_all('SELECT user_id, password, seed FROM users'):
         seed = normalize_seed(str(row['seed']))
         password_record = normalize_password_record(str(row['password']), seed)
@@ -156,6 +149,14 @@ class SqlSessionHandoffStore:
             self._connection.query_one(
                 'SELECT * FROM session_handoffs WHERE host = ? AND port = ?',
                 (endpoint.host, endpoint.port),
+            )
+        )
+
+    def get_by_login(self, host: str, username: str) -> SessionHandoff | None:
+        return _handoff_from_row(
+            self._connection.query_one(
+                'SELECT * FROM session_handoffs WHERE host = ? AND username = ? ORDER BY serial DESC',
+                (host, username),
             )
         )
 

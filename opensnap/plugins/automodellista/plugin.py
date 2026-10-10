@@ -309,7 +309,7 @@ class AutoModellistaPlugin(GamePlugin):
             entries.append(
                 struct.pack(
                     '>16s2L32s',
-                    pack_fixed(_network_username(session.username), 16),
+                    pack_fixed(session.username, 16),
                     session.session_id,
                     32,
                     pack_fixed(team, 32),
@@ -1128,14 +1128,6 @@ def _prune_stale_room_members(context: HandlerContext, room_id: int) -> None:
             context.rooms.leave(room_id, member_session_id)
 
 
-def _network_username(value: str) -> str:
-    """Match observed username wire format used in snapsi captures."""
-
-    if value.endswith('\n'):
-        return value
-    return f'{value}\n'
-
-
 def _normalize_room_password(value: str) -> str:
     """Map known client sentinel text to an empty room password."""
 
@@ -1263,7 +1255,7 @@ def _build_room_join_callbacks(
     team = '' if account is None else account.team
     payload = struct.pack(
         '>16s2L16s',
-        pack_fixed(_network_username(joining_session.username), 16),
+        pack_fixed(joining_session.username, 16),
         joining_session.session_id,
         0,
         pack_fixed(team, 16),

@@ -12,13 +12,12 @@ import os
 import tempfile
 import unittest
 
-from opensnap.config import StorageConfig, UserConfig, default_app_config
+from opensnap.config import StorageConfig, default_app_config
 from opensnap.core.accounts import verify_password
 from opensnap.core.sessions import Session
 from opensnap.protocol.models import Endpoint
 from opensnap.storage.factory import create_storage, open_connection
 from opensnap.storage.interfaces import DuplicateAccountError
-from opensnap.storage.sql import seed_users
 
 MARIADB_HOST = os.getenv('OPENSNAP_TEST_MARIADB_HOST', '')
 POSTGRESQL_HOST = os.getenv('OPENSNAP_TEST_POSTGRESQL_HOST', '')
@@ -34,18 +33,16 @@ class SharedStoreContract:
         self.config = replace(
             default_app_config(),
             storage=self.storage_config(),
-            users=(UserConfig(user_id=1, username='test', password='1111'),),
         )
         self.storage = create_storage(self.config)
         self.addCleanup(self.storage.close)
 
-    def test_accounts_are_created_seeded_and_updated(self) -> None:
+    def test_accounts_are_created_and_updated(self) -> None:
         accounts = self.storage.accounts
-        seeded = accounts.get_by_name('test')
-        self.assertIsNotNone(seeded)
-        self.assertTrue(verify_password(seeded, '1111'))
+        self.assertIsNone(accounts.get_by_name('alice'))
 
         created = accounts.create_user('alice', 'secret')
+        self.assertTrue(verify_password(accounts.get_by_name('alice'), 'secret'))
         self.assertEqual(accounts.get_by_id(created.user_id).username, 'alice')
         with self.assertRaises(DuplicateAccountError):
             accounts.create_user('alice', 'other')
@@ -53,15 +50,9 @@ class SharedStoreContract:
         accounts.set_team(created.user_id, 'team-a')
         self.assertEqual(accounts.get_by_name('alice').team, 'team-a')
 
-        # Seeding again (every service does at startup) keeps existing rows.
-        connection = open_connection(self.config)
-        self.addCleanup(connection.close)
-        seed_users(connection, self.config.users)
-        self.assertEqual(accounts.get_by_name('test').user_id, seeded.user_id)
-
     def test_handoffs_are_issued_replaced_and_removed(self) -> None:
         handoffs = self.storage.handoffs
-        account = self.storage.accounts.get_by_name('test')
+        account = self.storage.accounts.create_user('test', '1111')
         endpoint = Endpoint(host='10.0.0.1', port=2000)
 
         first = handoffs.issue(endpoint, account, game_identifier='automodellista')
@@ -80,6 +71,8 @@ class SharedStoreContract:
         moved = handoffs.issue(Endpoint(host='10.0.0.1', port=2001), account, game_identifier='monsterhunter')
         self.assertIsNone(handoffs.get_by_endpoint(endpoint))
         self.assertEqual(handoffs.get(moved.session_id).endpoint.port, 2001)
+        self.assertEqual(handoffs.get_by_login('10.0.0.1', 'test'), handoffs.get(moved.session_id))
+        self.assertIsNone(handoffs.get_by_login('10.0.0.2', 'test'))
 
         handoffs.remove(moved.session_id)
         self.assertIsNone(handoffs.get(moved.session_id))

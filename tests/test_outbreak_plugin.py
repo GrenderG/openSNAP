@@ -7,7 +7,7 @@ import struct
 import tempfile
 import unittest
 
-from opensnap.config import StorageConfig, UserConfig, default_app_config
+from opensnap.config import StorageConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.plugins.outbreak import OutbreakPlugin
 from opensnap.plugins.outbreak.directory import build_directory
@@ -39,7 +39,7 @@ from opensnap_app.capcom.protocol import (
     pop_app_frame,
 )
 from opensnap_app.capcom.server import CapcomAppServer
-from tests.support import login_client_payload, serving
+from tests.support import create_accounts, login_client_payload, serving
 
 OUTBREAK_TITLE_CODE = 0xCAE0
 LOBBY_FLAGS = FLAG_CHANNEL_BITS | FLAG_RELIABLE
@@ -74,12 +74,11 @@ class OutbreakLobbyTests(unittest.TestCase):
     def setUp(self) -> None:
         temp_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temp_directory.cleanup)
-        users = tuple(UserConfig(user_id=index + 1, username=f'jill{index}', password='1111') for index in range(4))
         self.config = replace(
             serving(default_app_config(), 'outbreak'),
             storage=StorageConfig(backend='sqlite', sqlite_path=f'{temp_directory.name}/ob.sqlite'),
-            users=users,
         )
+        create_accounts(self.config, *(f'jill{index}' for index in range(4)))
         self.plugin = OutbreakPlugin()
         self.engine = SnapProtocolEngine(config=self.config, plugin=self.plugin, role='combined')
         self.addCleanup(self.engine.close)
@@ -92,7 +91,7 @@ class OutbreakLobbyTests(unittest.TestCase):
             endpoint,
             0,
             commands.CMD_LOGIN_CLIENT,
-            login_client_payload(f'{username}\n'.encode(), OUTBREAK_TITLE_CODE),
+            login_client_payload(username.encode(), OUTBREAK_TITLE_CODE),
             FLAG_CHANNEL_BITS,
         )
         session_id = login[0].session_id
