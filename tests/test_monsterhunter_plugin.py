@@ -303,6 +303,14 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self._stat(host, QUEST_STARTED_RULES)
         return quest_id
 
+    def _town_row_members(self, player, town_id: int) -> int:
+        """Member count of the Town's directory row (`_room_row`)."""
+
+        reply = self._send(player, commands.CMD_QUERY_GAME_ROOMS, struct.pack('>L', AREA_ID), FLAG_CHANNEL_BITS)[0]
+        count = struct.unpack_from('>L', reply.payload, 8)[0]
+        rows = [struct.unpack_from('>16s5L', reply.payload, 12 + index * 36) for index in range(count)]
+        return next(row[1] for row in rows if row[5] == town_id)
+
     def _area_roster(self, player) -> list[bytes]:
         reply = self._send(player, commands.CMD_QUERY_USER, struct.pack('>L', AREA_ID), FLAG_CHANNEL_BITS)[0]
         count = struct.unpack_from('>3L', reply.payload)[1]
@@ -397,7 +405,9 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self.assertEqual(relay.payload, notice[:4] + bytes(4) + notice[8:])
         self.assertEqual(relay.source_session_id, host[1])
 
-    def test_departing_hunters_stay_listed_in_their_town(self) -> None:
+    def test_departure_is_announced_while_the_town_keeps_the_listing(self) -> None:
+        # The client leaves its Town with a plain room leave; the members drop it
+        # only on the leave callback (`0x00619590`).
         town_id = self._town_with_residents()
         host, guest, waiting = self.players
         self._join(waiting, town_id)
@@ -405,11 +415,13 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self._publish(host, self._profile(1, departing=True))
         leave = self._send(host, commands.CMD_LEAVE)
 
-        self.assertEqual([message.command for message in leave], [commands.CMD_RESULT_WRAPPER])
-        self.assertIn(host[1], self._roster(waiting, town_id))
+        notices = [message for message in leave if message.command == commands.CMD_LEAVE]
+        self.assertEqual({notice.endpoint for notice in notices}, {guest[0], waiting[0]})
+        self.assertEqual(self._roster(waiting, town_id), sorted((guest[1], waiting[1])))
         attribute = self._send(waiting, commands.CMD_QUERY_ATTRIBUTE, struct.pack('>L', town_id))[0]
-        self.assertEqual(struct.unpack('>L4sL', attribute.payload)[2], 3)
-        self.assertIn(guest[1], self._roster(waiting, town_id))
+        self.assertEqual(struct.unpack('>L4sL', attribute.payload)[2], 2)
+        # The Town keeps the departing hunter's place for its return.
+        self.assertEqual(self._town_row_members(waiting, town_id), 3)
 
     def test_solo_host_departure_keeps_its_town_listing(self) -> None:
         # Live NA solo order: selector 3 to itself, room leave, quest room
@@ -422,15 +434,19 @@ class MonsterHunterFlowTests(unittest.TestCase):
 
         leave = self._send(host, commands.CMD_LEAVE)
 
-        self.assertEqual([message.command for message in leave], [commands.CMD_RESULT_WRAPPER])
-        self.assertIn(host[1], self._roster(waiting, town_id))
+        notices = [message for message in leave if message.command == commands.CMD_LEAVE]
+        self.assertEqual({notice.endpoint for notice in notices}, {guest[0], waiting[0]})
         quest_id = self._create(host, QUEST_RULES)
         self._stat(host, QUEST_STARTED_RULES)
         self._publish(host, self._profile(1, departing=True))
-        self.assertIn(host[1], self._roster(guest, town_id))
+        self.assertNotIn(host[1], self._roster(guest, town_id))
+        self.assertEqual(self._town_row_members(guest, town_id), 3)
 
-        # Back from the quest, the host returns to the Town it never left.
-        self._stat(host, TOWN_RULES)
+        # Back from the quest, the host returns to the Town that kept its place,
+        # and its members get it as an arrival.
+        back = self._stat(host, TOWN_RULES)
+        arrivals = [message for message in back if message.command == commands.CMD_JOIN]
+        self.assertEqual({arrival.endpoint for arrival in arrivals}, {guest[0], waiting[0]})
         self.assertEqual(set(self._roster(host, quest_id)), {host[1], guest[1], waiting[1]})
 
     def test_preparation_to_another_player_does_not_mark_the_sender(self) -> None:
@@ -486,13 +502,14 @@ class MonsterHunterFlowTests(unittest.TestCase):
         host, guest, waiting = self.players
         self._join(waiting, town_id)
         quest_id = self._depart(host, guest, town_id)
-        self.assertEqual(set(self._roster(waiting, town_id)), {host[1], guest[1], waiting[1]})
+        self.assertEqual(self._roster(waiting, town_id), [waiting[1]])
 
         guest_return = self._stat(guest, TOWN_RULES)
 
-        self.assertEqual([message.command for message in guest_return], [commands.CMD_RESULT_WRAPPER])
+        self.assertEqual([message.command for message in guest_return], [commands.CMD_RESULT_WRAPPER, commands.CMD_JOIN])
+        self.assertEqual(guest_return[1].endpoint, waiting[0])
         # The returning client keeps using its quest room id as its Town id.
-        self.assertEqual(set(self._roster(guest, quest_id)), {host[1], guest[1], waiting[1]})
+        self.assertEqual(set(self._roster(guest, quest_id)), {guest[1], waiting[1]})
         relays = [message for message in self._send(guest, commands.CMD_SEND, b'\x0b\xf0' + bytes(11))
                   if message.command == commands.CMD_SEND]
         self.assertEqual([relay.endpoint for relay in relays], [waiting[0]])
@@ -503,6 +520,49 @@ class MonsterHunterFlowTests(unittest.TestCase):
                     for index in range(struct.unpack_from('>L', rooms[0].payload, 8)[0])]
         self.assertEqual(room_ids, [town_id])
 
+    def _posted(self, marker: int, town_room: int) -> bytes:
+        """A profile posting a quest (party state 1) in the Town room `town_room`."""
+
+        profile = bytearray(self._profile(marker))
+        profile[self.layout.party_state_offset] = 1
+        offset = self.layout.town_room_offset
+        profile[offset:offset + 4] = town_room.to_bytes(4, 'little')
+        return bytes(profile)
+
+    def _town_room(self, profile: bytes) -> int:
+        return int.from_bytes(profile[self.layout.town_room_offset:self.layout.town_room_offset + 4], 'little')
+
+    def test_returned_and_staying_hunters_see_each_others_quests(self) -> None:
+        # Live capture: Town room 1, quest room 2. Back from the quest the client
+        # posts with Town id 2 (its quest room id), a hunter who joined room 1
+        # posts with 1, and each shows only quests of its own room id (`0x0060edd0`).
+        town_id = self._town_with_residents()
+        host, guest, newcomer = self.players
+        quest_id = self._depart(host, guest, town_id)
+        self._join(newcomer, town_id)
+        self._stat(guest, TOWN_RULES)
+        self._stat(host, TOWN_RULES)
+
+        posted = self._publish(newcomer, self._posted(3, town_id))
+        updates = {message.endpoint: message.payload[8:] for message in posted
+                   if message.command == commands.CMD_CHANGE_USER_PROPERTY}
+        self.assertEqual({self._town_room(updates[host[0]]), self._town_room(updates[guest[0]])}, {quest_id})
+
+        posted = self._publish(host, self._posted(1, quest_id))
+        updates = {message.endpoint: message.payload[8:] for message in posted
+                   if message.command == commands.CMD_CHANGE_USER_PROPERTY}
+        self.assertEqual(self._town_room(updates[newcomer[0]]), town_id)
+        self.assertEqual(self._town_room(updates[guest[0]]), quest_id)
+
+        # Rosters carry the id each requester knows its room by.
+        record_size = 24 + self.layout.size
+        for requester, own_id in ((newcomer, town_id), (guest, quest_id)):
+            reply = self._send(requester, commands.CMD_QUERY_USER, struct.pack('>L', own_id))[0]
+            count = struct.unpack_from('>L', reply.payload, 4)[0]
+            records = [reply.payload[12 + index * record_size:12 + (index + 1) * record_size] for index in range(count)]
+            towns = {struct.unpack_from('>L', record, 16)[0]: self._town_room(record[24:]) for record in records}
+            self.assertEqual((towns[host[1]], towns[newcomer[1]]), (own_id, own_id))
+
     def test_started_quest_members_get_no_lobby_callbacks(self) -> None:
         town_id = self._town_with_residents()
         host, guest, waiting = self.players
@@ -511,8 +571,9 @@ class MonsterHunterFlowTests(unittest.TestCase):
 
         messages = self._publish(guest, self._profile(9))
 
-        recipients = {message.endpoint for message in messages if message.command == commands.CMD_CHANGE_USER_PROPERTY}
-        self.assertEqual(recipients, {waiting[0]})
+        # Its quest room runs `game.bin`, its Town dropped it at its leave, and the
+        # keepalive result is held back in a started quest.
+        self.assertEqual(messages, [])
 
     def test_lobby_keepalive_in_flight_at_quest_start_gets_no_callback_reply(self) -> None:
         town_id = self._town_with_residents()
@@ -545,11 +606,13 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self._join(waiting, town_id)
         self._depart(host, guest, town_id)
 
+        self.assertEqual(self._town_row_members(waiting, town_id), 3)
+
         messages = self._send(guest, commands.CMD_LEAVE)
 
-        notices = [message for message in messages if message.command == commands.CMD_LEAVE]
-        self.assertEqual([notice.endpoint for notice in notices], [waiting[0]])
-        self.assertNotIn(guest[1], self._roster(waiting, town_id))
+        # Its Town members already dropped it when it left for the quest.
+        self.assertEqual([message for message in messages if message.command == commands.CMD_LEAVE], [])
+        self.assertEqual(self._town_row_members(waiting, town_id), 2)
 
     def test_town_roster_names_match_each_login_field(self) -> None:
         # A solo Town creator is its Town's master only if the roster spells its

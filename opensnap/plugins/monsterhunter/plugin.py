@@ -79,7 +79,13 @@ STAT_ATTRIBUTE = b'STAT'
 
 # Member profile (`CMD_CHANGE_USER_PROPERTY` payload, slot 10 `0x0061a0b0`): its
 # size and departure offsets depend on the build (`MemberProfileLayout`).
-# Quest departure. A player leaving its Town for a quest stays listed there.
+# Quest departure. A player leaving its Town for a quest stays listed there,
+# so that its return `STAT` finds that Town again with its place kept. Clients
+# never see this listing: the client leaves its Town with a plain room leave,
+# and the members drop it from their member table and the Town only on the
+# leave callback (`0x00619590` -> `0x0060f190`). The leave is announced like
+# any other, rosters and the room `USER` count hold the hunters in the room,
+# and the return is announced as an arrival.
 # The departure is announced differently by the two sides (`lobby.bin`):
 # - Guests publish profile `+136/+137 = 3/5` (release layout; `0x0061cb64`, step 0 of the
 #   guest machine `0x0061c7a0`) before their room leave (step 4, `0x0061cdd0`).
@@ -119,8 +125,10 @@ class _Player:
     profile: bytes | None = None
     # Area joined on the lobby channel.
     area_id: int | None = None
-    # After a quest the client keeps addressing its quest room id while the
-    # server has moved it back to the origin Town: `(client_id, server_id)`.
+    # After a quest the client keeps its quest room id as its room id (return
+    # `0x0061afa8` stores it as the current room) while the server has moved
+    # it back to the origin Town: `(client_id, server_id)`. Requests name the
+    # room by that id, and so does the quest Town id of its member profile.
     room_alias: tuple[int, int] | None = None
     # Quest host between its departure preparation and its next room change.
     preparing_departure: bool = False
@@ -351,8 +359,10 @@ class MonsterHunterPlugin(GamePlugin):
         channel_type = message.type_flags & FLAG_CHANNEL_BITS
         channel_id = get_u32(message.payload, 0)
         if channel_type == FLAG_ROOM:
-            room = context.rooms.get(self._server_room_id(session, channel_id))
-            users = 0 if room is None else len(room.members)
+            # The client keeps this count as the room's population and moves it
+            # with each join and leave callback (`0x006156a0`, `0x00619520`,
+            # `0x00619768`), so it counts the hunters in the room.
+            users = len(context.sessions.list_room_members(self._server_room_id(session, channel_id)))
         else:
             users = self._area_population(channel_id)
 
@@ -395,8 +405,8 @@ class MonsterHunterPlugin(GamePlugin):
         channel_type = message.type_flags & FLAG_CHANNEL_BITS
         requested_id = get_u32(message.payload, 0)
         if channel_type == FLAG_ROOM:
-            room = context.rooms.get(self._server_room_id(session, requested_id))
-            member_ids = () if room is None else sorted(room.members)
+            room_id = self._server_room_id(session, requested_id)
+            member_ids = sorted(member.session_id for member in context.sessions.list_room_members(room_id))
         else:
             # The Area roster feeds the hunter search, whose results can be
             # registered as Friends; its filter (`0x00613f10`) never skips the
@@ -411,7 +421,7 @@ class MonsterHunterPlugin(GamePlugin):
             member = context.sessions.get(member_id)
             profile = self._profile(member_id)
             if member is not None and profile is not None:
-                entries.append(_member_record(member, profile))
+                entries.append(_member_record(member, self._profile_for(session, profile)))
 
         payload = struct.pack('>3L', requested_id, len(entries), len(entries)) + b''.join(entries)
         return [
@@ -556,13 +566,12 @@ class MonsterHunterPlugin(GamePlugin):
         if room is None:
             return [self._refusal(context, message, session, GameTags.GAME_START, FLAG_ROOM)]
 
-        # Joining a quest room keeps the Town listing; coming back to the Town
-        # that still lists the player is not a new arrival for its members.
-        listed = session.session_id in room.members
+        # Joining a quest room keeps the Town listing, and so does coming back
+        # to the Town that still lists the player.
         departures = self._detach(
             context,
             session,
-            keep_town_listing=listed or not room.rules & TOWN_RULES_FLAG,
+            keep_town_listing=session.session_id in room.members or not room.rules & TOWN_RULES_FLAG,
         )
         if not context.rooms.join(room_id, session.session_id):
             outbound = departures + [
@@ -572,19 +581,9 @@ class MonsterHunterPlugin(GamePlugin):
             return outbound
 
         context.sessions.set_room(session.session_id, room_id)
-        callbacks: list[SnapMessage] = []
-        profile = self._profile(session.session_id)
-        if not listed and profile is not None:
-            callbacks = self._room_callbacks(
-                context,
-                room,
-                exclude_session_id=session.session_id,
-                command=commands.CMD_JOIN,
-                payload=_member_record(session, profile),
-            )
         outbound = departures + [
             self._result(context, message, session, GameTags.GAME_START, RESULT_WRAPPER_STATUS_OK, FLAG_ROOM)
-        ] + callbacks
+        ] + self._arrival_callbacks(context, room, session)
         self._remember_reliable_reply(message, session, outbound)
         return outbound
 
@@ -729,10 +728,12 @@ class MonsterHunterPlugin(GamePlugin):
         return [self._result(context, message, session, GameTags.RESULT2, RESULT_WRAPPER_STATUS_OK, FLAG_ROOM)]
 
     def _handle_change_user_property(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        """Store the member profile and publish it to everyone listing the player.
+        """Store the member profile and publish it to the other hunters in the room.
 
         Monster Hunter registers a property callback (slot 10, `0x0061a0b0`)
-        that reads `session_id, length, profile[length]`.
+        that reads `session_id, length, profile[length]` and updates only a
+        member of its member table (`0x0060f4e0`). A hunter away on a quest
+        has been dropped by its Town at its leave, so only its room hears it.
         """
 
         session = resolve_session(context, message, _LOGGER)
@@ -740,28 +741,21 @@ class MonsterHunterPlugin(GamePlugin):
             return []
 
         player = self._players.get(session.session_id)
-        if player is not None and len(message.payload) == self.profile.member_profile.size:
-            player.profile = bytes(message.payload)
+        profile = self._server_profile(player, bytes(message.payload))
+        if player is not None and len(profile) == self.profile.member_profile.size:
+            player.profile = profile
 
-        payload = struct.pack('>2L', session.session_id, len(message.payload)) + message.payload
         callbacks: list[SnapMessage] = []
         room = context.rooms.get(session.room_id)
         if room is not None:
-            callbacks += self._room_callbacks(
+            callbacks = self._room_callbacks(
                 context,
                 room,
                 exclude_session_id=session.session_id,
                 command=commands.CMD_CHANGE_USER_PROPERTY,
-                payload=payload,
-            )
-        origin = self._origin_town(context, session)
-        if origin is not None:
-            callbacks += self._room_callbacks(
-                context,
-                origin,
-                exclude_session_id=session.session_id,
-                command=commands.CMD_CHANGE_USER_PROPERTY,
-                payload=payload,
+                payload=lambda member: (
+                    struct.pack('>2L', session.session_id, len(profile)) + self._profile_for(member, profile)
+                ),
             )
         return [
             self._result(context, message, session, GameTags.RESULT, RESULT_WRAPPER_STATUS_OK, FLAG_ROOM)
@@ -772,23 +766,27 @@ class MonsterHunterPlugin(GamePlugin):
 
         After a quest each client sends `STAT` with its origin Town rules word
         (`0x0061af10..0x0061af44`), which moves that player back into the Town
-        that kept listing it.
+        that kept listing it; the hunters there get it as an arrival.
         """
 
         session = resolve_session(context, message, _LOGGER)
         if session is None:
             return []
 
+        arrivals: list[SnapMessage] = []
         room = context.rooms.get(session.room_id)
         if room is not None and len(message.payload) == 8 and message.payload[:4] == STAT_ATTRIBUTE:
             rules = get_u32(message.payload, 4)
             origin = self._origin_town(context, session) if _is_quest_return(room, rules) else None
             if origin is not None and origin.rules == rules:
                 self._return_to_origin(context, session, room, origin)
+                arrivals = self._arrival_callbacks(context, origin, session)
             else:
                 context.rooms.set_rules(room.room_id, rules)
 
-        return [self._result(context, message, session, GameTags.JOIN_OK, RESULT_WRAPPER_STATUS_OK, FLAG_ROOM)]
+        return [
+            self._result(context, message, session, GameTags.JOIN_OK, RESULT_WRAPPER_STATUS_OK, FLAG_ROOM)
+        ] + arrivals
 
     def _return_to_origin(
         self,
@@ -813,22 +811,25 @@ class MonsterHunterPlugin(GamePlugin):
         keep_town_listing: bool,
         notify: bool = True,
     ) -> list[SnapMessage]:
-        """Take the player out of its current room and, if requested, its Town listing."""
+        """Take the player out of its current room and, if requested, its Town listing.
+
+        The hunters in the room it leaves always get the leave callback; a
+        Town listing it keeps or loses later is not seen by any client.
+        """
 
         messages: list[SnapMessage] = []
         room = context.rooms.get(session.room_id) if session.room_id > 0 else None
         if session.room_id > 0:
             context.sessions.set_room(session.session_id, 0)
-        if room is not None and not (keep_town_listing and room.rules & TOWN_RULES_FLAG):
-            context.rooms.leave(room.room_id, session.session_id)
+        if room is not None:
+            if not (keep_town_listing and room.rules & TOWN_RULES_FLAG):
+                context.rooms.leave(room.room_id, session.session_id)
             if notify:
                 messages += self._leave_callbacks(context, room, session.session_id)
 
         if not keep_town_listing:
             for town in self._listing_towns(context, session):
                 context.rooms.leave(town.room_id, session.session_id)
-                if notify:
-                    messages += self._leave_callbacks(context, town, session.session_id)
 
         player = self._players.get(session.session_id)
         if player is not None:
@@ -908,9 +909,9 @@ class MonsterHunterPlugin(GamePlugin):
         *,
         exclude_session_id: int,
         command: int,
-        payload: bytes,
+        payload: Callable[[Session], bytes],
     ) -> list[SnapMessage]:
-        """Build one lobby callback per member physically in the room."""
+        """Build one lobby callback per member physically in the room, with its own payload."""
 
         if _quest_started(room):
             return []
@@ -921,12 +922,26 @@ class MonsterHunterPlugin(GamePlugin):
                 # Same unreliable callback channel as the shared join callbacks.
                 type_flags=FLAG_ROOM | FLAG_RESPONSE,
                 command=command,
-                payload=payload,
+                payload=payload(member),
                 acknowledge_number=ack_for_session(member),
             )
             for member in context.sessions.list_room_members(room.room_id)
             if member.session_id != exclude_session_id
         ]
+
+    def _arrival_callbacks(self, context: HandlerContext, room: GameRoom, session: Session) -> list[SnapMessage]:
+        """Announce a hunter entering the room to the others there (`0x00619430`)."""
+
+        profile = self._profile(session.session_id)
+        if profile is None:
+            return []
+        return self._room_callbacks(
+            context,
+            room,
+            exclude_session_id=session.session_id,
+            command=commands.CMD_JOIN,
+            payload=lambda member: _member_record(session, self._profile_for(member, profile)),
+        )
 
     def _room_peers(self, context: HandlerContext, session: Session) -> list[Session]:
         if session.room_id <= 0:
@@ -959,6 +974,34 @@ class MonsterHunterPlugin(GamePlugin):
     def _profile(self, session_id: int) -> bytes | None:
         player = self._players.get(session_id)
         return None if player is None else player.profile
+
+    def _server_profile(self, player: _Player | None, profile: bytes) -> bytes:
+        """A profile from `player` with its quest Town id in server room ids."""
+
+        if player is None or player.room_alias is None:
+            return profile
+        client_id, server_id = player.room_alias
+        return self._with_town_room(profile, client_id, server_id)
+
+    def _profile_for(self, viewer: Session, profile: bytes) -> bytes:
+        """A stored profile with its quest Town id as `viewer`'s client knows the room.
+
+        The profile callbacks show a member's quest only when this id equals
+        their own current room id (`MemberProfileLayout.town_room_offset`).
+        """
+
+        player = self._players.get(viewer.session_id)
+        if player is None or player.room_alias is None:
+            return profile
+        client_id, server_id = player.room_alias
+        return self._with_town_room(profile, server_id, client_id)
+
+    def _with_town_room(self, profile: bytes, old_room_id: int, new_room_id: int) -> bytes:
+        layout = self.profile.member_profile
+        field = slice(layout.town_room_offset, layout.town_room_offset + 4)
+        if len(profile) != layout.size or int.from_bytes(profile[field], 'little') != old_room_id:
+            return profile
+        return profile[:field.start] + new_room_id.to_bytes(4, 'little') + profile[field.stop:]
 
     def _is_departing(self, session_id: int) -> bool:
         """Whether the player's next Town leave is a quest departure (see above)."""
