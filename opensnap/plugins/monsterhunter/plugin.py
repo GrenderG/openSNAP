@@ -32,6 +32,7 @@ from opensnap.plugins.common import (
     parse_attribute_search,
     resolve_session,
     search_text,
+    send_target_relay_flags,
 )
 from opensnap.plugins.monsterhunter.directory import TOWNS_PER_CATEGORY, Area, Directory, read_directory
 from opensnap.plugins.monsterhunter.profile import MONSTER_HUNTER_NA, MonsterHunterProfile
@@ -104,6 +105,10 @@ LOBBY_IDLE_LIMIT_SECONDS = 5 * 60
 QUEST_IDLE_LIMIT_SECONDS = (50 + 10) * 60
 # `kkSearchUsers` request (`0x00207d6c`): name16 padded with `-`.
 SEARCH_NAME_PADDING = '-'
+# Release Friend status Area name: 4 skipped characters, the Land name, two
+# digits (`MonsterHunterPlugin._status_area_name`).
+STATUS_AREA_NAME_PREFIX = 'AREA'
+STATUS_AREA_LAND_NAME_SIZE = 15 - len(STATUS_AREA_NAME_PREFIX) - 2
 
 
 @dataclass(slots=True)
@@ -267,13 +272,20 @@ class MonsterHunterPlugin(GamePlugin):
         return responses
 
     def _handle_logout(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        """Handle `kkLogout`: no wire reply, matching the shared core handler."""
+        """Handle `kkLogout`: no reply to the client, leave callbacks to its Town.
+
+        The client's logout (`0x0061d550`, `0x0061d5c0` -> `kkLogout`) leaves
+        no room first, so a hunter logging out in a Town is only removed from
+        the other members' lists by the server's room leave callbacks.
+        """
 
         session = resolve_session(context, message, _LOGGER)
-        if session is not None:
-            self._detach(context, session, keep_town_listing=False, notify=False)
-            self._forget_player(session.session_id)
-        return []
+        if session is None:
+            return []
+        callbacks = self._detach(context, session, keep_town_listing=False)
+        context.sessions.set_lobby(session.session_id, 0)
+        self._forget_player(session.session_id)
+        return callbacks
 
     @property
     def directory(self) -> Directory:
@@ -281,10 +293,15 @@ class MonsterHunterPlugin(GamePlugin):
         return self._directory
 
     def _handle_query_area(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        """List one Land's Areas (`NAME` range `<key>01..<key>26`).
+        """List one Land's Areas (`NAME` range `<key>01..<key>26`) or one Area by `OID`.
 
         Records use the room-list layout read by `0x00612c20`: name, users,
-        capacity, two unused words, Area id.
+        capacity, two unused words, Area id. The `OID` lookup comes from the
+        Friend status (`0x00613a24`); its callback (`0x00613780`) keeps the
+        first record only when the count is not zero, and a Friend in an Area
+        or Town then gets an Area line built from that name. With no record
+        the name stays empty and the release copies `strlen - 4` bytes
+        (`0x0061215c`, `strncpy` with `-4`), which hangs the console.
         """
 
         session = resolve_session(context, message, _LOGGER)
@@ -292,22 +309,28 @@ class MonsterHunterPlugin(GamePlugin):
             return []
 
         limit, conditions = parse_attribute_search(message.payload)
-        low = next((value for name, op, value in conditions if name == SEARCH_NAME and op == SEARCH_AT_LEAST), None)
-        high = next((value for name, op, value in conditions if name == SEARCH_NAME and op == SEARCH_AT_MOST), None)
-        areas = () if low is None or high is None else self.directory.areas_in_name_range(
-            search_text(low), search_text(high)
-        )
+        oid = next((value for name, op, value in conditions if name == SEARCH_OID and op == SEARCH_EQUAL), None)
+        if oid is not None:
+            area = self.directory.area(int.from_bytes(oid, 'big'))
+            rows = () if area is None else ((area, self._status_area_name(area)),)
+        else:
+            low = next((value for name, op, value in conditions if name == SEARCH_NAME and op == SEARCH_AT_LEAST), None)
+            high = next((value for name, op, value in conditions if name == SEARCH_NAME and op == SEARCH_AT_MOST), None)
+            areas = () if low is None or high is None else self.directory.areas_in_name_range(
+                search_text(low), search_text(high)
+            )
+            rows = tuple((area, area.name) for area in areas)
         entries = [
             struct.pack(
                 '>16s5L',
-                pack_fixed(area.name, 16),
+                pack_fixed(name, 16),
                 self._area_population(area.area_id),
                 self.directory.area_capacity,
                 0,
                 0,
                 area.area_id,
             )
-            for area in areas[:limit]
+            for area, name in rows[:limit]
         ]
         return [
             context.reply(
@@ -643,7 +666,17 @@ class MonsterHunterPlugin(GamePlugin):
         ] + relays
 
     def _handle_send_target(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        """Relay one directed packet; the receiver identifies the sender by header."""
+        """Relay one directed packet; the receiver identifies the sender by header.
+
+        The relay keeps the sender's channel and chat bits, from which the SDK
+        picks the receiving slot (`send_target_relay_flags`). After
+        creating its quest room the host sends the room id as a lobby target
+        chat (`0xb400`, `0x0061c070` -> `0x002067d8`) that only slot 14
+        (`0x0061a320`, type 2) reads; the guest waits for that id
+        (`0x0061cda0`) before leaving its Town and joining (`0x0061ce10`).
+        Delivered to slot 19 as a game packet, it is ignored and the party
+        never forms. Game packets (`0xa000`) still reach slot 19.
+        """
 
         session = resolve_session(context, message, _LOGGER)
         if session is None:
@@ -680,7 +713,7 @@ class MonsterHunterPlugin(GamePlugin):
             context.direct(
                 endpoint=target.endpoint,
                 session_id=target.session_id,
-                type_flags=FLAG_ROOM | FLAG_RELIABLE,
+                type_flags=send_target_relay_flags(message.type_flags),
                 command=commands.CMD_SEND_TARGET,
                 payload=relay_payload,
                 acknowledge_number=ack_for_session(target),
@@ -962,6 +995,21 @@ class MonsterHunterPlugin(GamePlugin):
         area_population = sum(1 for player in others if player.area_id == area.area_id)
         land_population = sum(1 for player in others if player.area_id in land_area_ids)
         return area_population >= self.directory.area_capacity or land_population >= land.capacity
+
+    def _status_area_name(self, area: Area) -> str:
+        """Area name as the build's Friend status reads it (see the profile).
+
+        The release prints `name[4:-2]` as `"%s Land"` and `"%s Area %c"`
+        (`0x0069ee70`, `0x0069ee90`): the Area list shows the 6504 Land name
+        there (`0x00612d14`), so the release gets that name between a skipped
+        4-character prefix and the Area's two digits, within 15 characters so
+        the 16-byte field keeps its terminator.
+        """
+
+        if not self.profile.status_area_name_skips_prefix:
+            return area.name
+        land_name = self.directory.land_of(area).name
+        return f'{STATUS_AREA_NAME_PREFIX}{land_name[:STATUS_AREA_LAND_NAME_SIZE]}{area.name[-2:]}'
 
     def _area_population(self, area_id: int) -> int:
         return sum(1 for player in tuple(self._players.values()) if player.area_id == area_id)

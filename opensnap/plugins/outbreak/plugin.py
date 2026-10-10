@@ -44,6 +44,7 @@ from opensnap.plugins.common import (
     parse_attribute_search,
     resolve_session,
     search_text,
+    send_target_relay_flags,
 )
 from opensnap.plugins.outbreak.directory import Area, Directory, read_directory
 from opensnap.protocol import commands
@@ -559,7 +560,7 @@ class OutbreakPlugin(GamePlugin):
             context.direct(
                 endpoint=target.endpoint,
                 session_id=target.session_id,
-                type_flags=FLAG_ROOM | FLAG_RELIABLE,
+                type_flags=send_target_relay_flags(message.type_flags),
                 command=commands.CMD_SEND_TARGET,
                 payload=relay_payload,
                 acknowledge_number=ack_for_session(target),

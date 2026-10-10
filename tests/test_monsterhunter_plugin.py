@@ -26,6 +26,7 @@ from opensnap.protocol.codec import decode_datagram, encode_messages
 from opensnap.protocol.constants import (
     FLAG_CHANNEL_BITS,
     FLAG_MULTI,
+    FLAG_RELAY,
     FLAG_RELIABLE,
     FLAG_ROOM,
 )
@@ -354,6 +355,26 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self.assertEqual(relay.payload[4:8], bytes(4))
         self.assertEqual(relay.source_session_id, sender[1])
         self.assertEqual(relay.session_id, receiver[1])
+        # Game packets keep reaching slot 19 (reliable, room channel, no chat bit).
+        self.assertEqual(relay.type_flags, FLAG_ROOM | FLAG_RELIABLE)
+
+    def test_quest_room_notice_is_relayed_as_a_lobby_target_chat(self) -> None:
+        # Live capture: after its quest room CREATE the host sends `0xb400`
+        # `02 <name len> <name> ... 10 "00000016"`; only slot 14 reads it.
+        self._town_with_residents()
+        host, guest, _ = self.players
+        notice = (
+            struct.pack('>2L', 1, guest[1]) + bytes((2, 5)) + b'adam\n'.ljust(17, b'\x00')
+            + bytes((16,)) + b'00000016'.ljust(16, b'\x00') + bytes(3)
+        )
+
+        messages = self._send(host, commands.CMD_SEND_TARGET, notice, FLAG_CHANNEL_BITS | FLAG_RELAY | FLAG_RELIABLE)
+
+        relay = [message for message in messages if message.command == commands.CMD_SEND_TARGET][0]
+        self.assertEqual(relay.session_id, guest[1])
+        self.assertEqual(relay.type_flags, FLAG_CHANNEL_BITS | FLAG_RELAY | FLAG_RELIABLE)
+        self.assertEqual(relay.payload, notice[:4] + bytes(4) + notice[8:])
+        self.assertEqual(relay.source_session_id, host[1])
 
     def test_departing_hunters_stay_listed_in_their_town(self) -> None:
         town_id = self._town_with_residents()
@@ -414,6 +435,19 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self._send(host, commands.CMD_LEAVE)
 
         self.assertNotIn(host[1], self._roster(waiting, town_id))
+
+    def test_logout_in_a_town_announces_the_leave_and_unlists(self) -> None:
+        # The client's logout sends only `kkLogout`, without a room leave first.
+        town_id = self._town_with_residents()
+        host, guest, _ = self.players
+
+        messages = self._send(guest, commands.CMD_LOGOUT_CLIENT, b'', FLAG_CHANNEL_BITS | FLAG_RELIABLE)
+
+        notices = [message for message in messages if message.command == commands.CMD_LEAVE]
+        self.assertEqual([notice.endpoint for notice in notices], [host[0]])
+        self.assertEqual(notices[0].payload, struct.pack('>L', guest[1]))
+        self.assertNotIn(guest[1], self._roster(host, town_id))
+        self.assertEqual(self.engine._sessions.get(guest[1]).lobby_id, 0)  # noqa: SLF001
 
     def test_plain_leave_announces_departure_and_unlists(self) -> None:
         town_id = self._town_with_residents()
@@ -613,6 +647,40 @@ class MonsterHunterFlowTests(unittest.TestCase):
         itself = self._send(searcher, commands.CMD_SEARCH_USERS_BY_NAME, pack16('hunter0-') + struct.pack('>2L', 8, 1),
                             FLAG_CHANNEL_BITS | FLAG_RELIABLE)[0]
         self.assertEqual(itself.payload, struct.pack('>3L', 0, 0, 0))
+
+    def test_friend_status_area_lookup_by_oid(self) -> None:
+        # Live request: limit 1, `OID` equal to the Friend's Area id.
+        request = struct.pack('>LB3x', 1, 1) + b'OID\x00\x01' + struct.pack('>L', AREA_ID)
+
+        reply = self._send(self.players[0], commands.CMD_QUERY_AREA, request, FLAG_CHANNEL_BITS | FLAG_RELIABLE)[0]
+
+        self.assertEqual(struct.unpack_from('>3L', reply.payload), (1, 1, 1))
+        name = reply.payload[12:28].split(b'\x00')[0]
+        self.assertEqual(struct.unpack_from('>L', reply.payload, 12 + 32)[0], AREA_ID)
+        if self.plugin.profile.status_area_name_skips_prefix:
+            # The release prints `name[4:-2]` ("Red Land", "Red Area A").
+            self.assertEqual(name[4:-2], b'Red')
+        else:
+            # The beta looks `name[:-2]` up among the Land keys.
+            self.assertEqual(name, b'RED01')
+        self.assertEqual(name[-2:], b'01')
+
+        unknown = struct.pack('>LB3x', 1, 1) + b'OID\x00\x01' + struct.pack('>L', 999)
+        reply = self._send(self.players[0], commands.CMD_QUERY_AREA, unknown, FLAG_CHANNEL_BITS | FLAG_RELIABLE)[0]
+        self.assertEqual(reply.payload, struct.pack('>3L', 1, 1, 0))
+
+    def test_friend_status_area_name_fits_its_field(self) -> None:
+        lands = [{'key': 'K', 'name': 'A' * 15, 'areas': 26}]
+        with patch.dict('os.environ', {self.plugin.profile.worlds_environment_key: json.dumps({'W': {'lands': lands}})}):
+            self.plugin._directory = read_directory(  # noqa: SLF001
+                max_players_per_town=8, environment_key=self.plugin.profile.worlds_environment_key
+            )
+        for area in self.plugin.directory.areas:
+            name = self.plugin._status_area_name(area)  # noqa: SLF001
+            # 15 characters keep the 16-byte field terminated; the release needs at least 6.
+            self.assertLessEqual(len(name), 15)
+            self.assertGreaterEqual(len(name), 6 if self.plugin.profile.status_area_name_skips_prefix else 3)
+            self.assertEqual(name[-2:], area.name[-2:])
 
     def test_unknown_area_join_is_rejected(self) -> None:
         reply = self._send(self.players[0], commands.CMD_JOIN, struct.pack('>L', 99), FLAG_CHANNEL_BITS)[0]

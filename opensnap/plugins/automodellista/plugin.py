@@ -16,6 +16,7 @@ from opensnap.plugins.common import (
     build_send_target_payload,
     pack_fixed,
     resolve_session,
+    send_target_relay_flags,
 )
 from opensnap.protocol import (
     GameTags,
@@ -98,6 +99,7 @@ class AutoModellistaPlugin(GamePlugin):
         router.register(commands.CMD_CHANGE_USER_STATUS, self._handle_change_user_status)
         router.register(commands.CMD_CHANGE_USER_PROPERTY, self._handle_change_user_property)
         router.register(commands.CMD_CHANGE_ATTRIBUTE, self._handle_change_attribute)
+        router.register(commands.CMD_LOGOUT_CLIENT, self._handle_logout)
 
     def on_tick(self, context: HandlerContext) -> list[SnapMessage]:
         """Run periodic game-specific recovery tasks."""
@@ -175,6 +177,24 @@ class AutoModellistaPlugin(GamePlugin):
             leaving_session_id=session.session_id,
             recipients=recipients,
         )
+
+    def _handle_logout(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
+        """Handle `kkLogoutClient`: no reply, the same room cleanup as a timeout.
+
+        The normal exit leaves the room and lobby first, but the error exits
+        log out from wherever the client is: `To_ErrorLogOut` (e.g. from
+        `Check_CallBackWait`) and `to_net_warning` (races, network select)
+        reach `cpnLogoutLobbyServer` -> `kkLogoutClient` without a room leave
+        (Beta1 `0x0035df80`). The session is kept, as by the core handler.
+        """
+
+        session = resolve_session(context, message, _LOGGER)
+        if session is None:
+            return []
+        callbacks = self.on_session_timeout(context, session)
+        context.sessions.set_room(session.session_id, 0)
+        context.sessions.set_lobby(session.session_id, 0)
+        return callbacks
 
     def _handle_query_lobbies(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         entries = []
@@ -982,7 +1002,7 @@ class AutoModellistaPlugin(GamePlugin):
             context.direct(
                 endpoint=target.endpoint,
                 session_id=target.session_id,
-                type_flags=FLAG_ROOM | FLAG_RELIABLE,
+                type_flags=send_target_relay_flags(message.type_flags),
                 command=commands.CMD_SEND_TARGET,
                 payload=relay_payload,
                 acknowledge_number=ack_for_session(target),

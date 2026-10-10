@@ -33,6 +33,12 @@ class MonsterHunterProfile:
     member_profile: MemberProfileLayout
     # 6213 reply: how many of the eight lobby timing words the client reads.
     connection_timing_words: int
+    # How the Friend status reads the Area name of its `OID` Area lookup.
+    # True: it prints `name[4:-2]` as the Land name and the last two digits as
+    # the Area letter (NA `lobby.bin` `0x00612118..0x00612210`, EU
+    # `0x005bf7c0`). False: it looks `name[:-2]` up among the Land keys and
+    # prints that Land's name (beta `0x005b2bc0`).
+    status_area_name_skips_prefix: bool
 
 
 # `SLUS_208.96` (Monster Hunter NTSC-U), and the PAL builds sharing its lobby
@@ -44,6 +50,7 @@ MONSTER_HUNTER_NA = MonsterHunterProfile(
     worlds_environment_key='OPENSNAP_MH_WORLDS',
     member_profile=MemberProfileLayout(size=140, party_state_offset=136, quest_state_offset=137),
     connection_timing_words=8,
+    status_area_name_skips_prefix=True,
 )
 
 # `SLUS_291.10` (Monster Hunter NTSC-U public beta, May 2004). Its profile is
@@ -57,4 +64,5 @@ MONSTER_HUNTER_NA_BETA = MonsterHunterProfile(
     worlds_environment_key='OPENSNAP_MH_NA_BETA_WORLDS',
     member_profile=MemberProfileLayout(size=216, party_state_offset=213, quest_state_offset=215),
     connection_timing_words=4,
+    status_area_name_skips_prefix=False,
 )

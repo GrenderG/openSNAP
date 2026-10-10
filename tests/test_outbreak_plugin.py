@@ -271,6 +271,19 @@ class OutbreakLobbyTests(unittest.TestCase):
         # Everyone else in the Area is in a room.
         self.assertFalse([message for message in hall_chat if message.command == commands.CMD_SEND])
 
+    def test_send_target_relay_reaches_the_game_packet_slot(self) -> None:
+        host, guest, _ = self.players
+        room_id = self._create_room(host)
+        self._send(guest, commands.CMD_JOIN, struct.pack('>L', room_id) + bytes(20))
+        payload = struct.pack('>2L', 1, guest[1]) + bytes((0, 0, 1, 0))
+
+        relays = self._to(self._send(host, commands.CMD_SEND_TARGET, payload), guest, commands.CMD_SEND_TARGET)
+
+        # Slot 19 (`0x8000` without the chat bit), as every target packet `netwk.bin` sends.
+        self.assertEqual(len(relays), 1)
+        self.assertEqual(relays[0].type_flags, ROOM_FLAGS)
+        self.assertEqual(relays[0].payload, payload[:4] + bytes(4) + payload[8:])
+
     def test_friend_search_reports_area_and_room(self) -> None:
         host, guest, _ = self.players
         room_id = self._create_room(host)

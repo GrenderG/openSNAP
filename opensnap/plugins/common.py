@@ -7,7 +7,13 @@ import struct
 from opensnap.core.context import HandlerContext
 from opensnap.core.sessions import Session
 from opensnap.protocol import commands
-from opensnap.protocol.constants import FLAG_CHANNEL_BITS, FLAG_RELIABLE, FLAG_RESPONSE, FLAG_ROOM
+from opensnap.protocol.constants import (
+    FLAG_CHANNEL_BITS,
+    FLAG_RELIABLE,
+    FLAG_RESPONSE,
+    FLAG_ROOM,
+    RELAY_CONTEXT_MASK,
+)
 from opensnap.protocol.models import SnapMessage
 
 
@@ -125,6 +131,19 @@ def build_send_target_payload(payload: bytes) -> bytes | None:
     if len(payload) < 10:
         return None
     return payload[:4] + b'\x00\x00\x00\x00' + payload[8:]
+
+
+def send_target_relay_flags(type_flags: int) -> int:
+    """Type flags of a `CMD_SEND_TARGET` relay: reliable, with the sender's channel and chat bits.
+
+    Every SDK build picks the receiving slot from those bits alone (AM
+    `0x002eda28`, Beta1 `kkDispatchingOperation+0x318`, MH NA `0x00202838`,
+    Outbreak = MH - `0x21fc0`): with `0x1000` only a chat target (`0x0400`)
+    is delivered (slot 14), otherwise `0x0400` -> slot 12, `0x8000` -> slot 19
+    (game packet), else slot 21. Game packets (`0xa000`) keep reaching slot 19.
+    """
+
+    return FLAG_RELIABLE | (type_flags & RELAY_CONTEXT_MASK)
 
 
 def build_room_leave_callbacks(

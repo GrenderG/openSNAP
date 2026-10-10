@@ -2250,10 +2250,8 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(relay.session_id, receiver_session)
         self.assertEqual(struct.unpack('>2LH', relay.payload), (1, 0, 0x8001))
         self.assertEqual(relay.sequence_number, 0)
-        self.assertEqual(
-            relay.type_flags & (FLAG_ROOM | FLAG_RELIABLE),
-            FLAG_ROOM | FLAG_RELIABLE,
-        )
+        # Game packet targets stay `0xa000` (slot 19, `0x002eda28`).
+        self.assertEqual(relay.type_flags, FLAG_ROOM | FLAG_RELIABLE)
         self.assertEqual(relay.type_flags & FLAG_RESPONSE, 0)
 
     def test_first_reliable_send_target_relay_uses_sequence_zero_after_room_join(self) -> None:
@@ -2608,6 +2606,44 @@ class EngineFlowTests(unittest.TestCase):
         room = engine._rooms.get(room_id)  # noqa: SLF001
         assert room is not None
         self.assertEqual(room.members, {host_session})
+
+    def test_logout_from_a_room_notifies_the_host_and_keeps_the_session(self) -> None:
+        # Error exits (`To_ErrorLogOut`, `to_net_warning`) log out without a room leave.
+        config = replace(
+            self._config,
+            users=self._config.users + (
+                UserConfig(user_id=2, username='test2', password='1111', seed='', team=''),
+            ),
+        )
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        host_endpoint = Endpoint(host='127.0.0.1', port=50047)
+        guest_endpoint = Endpoint(host='127.0.0.1', port=50048)
+        host_session = _create_session_via_login(engine, host_endpoint, 'test')
+        guest_session = _create_session_via_login(engine, guest_endpoint, 'test2')
+        _join_lobby(engine, host_endpoint, host_session, lobby_id=1, sequence=3)
+        _join_lobby(engine, guest_endpoint, guest_session, lobby_id=1, sequence=3)
+        room_id = _create_room(engine, host_endpoint, host_session, sequence=4, room_name='logout-room')
+        _join_room(engine, guest_endpoint, guest_session, room_id=room_id, sequence=4)
+
+        logout = SnapMessage(
+            endpoint=guest_endpoint, type_flags=0xB000, packet_number=0, command=commands.CMD_LOGOUT_CLIENT,
+            session_id=guest_session, sequence_number=5, acknowledge_number=0,
+        )
+        result = engine.handle_datagram(_encode(logout), guest_endpoint)
+
+        self.assertFalse(result.errors)
+        self.assertEqual([(m.endpoint, m.command) for m in result.messages], [(host_endpoint, commands.CMD_LEAVE)])
+        self.assertEqual(get_u32(result.messages[0].payload, 0), guest_session)
+        room = engine._rooms.get(room_id)  # noqa: SLF001
+        assert room is not None
+        self.assertEqual(room.members, {host_session})
+        guest = engine._sessions.get(guest_session)  # noqa: SLF001
+        assert guest is not None
+        self.assertEqual((guest.room_id, guest.lobby_id), (0, 0))
+
+        # The normal exit has already left the room and lobby: nothing to send.
+        again = replace(logout, sequence_number=6)
+        self.assertEqual(engine.handle_datagram(_encode(again), guest_endpoint).messages, [])
 
     def test_duplicate_or_older_sequence_is_tolerated_for_authenticated_session(self) -> None:
         config = self._config
