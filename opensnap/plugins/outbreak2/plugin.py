@@ -38,9 +38,9 @@ from opensnap.plugins.common import (
     SEARCH_NAME,
     SEARCH_OID,
     USER_ATTRIBUTE_TOKEN,
-    ReliableReplyCache,
     ack_for_request,
     ack_for_session,
+    build_list_pages,
     build_room_leave_callbacks,
     build_send_target_payload,
     pack_fixed,
@@ -81,13 +81,16 @@ STATUS_IN_SCENARIO = 1
 STATUS_IN_LOBBY = 0xF7E00001
 
 # Rooms. The roster table keeps four members (`0x005a08a0`, no bound check)
-# and the room list at most 30 rows (`0x005a16f0`, limit 30). `STAT` carries
+# and the room list at most 30 rows (`0x005a16f0`, limit 30), but a
+# `kkSearchRooms` reply goes through a one-shot dispatcher keyed on the packet
+# number (`0x005a3aa0`), so it cannot be paged: the list is one reply that fits
+# the 896-byte receive buffer, 21 rows of 40 bytes. `STAT` carries
 # the whole rules word; `0x40000000` marks a started or disbanded room: the
 # start sends it with the room's load-bucket bits (`0x005a2748`), the disband
 # alone (`0x005a05a8`). Listings skip it (`0x005a1790`) and the Friend status
 # shows it as "Now playing." (`0x005b3aa0`).
 MAX_ROOM_PLAYERS = 4
-MAX_LISTED_ROOMS = 30
+MAX_LISTED_ROOMS = 21
 ROOM_CLOSED_FLAG = 0x40000000
 STAT_ATTRIBUTE = b'STAT'
 MAXI_ATTRIBUTE = b'MAXI'
@@ -148,7 +151,6 @@ class Outbreak2Plugin(GamePlugin):
     def __init__(self) -> None:
         self._players: dict[int, _Player] = {}
         self._directory: Directory | None = None
-        self._reliable_replies = ReliableReplyCache()
 
     @property
     def directory(self) -> Directory:
@@ -297,8 +299,9 @@ class Outbreak2Plugin(GamePlugin):
         """Answer every `kkSearchRooms` of the lobby: `LOID` + masked `STAT`, or `OID`.
 
         Records are 40 bytes (`0x005a1790`, `0x005a3d20`): name16, 0, users
-        `+20`, 0, rules `+28`, max players `+32`, room id `+36`. The lobby
-        keeps at most 30 rows and skips rows with `0x40000000`; the load
+        `+20`, 0, rules `+28`, max players `+32`, room id `+36`. At most
+        `MAX_LISTED_ROOMS` rows fit one reply; the lobby skips rows with
+        `0x40000000`; the load
         counters sum the users of started rooms per bucket, so closed rooms
         are reported when the conditions ask for them.
         """
@@ -319,7 +322,7 @@ class Outbreak2Plugin(GamePlugin):
             _search_record(room)
             for room in (rooms or [])
             if all((room.rules & mask) == expected for mask, expected in masks)
-        ][:limit or MAX_LISTED_ROOMS]
+        ][:min(limit or MAX_LISTED_ROOMS, MAX_LISTED_ROOMS)]
         return [
             context.reply(
                 message,
@@ -353,14 +356,16 @@ class Outbreak2Plugin(GamePlugin):
             member = context.sessions.get(member_id)
             if member is not None:
                 records.append(self._member_record(member))
-        return [
-            context.reply(
-                message,
-                type_flags=channel_type | FLAG_RESPONSE,
-                command=commands.CMD_QUERY_USER,
-                payload=struct.pack('>3L', requested_id, len(records), len(records)) + b''.join(records),
-            )
-        ]
+        # A full room's roster (4 x 264 bytes) exceeds the client's receive
+        # buffer; the roster callbacks count records across pages.
+        return build_list_pages(
+            context,
+            message,
+            type_flags=channel_type | FLAG_RESPONSE,
+            command=commands.CMD_QUERY_USER,
+            header=lambda count: struct.pack('>3L', requested_id, len(records), count),
+            records=records,
+        )
 
     def _handle_create_game_room(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         """Create a room in the player's Area.
@@ -373,9 +378,6 @@ class Outbreak2Plugin(GamePlugin):
         session = resolve_session(context, message, _LOGGER)
         if session is None:
             return []
-        replay = self._reliable_replies.replay(message, session)
-        if replay is not None:
-            return replay
 
         area = self.directory.area(session.lobby_id)
         if area is None or len(context.rooms.list_for_lobby(area.area_id)) >= context.config.server.max_rooms_per_lobby:
@@ -396,7 +398,6 @@ class Outbreak2Plugin(GamePlugin):
             )
             context.sessions.set_room(session.session_id, room.room_id)
             outbound = departures + [self._result(context, message, session, room.room_id, FLAG_ROOM)]
-        self._reliable_replies.remember(message, session, outbound)
         return outbound
 
     def _handle_join(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -415,9 +416,6 @@ class Outbreak2Plugin(GamePlugin):
             arrival = self._area_callbacks(context, session, commands.CMD_JOIN)
             return departures + [self._result(context, message, session, RESULT_OK, channel_type)] + arrival
 
-        replay = self._reliable_replies.replay(message, session)
-        if replay is not None:
-            return replay
         room_id = get_u32(message.payload, 0)
         room = context.rooms.get(room_id)
         if room is not None and session.room_id == room_id:
@@ -436,7 +434,6 @@ class Outbreak2Plugin(GamePlugin):
                 outbound += self._room_callbacks(
                     context, room, session.session_id, commands.CMD_JOIN, self._member_record(session)
                 )
-        self._reliable_replies.remember(message, session, outbound)
         return outbound
 
     def _handle_leave(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -445,9 +442,6 @@ class Outbreak2Plugin(GamePlugin):
         session = resolve_session(context, message, _LOGGER)
         if session is None:
             return []
-        replay = self._reliable_replies.replay(message, session)
-        if replay is not None:
-            return replay
         channel_type = message.type_flags & FLAG_CHANNEL_BITS
         callbacks = self._leave_room(context, session)
         if channel_type == FLAG_CHANNEL_BITS:
@@ -455,7 +449,6 @@ class Outbreak2Plugin(GamePlugin):
         else:
             channel_type = FLAG_ROOM
         outbound = [self._result(context, message, session, RESULT_OK, channel_type)] + callbacks
-        self._reliable_replies.remember(message, session, outbound)
         return outbound
 
     def _handle_change_attribute(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -801,7 +794,6 @@ class Outbreak2Plugin(GamePlugin):
     def _forget_player(self, session_id: int) -> None:
         self._players.pop(session_id, None)
         self._online_players.logout(session_id)
-        self._reliable_replies.forget(session_id)
 
     @staticmethod
     def _result(

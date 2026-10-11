@@ -63,12 +63,6 @@ class AutoModellistaBeta1Plugin(AutoModellistaPlugin):
         # pending query, and `lbc_in_room_00` registers
         # `BgCallBackGetJoinUserRoom` (`0x0035e270`) there, which stores
         # `lhu +8` of the swapped payload (`kkPAttributeSwap`) as the room count.
-        #
-        # An exact reliable retry replays the cached bundle, this callback
-        # included, with its original sequence numbers. The callbacks are
-        # unreliable and `kkReceiveExtentCheck` (`0x002ebf10`) drops sequences
-        # below the last accepted + 1, so a member that already got them
-        # ignores the replay and one that lost them recovers.
         already_member = session is not None and room_id != 0 and session.room_id == room_id
         result = super()._handle_join(context, message)
 
@@ -79,15 +73,11 @@ class AutoModellistaBeta1Plugin(AutoModellistaPlugin):
         ):
             return result
 
-        result = result + _build_room_user_count_callbacks(
+        return result + _build_room_user_count_callbacks(
             context=context,
             room_id=room_id,
             excluding_endpoint=message.endpoint,
         )
-        session = context.sessions.get(message.session_id)
-        if session is not None:
-            self._remember_reliable_join_result(message, session, room_id, result)
-        return result
 
     def _handle_leave(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         room_id = _room_id_before_leave(context, message)

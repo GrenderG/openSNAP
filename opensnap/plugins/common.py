@@ -1,6 +1,6 @@
 """Game-agnostic SNAP helpers shared by game plugins."""
 
-from dataclasses import replace
+from collections.abc import Callable
 import logging
 import struct
 
@@ -8,7 +8,6 @@ from opensnap.core.context import HandlerContext
 from opensnap.core.sessions import Session
 from opensnap.protocol import commands
 from opensnap.protocol.constants import (
-    FLAG_CHANNEL_BITS,
     FLAG_RELIABLE,
     FLAG_RESPONSE,
     FLAG_ROOM,
@@ -121,6 +120,57 @@ def ack_for_request(request: SnapMessage, session: Session) -> int:
     return 0
 
 
+# Reply size. Every SN@P client reads one datagram into a buffer of at most
+# 896 bytes: MH NA `slti 897` at `0x001ff4f8` (EU `0x001f5588`, Outbreak F1 v2
+# `0x001dd568`, F2 NA `0x00162b00`), AM `recvfrom(.., 0x380)` (`0x002ef060`,
+# Beta1 `0x002e899c`). A longer one is truncated, fails the footer check and
+# is dropped, so its ACK is never seen and the request is resent forever.
+# Minus the 16-byte header and the 4-byte footer, a reply payload holds 876.
+MAX_REPLY_PAYLOAD = 876
+# A longer list goes out as pages: a page clears the room flag and carries a
+# packet number; the last page is the usual reply. The dispatch (MH `0x201d68`,
+# AM `0x2ed0b8`, F1 `0x1dfda8`, F2 `0x165340`) picks the callback by command,
+# reads `0x2000` only for info `+1` (with the packet number in info `+2`; a list
+# callback seeing both keeps waiting), feeds `0x4000` only to `kkSetRevAck`,
+# and uses `0x1000` only to tell the room from the lobby QUERY_USER, so pages
+# keep the lobby bit and the response flag. The list callbacks run a per-page
+# count over header `+8` and append to an index reset by the request (MH room
+# roster `0x006182f0`, Outbreak F1 `0x00588120`, F2 `0x005a08a0`).
+MORE_PAGES_PACKET_NUMBER = 1
+
+
+def build_list_pages(
+    context: HandlerContext,
+    message: SnapMessage,
+    *,
+    type_flags: int,
+    command: int,
+    header: Callable[[int], bytes],
+    records: list[bytes],
+) -> list[SnapMessage]:
+    """Answer a list request in replies that each fit the client's receive buffer.
+
+    `type_flags` are the usual reply flags and `header(count)` builds a page's
+    fixed-length header for its `count` records. Every page but the last
+    clears the room flag and carries a packet number; the last is the usual
+    reply, so a list that fits is one reply exactly as before.
+    """
+
+    per_page = max(1, (MAX_REPLY_PAYLOAD - len(header(0))) // len(records[0])) if records else 1
+    pages = [records[index:index + per_page] for index in range(0, len(records), per_page)] or [[]]
+    last = len(pages) - 1
+    return [
+        context.reply(
+            message,
+            type_flags=type_flags if number == last else type_flags & ~FLAG_ROOM,
+            command=command,
+            payload=header(len(page)) + b''.join(page),
+            packet_number=None if number == last else MORE_PAGES_PACKET_NUMBER,
+        )
+        for number, page in enumerate(pages)
+    ]
+
+
 def build_send_target_payload(payload: bytes) -> bytes | None:
     """Build relay payload for send-target callbacks.
 
@@ -171,46 +221,3 @@ def build_room_leave_callbacks(
         )
     return messages
 
-
-class ReliableReplyCache:
-    """Replay a requester's original result for an exact reliable retry.
-
-    The SN@P client retransmits a reliable request until it is ACKed and
-    applies a second copy of any callback (MH room join `0x00619430` counts the
-    member twice), so a retried room change must not run again. Results are
-    kept per `(session, command, channel)` with the request sequence; only the
-    requester's own messages are replayed, re-addressed to its endpoint.
-    """
-
-    def __init__(self) -> None:
-        self._replies: dict[tuple[int, int, int], tuple[int, tuple[SnapMessage, ...]]] = {}
-
-    def replay(self, message: SnapMessage, session: Session) -> list[SnapMessage] | None:
-        key = _reliable_reply_key(message, session)
-        cached = None if key is None else self._replies.get(key)
-        if cached is None or cached[0] != message.sequence_number:
-            return None
-        return [
-            replace(cached_message, endpoint=message.endpoint)
-            if cached_message.session_id == session.session_id
-            else replace(cached_message)
-            for cached_message in cached[1]
-        ]
-
-    def remember(self, message: SnapMessage, session: Session, outbound: list[SnapMessage]) -> None:
-        key = _reliable_reply_key(message, session)
-        if key is not None:
-            self._replies[key] = (
-                message.sequence_number,
-                tuple(replace(item) for item in outbound if item.session_id == session.session_id),
-            )
-
-    def forget(self, session_id: int) -> None:
-        for key in [key for key in self._replies if key[0] == session_id]:
-            self._replies.pop(key, None)
-
-
-def _reliable_reply_key(message: SnapMessage, session: Session) -> tuple[int, int, int] | None:
-    if (message.type_flags & FLAG_RELIABLE) == 0 or message.embedded_in_multi:
-        return None
-    return (session.session_id, message.command, message.type_flags & FLAG_CHANNEL_BITS)

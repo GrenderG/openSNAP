@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import sqlite3
+import struct
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -167,6 +168,70 @@ class SqliteBackendTests(unittest.TestCase):
             session_id, _ = _bootstrap_login(bootstrap, config, endpoint)
             relogin = game.handle_datagram(_kics(endpoint, session_id), endpoint).messages[0]
             self.assertEqual(relogin.sequence_number, 3)
+
+    def test_reliable_numbering_restarts_at_the_kics_login(self) -> None:
+        # The client zeroes both reliable counters when it sends the KICS login
+        # (AM `kkLoginToKICS` `0x2ee940..0x2ee950`), so the bootstrap's reliable
+        # answer does not shift the game server's reliable numbering, whether
+        # both run in one engine or in separate ones.
+        for roles in (('bootstrap', 'game'), ('combined', 'combined')):
+            with self.subTest(roles=roles), tempfile.TemporaryDirectory() as temp_directory:
+                config = replace(
+                    serving(default_app_config(), 'automodellista'),
+                    storage=StorageConfig(backend='sqlite', sqlite_path=f'{temp_directory}/opensnap.sqlite'),
+                )
+                create_accounts(config, 'test')
+                bootstrap = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin(), role=roles[0])
+                game = bootstrap if roles[1] == 'combined' else SnapProtocolEngine(
+                    config=config, plugin=AutoModellistaPlugin(), role=roles[1]
+                )
+                for engine in {bootstrap, game}:
+                    self.addCleanup(engine.close)
+                endpoint = Endpoint(host='127.0.0.1', port=2000)
+                login = bootstrap.handle_datagram(
+                    _encode(
+                        SnapMessage(
+                            endpoint=endpoint,
+                            type_flags=FLAG_CHANNEL_BITS,
+                            packet_number=0,
+                            command=commands.CMD_LOGIN_CLIENT,
+                            session_id=0,
+                            sequence_number=0,
+                            acknowledge_number=0,
+                            payload=login_client_payload(b'test'),
+                        )
+                    ),
+                    endpoint,
+                ).messages[0]
+                check = SnapMessage(
+                    endpoint=endpoint,
+                    type_flags=FLAG_CHANNEL_BITS | FLAG_RELIABLE,
+                    packet_number=0,
+                    command=commands.CMD_BOOTSTRAP_LOGIN_SWAN_CHECK,
+                    session_id=login.session_id,
+                    sequence_number=0,
+                    acknowledge_number=0,
+                    payload=_build_valid_bootstrap_check_payload(config.server.bootstrap_key, config.server.server_secret),
+                )
+                success = bootstrap.handle_datagram(_encode(check), endpoint).messages[0]
+                self.assertEqual(success.command, commands.CMD_BOOTSTRAP_LOGIN_SUCCESS)
+                self.assertEqual((success.type_flags & FLAG_RELIABLE, success.sequence_number), (FLAG_RELIABLE, 0))
+
+                game.handle_datagram(_kics(endpoint, login.session_id), endpoint)
+                join = SnapMessage(
+                    endpoint=endpoint,
+                    type_flags=FLAG_CHANNEL_BITS | FLAG_RELIABLE,
+                    packet_number=0,
+                    command=commands.CMD_JOIN,
+                    session_id=login.session_id,
+                    sequence_number=0,
+                    acknowledge_number=0,
+                    payload=struct.pack('>L', 1),
+                )
+                answers = game.handle_datagram(_encode(join), endpoint).messages
+
+                self.assertEqual([answer.command for answer in answers], [commands.CMD_RESULT_WRAPPER])
+                self.assertEqual((answers[0].type_flags & FLAG_RELIABLE, answers[0].sequence_number), (FLAG_RELIABLE, 0))
 
     def test_game_traffic_does_not_touch_the_shared_store(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

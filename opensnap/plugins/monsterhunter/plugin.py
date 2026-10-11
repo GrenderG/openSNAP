@@ -23,9 +23,9 @@ from opensnap.plugins.common import (
     SEARCH_NAME,
     SEARCH_OID,
     USER_ATTRIBUTE_TOKEN,
-    ReliableReplyCache,
     ack_for_request,
     ack_for_session,
+    build_list_pages,
     build_room_leave_callbacks,
     build_send_target_payload,
     pack_fixed,
@@ -151,21 +151,6 @@ class MonsterHunterPlugin(GamePlugin):
         self.name = profile.identifier
         self._players: dict[int, _Player] = {}
         self._directory: Directory | None = None
-        # Exact reliable retries replay the requester's original result.
-        #
-        # Transport (`SLUS_208.96` receive `0x001fe778`, which merges AM's
-        # `kkDispatchingPacket` and `kkReceiveExtentCheck`): ACKs are taken from
-        # response-flagged packets (`kkSetRevAck` `0x002098b8`), reliable
-        # duplicates below the window are dropped, multi datagrams hold up to
-        # 56 entries, as in AM. Unlike AM (`app+16 = seq + 1`), an accepted
-        # unreliable packet sets `app+16 = seq`, so MH accepts a repeat of its
-        # newest unreliable sequence. Callbacks to other hunters are therefore
-        # not replayed: they travel on links the requester's retry says nothing
-        # about, and a second copy is applied again (room join `0x00619430`
-        # shows the arrival again and counts the member twice, leave
-        # `0x00619590` likewise). The requester's own result callbacks only set
-        # the result flag and room id again (`0x00615f50`, `0x00616010`).
-        self._reliable_replies = ReliableReplyCache()
 
     def register_handlers(self, router: CommandRouter, context: HandlerContext) -> None:
         """Register plugin handlers."""
@@ -340,14 +325,16 @@ class MonsterHunterPlugin(GamePlugin):
             )
             for area, name in rows[:limit]
         ]
-        return [
-            context.reply(
-                message,
-                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
-                command=commands.CMD_QUERY_AREA,
-                payload=struct.pack('>3L', limit, 1, len(entries)) + b''.join(entries),
-            )
-        ]
+        # Both Area list callbacks (`0x00612c20`, `0x00616e70`) store records by
+        # name digits and count them across pages; only the count word is read.
+        return build_list_pages(
+            context,
+            message,
+            type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
+            command=commands.CMD_QUERY_AREA,
+            header=lambda count: struct.pack('>3L', limit, 1, count),
+            records=entries,
+        )
 
     def _handle_query_attribute(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         """Report `USER` counts for one Area or one room."""
@@ -376,18 +363,22 @@ class MonsterHunterPlugin(GamePlugin):
         ]
 
     def _handle_query_game_rooms(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
-        """List every room of one Area; the client keeps only open Towns."""
+        """List every room of one Area; the client keeps only open Towns.
+
+        The callback (`0x006173a0`) counts rows across pages into 21 slots per
+        Town category, which `_town_category_full` keeps from overflowing.
+        """
 
         area_id = get_u32(message.payload, 0)
         entries = [_room_row(context, room) for room in context.rooms.list_for_lobby(area_id)]
-        return [
-            context.reply(
-                message,
-                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
-                command=commands.CMD_QUERY_GAME_ROOMS,
-                payload=struct.pack('>3L', 0, 1, len(entries)) + b''.join(entries),
-            )
-        ]
+        return build_list_pages(
+            context,
+            message,
+            type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
+            command=commands.CMD_QUERY_GAME_ROOMS,
+            header=lambda count: struct.pack('>3L', 0, 1, count),
+            records=entries,
+        )
 
     def _handle_query_user(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         """Return the member roster of one room or one Area.
@@ -395,7 +386,10 @@ class MonsterHunterPlugin(GamePlugin):
         Both callbacks (room `0x006182f0`, Area `0x00614060`) read
         `name16, session_id, length` and always copy a profile of the build's
         fixed size from `+24`, so only members that already published their
-        profile are listed.
+        profile are listed. The header is `requested_id, total, count`; both
+        callbacks append each page's `count` records (their indexes are reset
+        only by the request, room `0x006182c0`, Area `0x00613d38`), so a
+        roster longer than one reply goes out as pages.
         """
 
         session = resolve_session(context, message, _LOGGER)
@@ -423,15 +417,14 @@ class MonsterHunterPlugin(GamePlugin):
             if member is not None and profile is not None:
                 entries.append(_member_record(member, self._profile_for(session, profile)))
 
-        payload = struct.pack('>3L', requested_id, len(entries), len(entries)) + b''.join(entries)
-        return [
-            context.reply(
-                message,
-                type_flags=channel_type | FLAG_RESPONSE,
-                command=commands.CMD_QUERY_USER,
-                payload=payload,
-            )
-        ]
+        return build_list_pages(
+            context,
+            message,
+            type_flags=channel_type | FLAG_RESPONSE,
+            command=commands.CMD_QUERY_USER,
+            header=lambda count: struct.pack('>3L', requested_id, len(entries), count),
+            records=entries,
+        )
 
     def _handle_search_users(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         """Answer the Friend search with the member's Land, Area and room.
@@ -511,14 +504,9 @@ class MonsterHunterPlugin(GamePlugin):
         session = resolve_session(context, message, _LOGGER)
         if session is None:
             return []
-        replay = self._replay_reliable_reply(message, session)
-        if replay is not None:
-            return replay
-
         rules = get_u32(message.payload, 0x28)
         if rules & TOWN_RULES_FLAG and self._town_category_full(context, session.lobby_id, rules):
             outbound = [self._refusal(context, message, session, GameTags.START_OK, FLAG_ROOM)]
-            self._remember_reliable_reply(message, session, outbound)
             return outbound
         departures = self._detach(context, session, keep_town_listing=not rules & TOWN_RULES_FLAG)
         room = context.rooms.create_room(
@@ -533,7 +521,6 @@ class MonsterHunterPlugin(GamePlugin):
         outbound = departures + [
             self._result(context, message, session, GameTags.START_OK, room.room_id, FLAG_ROOM)
         ]
-        self._remember_reliable_reply(message, session, outbound)
         return outbound
 
     def _handle_join(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -555,10 +542,6 @@ class MonsterHunterPlugin(GamePlugin):
                 self._result(context, message, session, GameTags.GAME_START, RESULT_WRAPPER_STATUS_OK, channel_type)
             ]
 
-        replay = self._replay_reliable_reply(message, session)
-        if replay is not None:
-            return replay
-
         room_id = self._server_room_id(session, get_u32(message.payload, 0))
         room = context.rooms.get(room_id)
         if room is not None and session.room_id == room_id:
@@ -577,14 +560,12 @@ class MonsterHunterPlugin(GamePlugin):
             outbound = departures + [
                 self._refusal(context, message, session, GameTags.GAME_START, FLAG_ROOM)
             ]
-            self._remember_reliable_reply(message, session, outbound)
             return outbound
 
         context.sessions.set_room(session.session_id, room_id)
         outbound = departures + [
             self._result(context, message, session, GameTags.GAME_START, RESULT_WRAPPER_STATUS_OK, FLAG_ROOM)
         ] + self._arrival_callbacks(context, room, session)
-        self._remember_reliable_reply(message, session, outbound)
         return outbound
 
     def _handle_leave(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -593,10 +574,6 @@ class MonsterHunterPlugin(GamePlugin):
         session = resolve_session(context, message, _LOGGER)
         if session is None:
             return []
-        replay = self._replay_reliable_reply(message, session)
-        if replay is not None:
-            return replay
-
         channel_type = message.type_flags & FLAG_CHANNEL_BITS
         if channel_type == FLAG_CHANNEL_BITS:
             callbacks = self._detach(context, session, keep_town_listing=False)
@@ -615,7 +592,6 @@ class MonsterHunterPlugin(GamePlugin):
         outbound = [
             self._result(context, message, session, GameTags.GAME_OVER, RESULT_WRAPPER_STATUS_OK, channel_type)
         ] + callbacks
-        self._remember_reliable_reply(message, session, outbound)
         return outbound
 
     def _handle_send(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -1066,7 +1042,6 @@ class MonsterHunterPlugin(GamePlugin):
     def _forget_player(self, session_id: int) -> None:
         self._players.pop(session_id, None)
         self._online_players.logout(session_id)
-        self._reliable_replies.forget(session_id)
 
     def _result(
         self,
@@ -1110,11 +1085,6 @@ class MonsterHunterPlugin(GamePlugin):
             acknowledge_number=ack_for_request(message, session),
         )
 
-    def _replay_reliable_reply(self, message: SnapMessage, session: Session) -> list[SnapMessage] | None:
-        return self._reliable_replies.replay(message, session)
-
-    def _remember_reliable_reply(self, message: SnapMessage, session: Session, outbound: list[SnapMessage]) -> None:
-        self._reliable_replies.remember(message, session, outbound)
 
 
 def _member_record(session: Session, profile: bytes) -> bytes:

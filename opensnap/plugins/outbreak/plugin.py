@@ -35,9 +35,9 @@ from opensnap.plugins.common import (
     SEARCH_NAME,
     SEARCH_OID,
     USER_ATTRIBUTE_TOKEN,
-    ReliableReplyCache,
     ack_for_request,
     ack_for_session,
+    build_list_pages,
     build_room_leave_callbacks,
     build_send_target_payload,
     pack_fixed,
@@ -123,7 +123,6 @@ class OutbreakPlugin(GamePlugin):
     def __init__(self) -> None:
         self._players: dict[int, _Player] = {}
         self._directory: Directory | None = None
-        self._reliable_replies = ReliableReplyCache()
 
     @property
     def directory(self) -> Directory:
@@ -267,15 +266,17 @@ class OutbreakPlugin(GamePlugin):
     # Rooms.
 
     def _handle_query_game_rooms(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
+        """List the open rooms of one Area; the list callback (`0x00588df0`) counts rows across pages."""
+
         rows = [_room_row(room) for room in self._open_rooms(context, get_u32(message.payload, 0))]
-        return [
-            context.reply(
-                message,
-                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
-                command=commands.CMD_QUERY_GAME_ROOMS,
-                payload=struct.pack('>3L', 0, 1, len(rows)) + b''.join(rows),
-            )
-        ]
+        return build_list_pages(
+            context,
+            message,
+            type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE,
+            command=commands.CMD_QUERY_GAME_ROOMS,
+            header=lambda count: struct.pack('>3L', 0, 1, count),
+            records=rows,
+        )
 
     def _handle_query_user(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         """Return a room's roster: `name16, sid, length, profile` per member (`0x00588120`)."""
@@ -288,14 +289,16 @@ class OutbreakPlugin(GamePlugin):
             member = context.sessions.get(member_id)
             if member is not None:
                 records.append(self._member_record(member))
-        return [
-            context.reply(
-                message,
-                type_flags=channel_type | FLAG_RESPONSE,
-                command=commands.CMD_QUERY_USER,
-                payload=struct.pack('>3L', requested_id, len(records), len(records)) + b''.join(records),
-            )
-        ]
+        # A full room's roster (4 x 264 bytes) exceeds the client's receive
+        # buffer; the roster callbacks count records across pages.
+        return build_list_pages(
+            context,
+            message,
+            type_flags=channel_type | FLAG_RESPONSE,
+            command=commands.CMD_QUERY_USER,
+            header=lambda count: struct.pack('>3L', requested_id, len(records), count),
+            records=records,
+        )
 
     def _handle_create_game_room(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         """Create a room in the player's Area.
@@ -307,9 +310,6 @@ class OutbreakPlugin(GamePlugin):
         session = resolve_session(context, message, _LOGGER)
         if session is None:
             return []
-        replay = self._reliable_replies.replay(message, session)
-        if replay is not None:
-            return replay
 
         area = self.directory.area(session.lobby_id)
         if area is None or len(context.rooms.list_for_lobby(area.area_id)) >= context.config.server.max_rooms_per_lobby:
@@ -330,7 +330,6 @@ class OutbreakPlugin(GamePlugin):
             )
             context.sessions.set_room(session.session_id, room.room_id)
             outbound = departures + [self._result(context, message, session, room.room_id, FLAG_ROOM)]
-        self._reliable_replies.remember(message, session, outbound)
         return outbound
 
     def _handle_join(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -348,9 +347,6 @@ class OutbreakPlugin(GamePlugin):
             context.sessions.set_lobby(session.session_id, area.area_id)
             return departures + [self._result(context, message, session, RESULT_OK, channel_type)]
 
-        replay = self._reliable_replies.replay(message, session)
-        if replay is not None:
-            return replay
         room_id = get_u32(message.payload, 0)
         room = context.rooms.get(room_id)
         if room is not None and session.room_id == room_id:
@@ -369,7 +365,6 @@ class OutbreakPlugin(GamePlugin):
                 outbound += self._room_callbacks(
                     context, room, session.session_id, commands.CMD_JOIN, self._member_record(session)
                 )
-        self._reliable_replies.remember(message, session, outbound)
         return outbound
 
     def _handle_leave(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -378,9 +373,6 @@ class OutbreakPlugin(GamePlugin):
         session = resolve_session(context, message, _LOGGER)
         if session is None:
             return []
-        replay = self._reliable_replies.replay(message, session)
-        if replay is not None:
-            return replay
         channel_type = message.type_flags & FLAG_CHANNEL_BITS
         callbacks = self._leave_room(context, session)
         if channel_type == FLAG_CHANNEL_BITS:
@@ -388,7 +380,6 @@ class OutbreakPlugin(GamePlugin):
         else:
             channel_type = FLAG_ROOM
         outbound = [self._result(context, message, session, RESULT_OK, channel_type)] + callbacks
-        self._reliable_replies.remember(message, session, outbound)
         return outbound
 
     def _handle_change_attribute(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -697,7 +688,6 @@ class OutbreakPlugin(GamePlugin):
 
     def _forget_player(self, session_id: int) -> None:
         self._players.pop(session_id, None)
-        self._reliable_replies.forget(session_id)
 
     @staticmethod
     def _result(

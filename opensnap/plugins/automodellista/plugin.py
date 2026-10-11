@@ -48,6 +48,11 @@ PENDING_ROOM_JOIN_MAX_RETRIES = 3
 # Event create-race uses this client-side sentinel when password is disabled.
 # Keep room creation semantics as "no password", not literal sentinel text.
 ROOM_PASSWORD_EMPTY_SENTINELS = frozenset({'No PW'})
+# (876 - 12) // 36. `ResultQueryRoomsCallBack2` (release `0x286c80`, Beta1
+# `0x2c8e10`) reads `+8` as a cumulative end index and Beta1 blanks all 50
+# entries on every call, so the list is one reply that fits the 896-byte
+# receive buffer.
+MAX_LISTED_ROOMS = 24
 
 
 @dataclass(slots=True)
@@ -67,15 +72,6 @@ class AutoModellistaPlugin(GamePlugin):
     snap_titles = (SnapTitle(title_code=0xCAAD, footer_marker=FOOTER_MARKER, name='Auto Modellista'),)
 
     def __init__(self) -> None:
-        # Retransmitted reliable create-room packets reuse sequence numbers.
-        self._create_room_results: dict[tuple[int, int], SnapMessage] = {}
-        # Exact reliable room-join retries must replay the original wrapper and
-        # host callback sequence numbers so the client can recover from a lost
-        # first callback without double-inserting the guest.
-        self._latest_reliable_join_result: dict[int, tuple[int, int, tuple[SnapMessage, ...]]] = {}
-        # Reliable leave retries must replay the same wrapper sequence so the
-        # client treats them as duplicates instead of a fresh callback.
-        self._latest_reliable_leave_result: dict[tuple[int, int], tuple[int, SnapMessage]] = {}
         self._room_game_states: dict[int, RoomGameState] = {}
         # Track which post-game packet families each room member has reported
         # for the current game. Keys are room_id -> {session_id: bitmask}.
@@ -146,8 +142,6 @@ class AutoModellistaPlugin(GamePlugin):
         """Clean up room state after one client-side transport timeout."""
 
         self._clear_session_join_retry_state(session.session_id)
-        self._latest_reliable_leave_result.pop((session.session_id, FLAG_CHANNEL_BITS), None)
-        self._latest_reliable_leave_result.pop((session.session_id, FLAG_ROOM), None)
 
         room_id = session.room_id
         if room_id <= 0:
@@ -224,17 +218,18 @@ class AutoModellistaPlugin(GamePlugin):
             return []
 
         if (message.type_flags & FLAG_MULTI) and channel_type == FLAG_CHANNEL_BITS:
-            # Keep behavior where one multi-packet contains lobby USER counts.
-            payload = self._build_multi_lobby_user_query_payload(context, message)
-            type_flags = FLAG_CHANNEL_BITS | FLAG_RESPONSE | FLAG_MULTI
-            size_word_override = type_flags | 0x001C
+            # One multi-packet carries the USER count of every lobby.
+            reply = context.reply(
+                message,
+                type_flags=FLAG_CHANNEL_BITS | FLAG_RESPONSE | FLAG_MULTI,
+                command=commands.CMD_QUERY_ATTRIBUTE,
+            )
+            entry_flags = reply.type_flags & FLAG_RELIABLE
             return [
-                context.reply(
-                    message,
-                    type_flags=type_flags,
-                    command=commands.CMD_QUERY_ATTRIBUTE,
-                    payload=payload,
-                    size_word_override=size_word_override,
+                replace(
+                    reply,
+                    payload=self._build_multi_lobby_user_query_payload(context, message, entry_flags),
+                    size_word_override=reply.type_flags | 0x001C,
                 )
             ]
 
@@ -264,7 +259,7 @@ class AutoModellistaPlugin(GamePlugin):
         rooms = []
         if _is_allowed_lobby_id(context, lobby_id):
             _prune_stale_rooms_in_lobby(context, lobby_id)
-            rooms = context.rooms.list_for_lobby(lobby_id)
+            rooms = context.rooms.list_for_lobby(lobby_id)[:MAX_LISTED_ROOMS]
         entries = []
         for room in rooms:
             advertised_max_players = min(room.max_players, context.config.server.max_players_per_room)
@@ -331,20 +326,11 @@ class AutoModellistaPlugin(GamePlugin):
         if session is None:
             return []
 
-        # An exact reliable retry replays the original result with its original
-        # sequence number. Both clients drop an unreliable sequence they already
-        # accepted (`kkReceiveExtentCheck`: release `0x002f5028`, Beta1
-        # `0x002ec0a8`, `app+16 = seq + 1`), so the replay only lands if the
-        # first result was lost. A fresh sequence would be accepted again, and
-        # `ResultCreateGameRoomCallBack` (`0x00288480`, Beta1 `0x002ca360`) would
-        # clear the room member table and re-enter the room.
-        cache_key = (session.session_id, message.sequence_number)
-        cached_result = self._create_room_results.get(cache_key)
-        if cached_result is not None:
-            return [replace(cached_result, endpoint=message.endpoint)]
-
+        # A retry is answered by the engine's reliable replay: a second result
+        # would make `ResultCreateGameRoomCallBack` (`0x00288480`, Beta1
+        # `0x002ca360`) clear the room member table and re-enter the room.
         if not _is_allowed_lobby_id(context, session.lobby_id):
-            return [self._create_room_failure(context, message, session, cache_key)]
+            return [self._create_room_failure(context, message, session)]
 
         _prune_stale_rooms_in_lobby(context, session.lobby_id)
         room_name = get_c_string(message.payload, 0)
@@ -355,7 +341,7 @@ class AutoModellistaPlugin(GamePlugin):
 
         room_count = len(context.rooms.list_for_lobby(session.lobby_id))
         if room_count >= context.config.server.max_rooms_per_lobby:
-            return [self._create_room_failure(context, message, session, cache_key)]
+            return [self._create_room_failure(context, message, session)]
 
         room = context.rooms.create_room(
             name=room_name,
@@ -367,40 +353,36 @@ class AutoModellistaPlugin(GamePlugin):
         )
         context.sessions.set_room(session.session_id, room.room_id)
         self._reset_post_game_state(room.room_id)
-        return [self._create_room_result(context, message, session, cache_key, room.room_id)]
+        return [self._create_room_result(context, message, session, room.room_id)]
 
     def _create_room_result(
         self,
         context: HandlerContext,
         message: SnapMessage,
         session: Session,
-        cache_key: tuple[int, int],
         result: int,
         command: int = commands.CMD_RESULT_WRAPPER,
     ) -> SnapMessage:
-        """Build and remember the create result (room id, or error code with `CMD_RESULT_ERROR`)."""
+        """Build the create result (room id, or error code with `CMD_RESULT_ERROR`)."""
 
-        reply = context.reply(
+        return context.reply(
             message,
             type_flags=FLAG_ROOM | FLAG_RESPONSE,
             command=command,
             payload=struct.pack('>2L', GameTags.START_OK, result),
             session_id=session.session_id,
         )
-        self._create_room_results[cache_key] = reply
-        return reply
 
     def _create_room_failure(
         self,
         context: HandlerContext,
         message: SnapMessage,
         session: Session,
-        cache_key: tuple[int, int],
     ) -> SnapMessage:
         """Refuse the create; a `CMD_RESULT_WRAPPER` would enter its word as the room id."""
 
         return self._create_room_result(
-            context, message, session, cache_key, RESULT_ERROR_CODE_GENERIC, command=commands.CMD_RESULT_ERROR
+            context, message, session, RESULT_ERROR_CODE_GENERIC, command=commands.CMD_RESULT_ERROR
         )
 
     def _handle_join(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -442,16 +424,7 @@ class AutoModellistaPlugin(GamePlugin):
             _prune_stale_room_members(context, room_id)
             room = context.rooms.get(room_id)
 
-            # Reliable join retransmits are expected on packet loss.
-            # If the same reliable join is retried after the guest is already in
-            # the room, replay the original response bundle with the original
-            # sequence numbers. That makes the retry safe for the host if the
-            # first callback was lost.
-            cached_retry = self._cached_reliable_join_result(message, session, room_id)
-            if cached_retry is not None:
-                return cached_retry
-
-            # Other already-in-room joins stay idempotent and return wrapper-only.
+            # An already-in-room join stays idempotent and returns wrapper-only.
             if room is not None and session.room_id == room_id and session.session_id in room.members:
                 payload = struct.pack('>2L', GameTags.GAME_START, RESULT_WRAPPER_STATUS_OK)
                 return [
@@ -502,7 +475,6 @@ class AutoModellistaPlugin(GamePlugin):
                     session_id=session.session_id,
                 )
             ] + callbacks
-            self._remember_reliable_join_result(message, session, room_id, outbound)
             return outbound
 
         _LOGGER.warning(
@@ -517,10 +489,6 @@ class AutoModellistaPlugin(GamePlugin):
         session = resolve_session(context, message, _LOGGER)
         if session is None:
             return []
-
-        cached_result = self._cached_reliable_leave_result(message, session)
-        if cached_result is not None:
-            return [cached_result]
 
         acknowledge_number = ack_for_request(message, session)
 
@@ -554,7 +522,6 @@ class AutoModellistaPlugin(GamePlugin):
                 session_id=session.session_id,
                 acknowledge_number=acknowledge_number,
             )
-            self._remember_reliable_leave_result(message, session, result_wrapper)
             return [result_wrapper] + callbacks
 
         if (message.type_flags & FLAG_CHANNEL_BITS) == FLAG_ROOM:
@@ -586,7 +553,6 @@ class AutoModellistaPlugin(GamePlugin):
                 session_id=session.session_id,
                 acknowledge_number=acknowledge_number,
             )
-            self._remember_reliable_leave_result(message, session, result_wrapper)
             return [result_wrapper] + callbacks
 
         _LOGGER.warning(
@@ -596,104 +562,6 @@ class AutoModellistaPlugin(GamePlugin):
             message.type_flags,
         )
         return []
-
-    def _cached_reliable_join_result(
-        self,
-        message: SnapMessage,
-        session: Session,
-        room_id: int,
-    ) -> list[SnapMessage] | None:
-        """Replay the original room-join response bundle for an exact retry."""
-
-        if (message.type_flags & FLAG_RELIABLE) == 0:
-            return None
-        if message.embedded_in_multi and message.sequence_number == 0:
-            return None
-        if session.room_id != room_id:
-            return None
-
-        cached = self._latest_reliable_join_result.get(session.session_id)
-        if cached is None:
-            return None
-
-        cached_room_id, cached_sequence, cached_messages = cached
-        if cached_room_id != room_id or cached_sequence != message.sequence_number:
-            return None
-
-        replay: list[SnapMessage] = []
-        for cached_message in cached_messages:
-            if cached_message.session_id == session.session_id:
-                replay.append(
-                    replace(
-                        cached_message,
-                        endpoint=message.endpoint,
-                        session_id=session.session_id,
-                    )
-                )
-                continue
-            replay.append(replace(cached_message))
-        return replay
-
-    def _remember_reliable_join_result(
-        self,
-        message: SnapMessage,
-        session: Session,
-        room_id: int,
-        outbound: list[SnapMessage],
-    ) -> None:
-        """Remember one successful reliable room-join response bundle."""
-
-        if (message.type_flags & FLAG_RELIABLE) == 0:
-            self._latest_reliable_join_result.pop(session.session_id, None)
-            return
-        if message.embedded_in_multi and message.sequence_number == 0:
-            self._latest_reliable_join_result.pop(session.session_id, None)
-            return
-
-        self._latest_reliable_join_result[session.session_id] = (
-            room_id,
-            message.sequence_number,
-            tuple(replace(outbound_message) for outbound_message in outbound),
-        )
-
-    def _cached_reliable_leave_result(self, message: SnapMessage, session: Session) -> SnapMessage | None:
-        """Replay the original wrapper for an exact reliable leave retry."""
-
-        if (message.type_flags & FLAG_RELIABLE) == 0:
-            return None
-        if message.embedded_in_multi and message.sequence_number == 0:
-            return None
-
-        key = (session.session_id, message.type_flags & FLAG_CHANNEL_BITS)
-        cached = self._latest_reliable_leave_result.get(key)
-        if cached is None:
-            return None
-
-        cached_sequence, cached_result = cached
-        if cached_sequence != message.sequence_number:
-            return None
-
-        return replace(
-            cached_result,
-            endpoint=message.endpoint,
-            session_id=session.session_id,
-        )
-
-    def _remember_reliable_leave_result(
-        self,
-        message: SnapMessage,
-        session: Session,
-        result_wrapper: SnapMessage,
-    ) -> None:
-        """Remember one reliable leave wrapper for exact retry replay."""
-
-        if (message.type_flags & FLAG_RELIABLE) == 0:
-            return
-        if message.embedded_in_multi and message.sequence_number == 0:
-            return
-
-        key = (session.session_id, message.type_flags & FLAG_CHANNEL_BITS)
-        self._latest_reliable_leave_result[key] = (message.sequence_number, result_wrapper)
 
     def _handle_send(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         session = resolve_session(context, message, _LOGGER)
@@ -1064,9 +932,10 @@ class AutoModellistaPlugin(GamePlugin):
         """Drop join-retry transport state for one session."""
 
         self._pending_room_joins.pop(session_id, None)
-        self._latest_reliable_join_result.pop(session_id, None)
 
-    def _build_multi_lobby_user_query_payload(self, context: HandlerContext, message: SnapMessage) -> bytes:
+    def _build_multi_lobby_user_query_payload(
+        self, context: HandlerContext, message: SnapMessage, entry_flags: int
+    ) -> bytes:
         lobbies = context.lobbies.list()[: context.config.server.max_lobbies]
         if not lobbies:
             return b''
@@ -1079,10 +948,14 @@ class AutoModellistaPlugin(GamePlugin):
             context.sessions.count_users_in_lobby(first_lobby_id),
         )
 
-        # Keep the observed embedded-entry header word (0x501C) and mirror the
-        # client's burst layout: the outer message carries the first lobby id,
-        # then embedded entries continue with the remaining lobbies.
-        follow_up_size_word = 0x501C
+        # Mirror the client's burst layout: the outer message carries the first
+        # lobby id, then embedded entries continue with the remaining lobbies.
+        # Entries carry the outer's reliable bit: `CountRUDPMessageSize`
+        # (`0x2f490c`) takes only the leading run of `0x8000` entries into the
+        # window, and a trailing unreliable entry is dropped against app+16
+        # (`0x2f8f24`), which is why the old `0x501C` entries never reached the
+        # client.
+        follow_up_size_word = entry_flags | 0x501C
         for packet_number, lobby in enumerate(lobbies[1:], start=1):
             lobby_id = lobby.lobby_id
             payload += struct.pack(

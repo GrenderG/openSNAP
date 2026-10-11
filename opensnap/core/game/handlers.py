@@ -87,10 +87,12 @@ def handle_login_to_kics(context: HandlerContext, message: SnapMessage) -> list[
     session = context.sessions.get(handoff.session_id)
     if session is not None:
         _reset_room_state_for_relogin(context, session)
-    # A repeated KICS of the same login keeps its counters; a new bootstrap
-    # login starts a runtime session continuing the bootstrap's numbering.
+    # A new bootstrap login starts a runtime session continuing the bootstrap's
+    # unreliable numbering. A repeated KICS of the same login keeps its
+    # unreliable counter and, like the client, restarts the reliable ones.
     if session is None or session.handoff_serial != handoff.serial:
         session = context.sessions.adopt(handoff)
+    context.sessions.restart_reliable(session.session_id)
 
     if session.endpoint != message.endpoint:
         rebound = context.sessions.rebind_endpoint(session.session_id, message.endpoint)

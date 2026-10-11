@@ -17,7 +17,7 @@ from opensnap.core.lobbies import Lobby
 from opensnap.core.online import OnlinePlayer
 from opensnap.core.records import PlayerTotal, Record
 from opensnap.core.rooms import GameRoom
-from opensnap.core.sessions import Session, SessionHandoff
+from opensnap.core.sessions import ReliableReceipt, Session, SessionHandoff
 from opensnap.protocol.models import Endpoint
 
 
@@ -130,8 +130,11 @@ class SessionStore(Protocol):
     def allocate_sequence(self, session_id: int, type_flags: int) -> int:
         """Allocate outbound sequence number."""
 
-    def accept_incoming(self, session_id: int, sequence_number: int) -> bool:
-        """Accept or reject incoming sequence number for a session."""
+    def restart_reliable(self, session_id: int) -> None:
+        """Restart reliable numbering in both directions (KICS login)."""
+
+    def accept_incoming(self, session_id: int, sequence_number: int) -> ReliableReceipt:
+        """Place one received reliable sequence in the session's receive window."""
 
     def set_lobby(self, session_id: int, lobby_id: int) -> None:
         """Set lobby for session."""

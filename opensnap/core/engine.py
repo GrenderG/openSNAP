@@ -1,7 +1,6 @@
 """Protocol engine orchestrating decode, dispatch, and tick."""
 
-from dataclasses import dataclass, field
-from enum import IntEnum
+from dataclasses import dataclass, field, replace
 import logging
 import time
 from typing import Literal
@@ -18,7 +17,6 @@ from opensnap.protocol.codec import PacketDecodeError, decode_datagram
 from opensnap.protocol.constants import (
     BARE_ACK_FLAGS,
     FLAG_CHANNEL_BITS,
-    FLAG_MULTI,
     FLAG_ROOM,
     FLAG_RESPONSE,
     FLAG_RELIABLE,
@@ -31,7 +29,17 @@ from opensnap.protocol.models import Endpoint, SnapMessage, WIRE_FORMAT_SNAP
 from opensnap.storage.factory import create_storage
 from opensnap.core.lobbies import LobbyRegistry
 from opensnap.core.rooms import RoomRegistry
-from opensnap.core.sessions import Session, SessionRegistry
+from opensnap.core.sessions import ReliableReceipt, Session, SessionRegistry
+
+
+# A gap in a client's reliable sequences older than this is given up (checked
+# on the engine tick): the client resends every 200 ms and stops after four
+# retransmits.
+RELIABLE_GAP_LIMIT_SECONDS = 2.0
+# Reliable requests whose answers are kept for replay: the client has at most
+# 16 reliable packets in flight, so a retry is never more than 16 behind the
+# newest; 32 leaves a margin.
+RELIABLE_REPLY_HISTORY = 32
 
 
 @dataclass(slots=True)
@@ -41,14 +49,6 @@ class EngineResult:
     messages: list[SnapMessage]
     errors: list[str]
     room_pending_clears: list[tuple[Endpoint, int]] = field(default_factory=list)
-
-
-class DuplicateAckPolicy(IntEnum):
-    """Duplicate reliability policy for inbound SNAP messages."""
-
-    NONE = 0
-    DUPLICATE_RELIABLE = 1
-    STALE_DUPLICATE_LEAVE = 2
 
 
 class SnapProtocolEngine:
@@ -122,10 +122,57 @@ class SnapProtocolEngine:
         outbound: list[SnapMessage] = []
         errors: list[str] = []
         room_pending_clears: list[tuple[Endpoint, int]] = []
-        duplicate_reliable_multi_parent = False
-        for message in messages:
+        self._handle_in_order(messages, outbound, errors, room_pending_clears)
+
+        self._logger.debug(
+            'Datagram from %s:%d produced %d outbound message(s) and %d error(s).',
+            endpoint.host,
+            endpoint.port,
+            len(outbound),
+            len(errors),
+        )
+        return EngineResult(
+            messages=outbound,
+            errors=errors,
+            room_pending_clears=list(dict.fromkeys(room_pending_clears)),
+        )
+
+    def _handle_in_order(
+        self,
+        messages: list[SnapMessage],
+        outbound: list[SnapMessage],
+        errors: list[str],
+        room_pending_clears: list[tuple[Endpoint, int]],
+    ) -> None:
+        """Handle one datagram, then every held datagram it puts back in order."""
+
+        pending = [messages]
+        while pending:
+            for session_id in self._handle_datagram_messages(pending.pop(0), outbound, errors, room_pending_clears):
+                session = self._sessions.get(session_id)
+                if session is not None and session.last_incoming_sequence + 1 in session.held_reliable:
+                    pending.append(session.held_reliable.pop(session.last_incoming_sequence + 1)[1])
+
+    def _handle_datagram_messages(
+        self,
+        messages: list[SnapMessage],
+        outbound: list[SnapMessage],
+        errors: list[str],
+        room_pending_clears: list[tuple[Endpoint, int]],
+    ) -> set[int]:
+        """Handle the messages of one datagram; return the sessions they belong to."""
+
+        session_ids: set[int] = set()
+        replies_start = len(outbound)
+        reliable_request: SnapMessage | None = None
+        skip_embedded = False
+        for index, message in enumerate(messages):
+            if skip_embedded and message.embedded_in_multi:
+                continue
+            skip_embedded = False
             if message.wire_format == WIRE_FORMAT_SNAP:
                 self._normalize_session_for_message(message)
+            session_ids.add(message.session_id)
             # Any datagram, bare ACKs included, shows the client is alive.
             active = self._sessions.get(message.session_id)
             if active is not None:
@@ -155,71 +202,44 @@ class SnapProtocolEngine:
                     )
                     continue
 
-                # Track highest inbound reliable sequence per session so direct
-                # fanout ACKs can mirror client-side flow control state. Only
-                # top-level packets carry a transport sequence (embedded children
+                # Top-level reliable packets go through the session's receive
+                # window (`accept_incoming`). Only top-level packets carry a
+                # transport sequence (embedded children
                 # decode as 0, see the codec), and unreliable packets are numbered
                 # by a separate counter: `kkReceiveExtentCheck` keeps reliable
                 # packets in the receive window (`SLUS_206.42` `0x002f4d5c`) and
                 # unreliable ones against their own last number (`app+16`,
                 # `0x002f5028`), so neither touches the session sequence.
-                if message.embedded_in_multi or (message.type_flags & FLAG_RELIABLE) == 0:
-                    duplicate_reason = DuplicateAckPolicy.NONE
-                else:
-                    accepted = self._sessions.accept_incoming(message.session_id, message.sequence_number)
-                    duplicate_reason = self._duplicate_ack_only_reason(message, accepted)
-                if duplicate_reason is not DuplicateAckPolicy.NONE:
-                    if (
-                        duplicate_reason is DuplicateAckPolicy.DUPLICATE_RELIABLE
-                        and self._is_duplicate_reliable_multi_parent(message)
-                    ):
-                        duplicate_reliable_multi_parent = True
-                    ack = self._build_duplicate_reliable_ack(message)
-                    if ack is not None:
-                        outbound.append(ack)
-                    if duplicate_reason is DuplicateAckPolicy.STALE_DUPLICATE_LEAVE:
-                        session = self._sessions.get(message.session_id)
-                        last_sequence = -1 if session is None else session.last_incoming_sequence
+                if not message.embedded_in_multi and message.type_flags & FLAG_RELIABLE:
+                    receipt = self._sessions.accept_incoming(message.session_id, message.sequence_number)
+                    if receipt is ReliableReceipt.HOLD:
+                        # Ahead of a missing sequence: ACK it, as the client
+                        # does for a stored packet, and handle the datagram
+                        # once the gap is filled.
+                        outbound.append(self._transport_ack(message))
+                        active.held_reliable[message.sequence_number] = (self._clock(), messages[index:])
+                        return session_ids
+                    held = active is not None and message.sequence_number in active.held_reliable
+                    if receipt is ReliableReceipt.DUPLICATE and active is not None:
+                        # A resend of a held datagram is handled once, in order;
+                        # a resend of a handled request gets the same answers
+                        # again (the client's window drops them).
+                        # Embedded children are not run again either.
+                        answers = () if held else active.reply_history.get(message.sequence_number, ())
+                        outbound.append(self._transport_ack(message))
+                        outbound.extend(replace(answer, endpoint=message.endpoint) for answer in answers)
                         self._logger.debug(
-                            (
-                                'Suppressing stale duplicate reliable leave command from %s:%d '
-                                '(sess=0x%08x seq=%d last=%d); returning ACK only.'
-                            ),
-                            message.endpoint.host,
-                            message.endpoint.port,
-                            message.session_id,
-                            message.sequence_number,
-                            last_sequence,
-                        )
-                    else:
-                        self._logger.debug(
-                            (
-                                'Suppressing duplicate reliable command 0x%02x from %s:%d '
-                                '(sess=0x%08x seq=%d); returning ACK only.'
-                            ),
+                            'Duplicate reliable command 0x%02x seq=%d from %s:%d: %s.',
                             message.command,
+                            message.sequence_number,
                             message.endpoint.host,
                             message.endpoint.port,
-                            message.session_id,
-                            message.sequence_number,
+                            'held' if held else f'replayed {len(answers)} answer(s)',
                         )
-                    continue
-                if (
-                    duplicate_reliable_multi_parent
-                    and self._should_suppress_embedded_send_after_duplicate_multi(message)
-                ):
-                    self._logger.debug(
-                        (
-                            'Suppressing embedded duplicate reliable send command 0x%02x '
-                            'from %s:%d (sess=0x%08x seq=%d) after duplicate multi parent.'
-                        ),
-                        message.command,
-                        message.endpoint.host,
-                        message.endpoint.port,
-                        message.session_id,
-                        message.sequence_number,
-                    )
-                    continue
+                        skip_embedded = True
+                        continue
+                    if receipt is ReliableReceipt.DELIVER:
+                        reliable_request = message
 
             if not self._router.has_handler(message.command):
                 payload_preview = message.payload[:32].hex(' ')
@@ -263,19 +283,59 @@ class SnapProtocolEngine:
                 )
                 errors.append(f'Handler error for command 0x{message.command:02x}: {exc}')
 
-        outbound = self._drop_redundant_bare_acks(outbound)
-        self._logger.debug(
-            'Datagram from %s:%d produced %d outbound message(s) and %d error(s).',
-            endpoint.host,
-            endpoint.port,
-            len(outbound),
-            len(errors),
+        if reliable_request is not None:
+            self._remember_reliable_replies(reliable_request, outbound[replies_start:])
+        return session_ids
+
+    def _remember_reliable_replies(self, request: SnapMessage, produced: list[SnapMessage]) -> None:
+        """Keep the reliable answers one reliable request (and its embedded children) got.
+
+        Only the requester's answers are kept: callbacks to other players are
+        not replayed (MH room join `0x00619430` counts a member again).
+        """
+
+        session = self._sessions.get(request.session_id)
+        if session is None:
+            return
+        session.reply_history[request.sequence_number] = tuple(
+            reply for reply in produced
+            if reply.session_id == request.session_id and reply.type_flags & FLAG_RELIABLE
         )
-        return EngineResult(
-            messages=outbound,
-            errors=errors,
-            room_pending_clears=list(dict.fromkeys(room_pending_clears)),
-        )
+        oldest = request.sequence_number - RELIABLE_REPLY_HISTORY
+        for sequence in [sequence for sequence in session.reply_history if sequence <= oldest]:
+            del session.reply_history[sequence]
+
+    def _release_stalled_reliable(self) -> list[SnapMessage]:
+        """Hand on held datagrams whose missing sequence will not come any more.
+
+        The client resends a reliable packet every 200 ms and stops after four
+        retransmits (`kkSendOperation`), so a gap older than
+        `RELIABLE_GAP_LIMIT_SECONDS` at an engine tick is given up.
+        """
+
+        now = self._clock()
+        outbound: list[SnapMessage] = []
+        errors: list[str] = []
+        for session in self._sessions.all():
+            if not session.held_reliable:
+                continue
+            if now - min(arrival for arrival, _ in session.held_reliable.values()) < RELIABLE_GAP_LIMIT_SECONDS:
+                continue
+            first_held = min(session.held_reliable)
+            self._logger.warning(
+                'Session 0x%08x: reliable sequence(s) %d..%d never arrived; handling held packets from %d.',
+                session.session_id,
+                session.last_incoming_sequence + 1,
+                first_held - 1,
+                first_held,
+            )
+            session.last_incoming_sequence = first_held - 1
+            # A released LEAVE's room-pending clear is not applied: the tick
+            # returns messages only.
+            self._handle_in_order(session.held_reliable.pop(first_held)[1], outbound, errors, [])
+        for error in errors:
+            self._logger.error('Held packet error: %s', error)
+        return outbound
 
     def decode_datagram(self, payload: bytes, endpoint: Endpoint) -> list[SnapMessage]:
         """Decode one inbound datagram using the configured game plugin when applicable."""
@@ -300,9 +360,10 @@ class SnapProtocolEngine:
     def tick(self) -> list[SnapMessage]:
         """Run periodic plugin tasks and end sessions idle past their plugin's limit."""
 
+        released = self._release_stalled_reliable()
         if self._plugin is None:
-            return []
-        return self._end_idle_sessions() + self._plugin.on_tick(self._context)
+            return released
+        return released + self._end_idle_sessions() + self._plugin.on_tick(self._context)
 
     def _end_idle_sessions(self) -> list[SnapMessage]:
         assert self._plugin is not None
@@ -444,76 +505,8 @@ class SnapProtocolEngine:
         del context, message
         return []
 
-    @staticmethod
-    def _should_ack_duplicate_only(message: SnapMessage) -> bool:
-        """Check whether this reliable duplicate should return transport ACK only."""
-
-        if (message.type_flags & FLAG_RELIABLE) == 0:
-            return False
-        return message.command in {commands.CMD_SEND, commands.CMD_SEND_TARGET}
-
-    def _duplicate_ack_only_reason(self, message: SnapMessage, accepted: bool) -> DuplicateAckPolicy:
-        """Return duplicate ACK-only decision reason for one inbound message."""
-
-        if accepted:
-            return DuplicateAckPolicy.NONE
-        if self._should_ack_duplicate_only(message):
-            return DuplicateAckPolicy.DUPLICATE_RELIABLE
-        if self._should_ack_stale_duplicate_leave_only(message):
-            return DuplicateAckPolicy.STALE_DUPLICATE_LEAVE
-        return DuplicateAckPolicy.NONE
-
-    @staticmethod
-    def _is_duplicate_reliable_multi_parent(message: SnapMessage) -> bool:
-        """Check whether this message is the outer reliable multi duplicate."""
-
-        return (
-            not message.embedded_in_multi
-            and message.command == commands.CMD_SEND
-            and (message.type_flags & FLAG_RELIABLE) != 0
-            and (message.type_flags & FLAG_MULTI) != 0
-        )
-
-    @staticmethod
-    def _should_suppress_embedded_send_after_duplicate_multi(message: SnapMessage) -> bool:
-        """Suppress embedded room relays of a duplicate reliable multi.
-
-        Duplicate outer reliable multi retransmits can replay embedded `CMD_SEND`
-        entries, which are tied to the outer transport sequence. Re-broadcasting those embedded room relays to peers can
-        perturb race-start synchronization. Keep replay behavior for other
-        embedded command families (`CMD_SEND_TARGET`, `CMD_CHANGE_ATTRIBUTE`)
-        unchanged.
-        """
-
-        if not message.embedded_in_multi:
-            return False
-        if message.command != commands.CMD_SEND:
-            return False
-        return (message.type_flags & FLAG_RELIABLE) != 0
-
-    def _should_ack_stale_duplicate_leave_only(self, message: SnapMessage) -> bool:
-        """ACK-only stale duplicate leave requests once a newer request is accepted.
-
-        Release and Beta1 leave callbacks (`ResultLeaveRoomCallBack*`,
-        `ResultLeaveLobbyCallBack*`) run immediate UI state transitions and are
-        not keyed by transport sequence. Replaying wrappers for old leave
-        sequence numbers after a newer request has already progressed can drive
-        redundant callback transitions.
-        """
-
-        if message.command != commands.CMD_LEAVE:
-            return False
-        if (message.type_flags & FLAG_RELIABLE) == 0:
-            return False
-
-        session = self._sessions.get(message.session_id)
-        if session is None:
-            return False
-
-        return session.last_incoming_sequence > message.sequence_number
-
-    def _build_duplicate_reliable_ack(self, message: SnapMessage) -> SnapMessage | None:
-        """Build a transport ACK for a duplicate reliable command."""
+    def _transport_ack(self, message: SnapMessage) -> SnapMessage:
+        """Bare transport ACK for one reliable request that is not handled now."""
 
         if message.command == commands.CMD_SEND_TARGET:
             ack_type_flags = FLAG_ROOM | FLAG_RESPONSE
@@ -530,13 +523,8 @@ class SnapProtocolEngine:
                 if channel == 0:
                     channel = FLAG_ROOM
                 ack_type_flags = channel | FLAG_RESPONSE
-        elif message.command == commands.CMD_LEAVE:
-            channel = message.type_flags & FLAG_CHANNEL_BITS
-            if channel == 0:
-                channel = FLAG_ROOM
-            ack_type_flags = channel | FLAG_RESPONSE
         else:
-            return None
+            ack_type_flags = (message.type_flags & FLAG_CHANNEL_BITS or FLAG_ROOM) | FLAG_RESPONSE
 
         return self._context.reply(
             message,
@@ -552,48 +540,3 @@ class SnapProtocolEngine:
         if message.embedded_in_multi:
             return '<embedded>'
         return str(message.acknowledge_number)
-
-    def _drop_redundant_bare_acks(self, outbound: list[SnapMessage]) -> list[SnapMessage]:
-        """Drop bare ACKs that are already covered by another response packet.
-
-        `SLUS_204.98` `kkDispatchingPacket` (`0x002e8480`) and
-        `SLUS_206.42` `kkDispatchingPacket` (`0x002ee720`) feed every
-        `FLAG_RESPONSE` packet through `kkSetRevAck` before command dispatch.
-        That makes a standalone `CMD_ACK` redundant whenever the same datagram
-        already returns another response packet to the sender with the same
-        reverse-ACK number.
-        """
-
-        response_keys = {
-            (message.endpoint, message.session_id, message.acknowledge_number)
-            for message in outbound
-            if message.command != commands.CMD_ACK
-            and (message.type_flags & FLAG_RESPONSE) != 0
-            and message.acknowledge_number > 0
-        }
-        if not response_keys:
-            return outbound
-
-        filtered: list[SnapMessage] = []
-        for message in outbound:
-            key = (message.endpoint, message.session_id, message.acknowledge_number)
-            if (
-                message.command == commands.CMD_ACK
-                and (message.type_flags & BARE_ACK_FLAGS) == BARE_ACK_FLAGS
-                and message.acknowledge_number > 0
-                and key in response_keys
-            ):
-                self._logger.debug(
-                    (
-                        'Dropping redundant bare ACK to %s:%d '
-                        '(sess=0x%08x ack=%d) because another response packet '
-                        'in the same datagram already carries the reverse ACK.'
-                    ),
-                    message.endpoint.host,
-                    message.endpoint.port,
-                    message.session_id,
-                    message.acknowledge_number,
-                )
-                continue
-            filtered.append(message)
-        return filtered

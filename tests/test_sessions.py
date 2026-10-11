@@ -2,7 +2,7 @@
 
 import unittest
 
-from opensnap.core.sessions import SessionHandoff, SessionRegistry
+from opensnap.core.sessions import RELIABLE_RECEIVE_WINDOW, ReliableReceipt, SessionHandoff, SessionRegistry
 from opensnap.protocol.models import Endpoint
 
 
@@ -36,14 +36,24 @@ class SessionRegistryTests(unittest.TestCase):
         member_ids = {session.session_id for session in members}
         self.assertEqual(member_ids, {session_one.session_id, session_two.session_id})
 
-    def test_accept_incoming_rejects_duplicate_or_older_sequences(self) -> None:
+    def test_accept_incoming_follows_the_client_receive_window(self) -> None:
         registry = SessionRegistry()
         session = registry.adopt(_handoff(7, Endpoint(host='10.0.0.7', port=7007)))
+        accept = registry.accept_incoming
 
-        self.assertTrue(registry.accept_incoming(session.session_id, 1))
-        self.assertFalse(registry.accept_incoming(session.session_id, 1))
-        self.assertFalse(registry.accept_incoming(session.session_id, 0))
-        self.assertTrue(registry.accept_incoming(session.session_id, 2))
+        self.assertIs(accept(session.session_id, 1), ReliableReceipt.DELIVER)
+        self.assertIs(accept(session.session_id, 1), ReliableReceipt.DUPLICATE)
+        self.assertIs(accept(session.session_id, 0), ReliableReceipt.DUPLICATE)
+        self.assertIs(accept(session.session_id, 2), ReliableReceipt.DELIVER)
+        # Ahead of a missing sequence, inside the 16-packet window: held.
+        self.assertIs(accept(session.session_id, 4), ReliableReceipt.HOLD)
+        session.held_reliable[4] = (0.0, [])
+        self.assertIs(accept(session.session_id, 4), ReliableReceipt.DUPLICATE)
+        self.assertIs(accept(session.session_id, 3), ReliableReceipt.DELIVER)
+        self.assertEqual(session.last_incoming_sequence, 3)
+        # Beyond the window the numbering restarts there.
+        self.assertIs(accept(session.session_id, 3 + RELIABLE_RECEIVE_WINDOW + 1), ReliableReceipt.DELIVER)
+        self.assertEqual(session.held_reliable, {})
 
     def test_rebind_endpoint_moves_session_lookup_to_new_endpoint(self) -> None:
         registry = SessionRegistry()

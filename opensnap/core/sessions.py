@@ -4,13 +4,30 @@ A login is shared between processes as a `SessionHandoff` (shared store);
 each process keeps its own `Session` with the transport counters in memory.
 """
 
+from enum import Enum
 import hashlib
 from dataclasses import dataclass, field
 import time
 
 from opensnap.core.accounts import Account
 from opensnap.protocol.constants import FLAG_RELIABLE
-from opensnap.protocol.models import Endpoint
+from opensnap.protocol.models import Endpoint, SnapMessage
+
+# Reliable receive window. The client holds reliable packets that arrive ahead
+# of a missing sequence and hands them on in order once it arrives; a sequence
+# below the next expected one is a duplicate, ACKed again (MH `0x001fe778`, AM
+# `kkReceiveExtentCheck` `0x002f4d5c`). It keeps at most 16 of its own
+# reliable packets in flight, so a sequence further ahead means the window
+# was lost (a new login on a reused session) and numbering starts again there.
+RELIABLE_RECEIVE_WINDOW = 16
+
+
+class ReliableReceipt(Enum):
+    """What to do with one received reliable sequence."""
+
+    DELIVER = 'deliver'
+    HOLD = 'hold'
+    DUPLICATE = 'duplicate'
 
 
 @dataclass(slots=True)
@@ -24,8 +41,14 @@ class Session:
     game_plugin: str = ''
     request_number: int = 0
     sequence_number: int = 0
-    # Highest reliable sequence received (unreliable packets use their own counter).
+    # Highest reliable sequence handled in order (unreliable packets use their own counter).
     last_incoming_sequence: int = -1
+    # Reliable datagrams received ahead of a missing sequence: sequence ->
+    # (arrival time, decoded messages), handled once the gap is filled.
+    held_reliable: dict[int, tuple[float, list[SnapMessage]]] = field(default_factory=dict)
+    # Replies to the requester per handled reliable sequence, replayed for a
+    # duplicate.
+    reply_history: dict[int, tuple[SnapMessage, ...]] = field(default_factory=dict)
     lobby_id: int = 0
     room_id: int = 0
     # Serial of the handoff this runtime session was built from.
@@ -84,6 +107,24 @@ class SessionRegistry:
         self._by_id[session.session_id] = session
         self._id_by_endpoint[session.endpoint] = session.session_id
         return session
+
+    def restart_reliable(self, session_id: int) -> None:
+        """Restart reliable numbering in both directions, as the client does at the KICS login.
+
+        The client zeroes its expected reliable sequence and its own reliable
+        counter when it sends the KICS login (AM `kkLoginToKICS`
+        `0x2ee940..0x2ee950`, Beta1 `0x2e85f4`; MH `0x1fce6c` from `0x1fed08`;
+        Outbreak F1 `0x1daeac` from `0x1dcd48`) and keeps its unreliable receive
+        state (`app+16`), which the handoff continues.
+        """
+
+        session = self._by_id.get(session_id)
+        if session is None:
+            return
+        session.request_number = 0
+        session.last_incoming_sequence = -1
+        session.held_reliable.clear()
+        session.reply_history.clear()
 
     def rebind_endpoint(self, session_id: int, endpoint: Endpoint) -> Session | None:
         """Bind an existing session to a new client endpoint."""
@@ -144,18 +185,24 @@ class SessionRegistry:
         session.sequence_number += 1
         return session.sequence_number
 
-    def accept_incoming(self, session_id: int, sequence_number: int) -> bool:
-        """Accept or reject an incoming sequence number."""
+    def accept_incoming(self, session_id: int, sequence_number: int) -> ReliableReceipt:
+        """Place one received reliable sequence in the session's receive window."""
 
         session = self._by_id.get(session_id)
         if session is None:
-            return False
+            return ReliableReceipt.DUPLICATE
 
-        if sequence_number <= session.last_incoming_sequence:
-            return False
-
-        session.last_incoming_sequence = sequence_number
-        return True
+        last = session.last_incoming_sequence
+        if last < 0 or sequence_number > last + RELIABLE_RECEIVE_WINDOW:
+            session.last_incoming_sequence = sequence_number
+            session.held_reliable.clear()
+            return ReliableReceipt.DELIVER
+        if sequence_number <= last or sequence_number in session.held_reliable:
+            return ReliableReceipt.DUPLICATE
+        if sequence_number == last + 1:
+            session.last_incoming_sequence = sequence_number
+            return ReliableReceipt.DELIVER
+        return ReliableReceipt.HOLD
 
     def set_lobby(self, session_id: int, lobby_id: int) -> None:
         """Set current lobby for a session."""

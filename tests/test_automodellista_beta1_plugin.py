@@ -155,7 +155,7 @@ class AutoModellistaBeta1PluginTests(unittest.TestCase):
             packet_number=0,
             command=commands.CMD_QUERY_ATTRIBUTE,
             session_id=session_one,
-            sequence_number=7,
+            sequence_number=3,
             acknowledge_number=0,
             payload=struct.pack('>L4s', room_id, b'USER'),
             size_word_override=(FLAG_ROOM | FLAG_MULTI | FLAG_RELIABLE) | 0x0018,
@@ -164,7 +164,7 @@ class AutoModellistaBeta1PluginTests(unittest.TestCase):
 
         self.assertFalse(result.errors)
         self.assertEqual([message.command for message in result.messages], [commands.CMD_QUERY_ATTRIBUTE])
-        self.assertEqual(result.messages[0].type_flags, FLAG_ROOM | FLAG_RESPONSE)
+        self.assertEqual(result.messages[0].type_flags, FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE)
         self.assertEqual(result.messages[0].payload, struct.pack('>L4sL', room_id, b'USER', 1))
         self.assertEqual(struct.unpack_from('>L', result.messages[0].payload, 8)[0], 1)
 
@@ -201,7 +201,7 @@ class AutoModellistaBeta1PluginTests(unittest.TestCase):
 
         query_reply = result.messages[0]
         self.assertEqual(query_reply.command, commands.CMD_QUERY_ATTRIBUTE)
-        self.assertEqual(query_reply.type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE)
+        self.assertEqual(query_reply.type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE | FLAG_RELIABLE)
         self.assertEqual(query_reply.acknowledge_number, 12)
         self.assertEqual(query_reply.payload, struct.pack('>L4sL', 1, b'USER', 1))
 
@@ -256,7 +256,7 @@ class AutoModellistaBeta1PluginTests(unittest.TestCase):
         )
         self.assertEqual(host_user_callback.payload, struct.pack('>L4sL', room_id, b'USER', 2))
 
-    def test_duplicate_reliable_room_join_replays_original_bundle_with_user_count(self) -> None:
+    def test_duplicate_reliable_room_join_replays_only_joiner_result_without_host_callbacks(self) -> None:
         endpoint_one = Endpoint(host='127.0.0.1', port=51126)
         endpoint_two = Endpoint(host='127.0.0.2', port=51127)
         host_session = _create_session_via_login(self._engine, endpoint_one, 'test')
@@ -300,17 +300,20 @@ class AutoModellistaBeta1PluginTests(unittest.TestCase):
             message for message in first_result.messages if message.endpoint == endpoint_two
         )
 
-        # An exact reliable retry replays the original bundle, USER count
-        # callback included, with the original sequence numbers (as release).
+        # An exact reliable retry gets a bare ACK plus the joiner's original
+        # wrapper; the host JOIN and USER count callbacks are not repeated.
         duplicate_result = self._engine.handle_datagram(_encode(self._engine, request), endpoint_two)
         self.assertFalse(duplicate_result.errors)
-        self.assertEqual(
-            [(message.endpoint, message.command, message.sequence_number, message.payload)
-             for message in duplicate_result.messages],
-            [(message.endpoint, message.command, message.sequence_number, message.payload)
-             for message in first_result.messages],
-        )
+        self.assertEqual(len(duplicate_result.messages), 2)
+        ack = duplicate_result.messages[0]
+        self.assertEqual(ack.command, commands.CMD_ACK)
+        self.assertEqual(ack.endpoint, endpoint_two)
+        self.assertEqual(ack.sequence_number, 0)
+        self.assertEqual(ack.packet_number, 0)
+        self.assertEqual(ack.acknowledge_number, 18)
+        self.assertEqual(duplicate_result.messages[1], first_wrapper)
         self.assertEqual(first_wrapper.endpoint, endpoint_two)
+        self.assertEqual(first_wrapper.type_flags & FLAG_RELIABLE, FLAG_RELIABLE)
         self.assertEqual(first_host_callback.command, commands.CMD_JOIN)
         self.assertEqual(first_host_user_callback.payload, struct.pack('>L4sL', room_id, b'USER', 2))
 

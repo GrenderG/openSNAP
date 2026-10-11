@@ -25,9 +25,11 @@ from opensnap.protocol import commands
 from opensnap.protocol.codec import decode_datagram, encode_messages
 from opensnap.protocol.constants import (
     FLAG_CHANNEL_BITS,
+    FLAG_LOBBY,
     FLAG_MULTI,
     FLAG_RELAY,
     FLAG_RELIABLE,
+    FLAG_RESPONSE,
     FLAG_ROOM,
 )
 from opensnap.protocol.models import Endpoint, SnapMessage
@@ -90,6 +92,7 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self.engine = SnapProtocolEngine(config=self.config, plugin=self.plugin, role='combined')
         self.addCleanup(self.engine.close)
         self.sequences: dict[int, int] = {}
+        self.unreliable_sequences: dict[int, int] = {}
         self.players = [self._login(f'hunter{index}', f'10.0.0.{index + 1}') for index in range(3)]
 
     def _login(self, username: str, host: str) -> tuple[Endpoint, int]:
@@ -109,8 +112,10 @@ class MonsterHunterFlowTests(unittest.TestCase):
 
     def _send_raw(self, endpoint, session_id, command, payload, type_flags, sequence=None) -> list[SnapMessage]:
         if sequence is None:
-            sequence = self.sequences.get(session_id, 0) + 1
-            self.sequences[session_id] = sequence
+            # The client numbers reliable and unreliable packets separately.
+            counters = self.sequences if type_flags & FLAG_RELIABLE else self.unreliable_sequences
+            sequence = counters.get(session_id, 0) + 1
+            counters[session_id] = sequence
         message = SnapMessage(
             endpoint=endpoint,
             type_flags=type_flags,
@@ -123,6 +128,9 @@ class MonsterHunterFlowTests(unittest.TestCase):
         )
         result = self.engine.handle_datagram(encode_messages([message]), endpoint)
         self.assertFalse(result.errors)
+        if command == commands.CMD_LOGIN_TO_KICS:
+            # The client restarts its reliable numbering at 0 when it sends the KICS login.
+            self.sequences[session_id] = -1
         return result.messages
 
     def _send(self, player, command, payload=b'', type_flags=FLAG_ROOM | FLAG_RELIABLE, sequence=None):
@@ -254,10 +262,10 @@ class MonsterHunterFlowTests(unittest.TestCase):
     def _publish(self, player, profile: bytes) -> list[SnapMessage]:
         return self._send(player, commands.CMD_CHANGE_USER_PROPERTY, profile)
 
-    def _create(self, player, rules: int) -> int:
+    def _create(self, player, rules: int, max_players: int = 4) -> int:
         payload = bytearray(0x2C)
         payload[0:4] = b'Town'
-        payload[0x10:0x14] = struct.pack('>L', 4)
+        payload[0x10:0x14] = struct.pack('>L', max_players)
         payload[0x28:0x2C] = struct.pack('>L', rules)
         messages = self._send(player, commands.CMD_CREATE_GAME_ROOM, bytes(payload))
         wrapper = [message for message in messages if message.command == commands.CMD_RESULT_WRAPPER][0]
@@ -614,6 +622,183 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self.assertEqual([message for message in messages if message.command == commands.CMD_LEAVE], [])
         self.assertEqual(self._town_row_members(waiting, town_id), 2)
 
+    def test_full_town_roster_is_paged_to_fit_the_client_receive_buffer(self) -> None:
+        # Live capture: a 6-member roster (996-byte payload, 1016-byte datagram) is
+        # dropped by the client's 896-byte receive buffer (`0x001ff4f8`), which
+        # resends its request forever ("Moving to Town"). A town of the configured
+        # 8 must arrive as pages the roster callback appends (`0x006182f0`).
+        create_accounts(self.config, *(f'hunter{index}' for index in range(4, 8)))
+        members = self.players + [self._login(f'hunter{index}', f'10.0.1.{index}') for index in range(3, 8)]
+        for index, player in enumerate(members):
+            self._publish(player, self._profile(index + 1))
+        town_id = self._create(members[0], TOWN_RULES, max_players=8)
+        for player in members[1:]:
+            self._join(player, town_id)
+
+        pages = self._send(members[0], commands.CMD_QUERY_USER, struct.pack('>L', town_id))
+
+        record_size = 24 + self.layout.size
+        self.assertGreater(len(pages), 1)
+        sids, sequences = [], []
+        for number, page in enumerate(pages):
+            self.assertEqual(page.command, commands.CMD_QUERY_USER)
+            self.assertLessEqual(len(encode_messages([page])), 896)
+            room, total, count = struct.unpack_from('>3L', page.payload)
+            self.assertEqual((room, total, len(page.payload)), (town_id, 8, 12 + count * record_size))
+            last = number == len(pages) - 1
+            # Only the last page keeps the room flag; the others carry a packet number.
+            self.assertEqual(page.type_flags, (FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE) if last else FLAG_RESPONSE | FLAG_RELIABLE)
+            if not last:
+                self.assertNotEqual(page.packet_number, 0)
+            sids += [struct.unpack_from('>L', page.payload, 12 + index * record_size + 16)[0] for index in range(count)]
+            sequences.append(page.sequence_number)
+        self.assertEqual(sids, sorted(player[1] for player in members))
+        self.assertEqual(sequences, sorted(sequences))
+
+    def test_five_member_roster_is_still_one_reply(self) -> None:
+        town_id = self._town_with_residents()
+        host, guest, waiting = self.players
+        self._join(waiting, town_id)
+
+        replies = self._send(host, commands.CMD_QUERY_USER, struct.pack('>L', town_id))
+
+        self.assertEqual([(reply.type_flags, struct.unpack_from('>3L', reply.payload)[1:]) for reply in replies],
+                         [(FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE, (3, 3))])
+
+    def _next_sequence(self, player) -> int:
+        self.sequences[player[1]] = self.sequences.get(player[1], 0) + 1
+        return self.sequences[player[1]]
+
+    def test_reliable_request_resent_after_a_newer_one_is_still_handled_in_order(self) -> None:
+        # Live capture (issue 4): the guest's departure reply (selector 4, seq 2242)
+        # was lost twice while its next request (2244) got through; the resend of
+        # 2242 was then taken for a duplicate and never reached the host, whose
+        # departure wait timed out. The client's receive window holds early
+        # packets and hands them on in order (`0x001fe778`).
+        self._town_with_residents()
+        host, guest, _ = self.players
+        reply = struct.pack('>2L', 1, host[1]) + bytes((0, 0, 4, 0, 0, 0, 0, 0)) + bytes(768)
+        lost, held, later = (self._next_sequence(guest) for _ in range(3))
+
+        early = self._send(guest, commands.CMD_CHANGE_USER_PROPERTY, self._profile(7), sequence=later)
+        self.assertEqual([message.command for message in early], [commands.CMD_ACK])
+        resent = self._send(guest, commands.CMD_SEND_TARGET, reply, sequence=lost)
+        self.assertEqual([message.endpoint for message in resent if message.command == commands.CMD_SEND_TARGET],
+                         [host[0]])
+        self.assertNotIn(commands.CMD_RESULT_WRAPPER, [message.command for message in resent])
+        filled = self._send(guest, commands.CMD_CHANGE_USER_PROPERTY, self._profile(6), sequence=held)
+        results = [message for message in filled if message.command == commands.CMD_RESULT_WRAPPER]
+        self.assertEqual([message.acknowledge_number for message in results], [held, later])
+        self.assertEqual(self.plugin._players[guest[1]].profile, self._profile(7))  # noqa: SLF001
+
+    def test_party_names_reach_the_guest_in_order_when_one_is_resent(self) -> None:
+        # Live captures (issues 2 and 3): the host announced N party members but
+        # one selector-6 name never reached the guests, leaving a quest slot with
+        # a profile and no player (the "clone"). Its resend was dropped by the
+        # server as an old sequence.
+        self._town_with_residents()
+        host, guest, _ = self.players
+        names = [
+            struct.pack('>2L', 1, guest[1]) + bytes((0, 0, 6, 0, 0, 0, 0, 0)) + bytes((slot, 0)) + bytes(32)
+            for slot in range(3)
+        ]
+        sequences = [self._next_sequence(host) for _ in names]
+
+        relayed = []
+        for index in (0, 2, 1):
+            relayed += [message.payload[16] for message in
+                        self._send(host, commands.CMD_SEND_TARGET, names[index], sequence=sequences[index])
+                        if message.command == commands.CMD_SEND_TARGET]
+
+        self.assertEqual(relayed, [0, 1, 2])
+
+    def test_retried_request_gets_its_own_answer_again_not_a_second_one(self) -> None:
+        # Live capture (issue 5): the status request was resent at 200 ms, the
+        # server ran it again and sent a second result under a new sequence, and
+        # the client took it as the result of its next request (the Town create,
+        # whose room id was still -1). Results are routed by selector into fixed
+        # callbacks (`0x00202e10`), so only the client's receive window can drop
+        # a repeat: answers are reliable and replayed under their sequence.
+        host = self.players[0]
+        status = struct.pack('>L', 0x97200001)
+        sequence = self._next_sequence(host)
+        first = self._send(host, commands.CMD_CHANGE_USER_STATUS, status, sequence=sequence)
+        retry = self._send(host, commands.CMD_CHANGE_USER_STATUS, status, sequence=sequence)
+
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first[0].type_flags & FLAG_RELIABLE, FLAG_RELIABLE)
+        # A bare ACK plus the very same answer, sequence included: the client's
+        # receive window drops it if the first answer arrived.
+        self.assertEqual([message.command for message in retry], [commands.CMD_ACK, commands.CMD_RESULT_WRAPPER])
+        self.assertEqual(retry[0].sequence_number, 0)
+        self.assertEqual(retry[1], first[0])
+
+        created = self._create(host, TOWN_RULES)
+        self.assertGreater(created, 0)
+
+    def test_a_resent_held_packet_is_handled_once(self) -> None:
+        host = self.players[0]
+        self._publish(host, self._profile(1))
+        missing, held = self._next_sequence(host), self._next_sequence(host)
+        for _ in range(2):
+            early = self._send(host, commands.CMD_CHANGE_USER_PROPERTY, self._profile(4), sequence=held)
+            self.assertEqual([message.command for message in early], [commands.CMD_ACK])
+
+        filled = self._send(host, commands.CMD_CHANGE_USER_PROPERTY, self._profile(3), sequence=missing)
+
+        results = [message.acknowledge_number for message in filled if message.command == commands.CMD_RESULT_WRAPPER]
+        self.assertEqual(results, [missing, held])
+
+    def test_kics_restarts_reliable_numbering_in_both_directions(self) -> None:
+        # The client zeroes its expected and its own outgoing reliable sequence
+        # when it sends the KICS login (MH `0x001fce6c`); its unreliable
+        # numbering goes on.
+        endpoint, session_id = player = self.players[0]
+        self._publish(player, self._profile(1))
+        self._publish(player, self._profile(2))
+        session = self.engine._sessions.get(session_id)  # noqa: SLF001
+        unreliable_before = session.sequence_number
+
+        self._send(player, commands.CMD_LOGIN_TO_KICS, bytes(0x130), FLAG_CHANNEL_BITS)
+        replies = self._send(player, commands.CMD_CHANGE_USER_PROPERTY, self._profile(3), sequence=0)
+
+        self.assertEqual([reply.command for reply in replies], [commands.CMD_RESULT_WRAPPER])
+        self.assertEqual(replies[0].type_flags & FLAG_RELIABLE, FLAG_RELIABLE)
+        self.assertEqual(replies[0].sequence_number, 0)
+        self.assertEqual(self.plugin._players[session_id].profile, self._profile(3))  # noqa: SLF001
+        self.assertGreater(session.sequence_number, unreliable_before)
+
+    def test_reliable_request_from_an_unknown_session_is_not_acknowledged(self) -> None:
+        # A stale client (for example after a server restart) gets no ACK, so it
+        # reaches its retry limit and logs in again instead of waiting forever.
+        stranger = (Endpoint(host='10.0.9.9', port=5000), 0x0BADF00D)
+
+        replies = self._send(stranger, commands.CMD_CHANGE_USER_STATUS, struct.pack('>L', 0x97200001), sequence=5)
+
+        self.assertEqual(replies, [])
+
+    def test_a_gap_that_never_fills_is_given_up(self) -> None:
+        now = [1000.0]
+        self.engine._clock = lambda: now[0]  # noqa: SLF001
+        host = self.players[0]
+        self._publish(host, self._profile(1))
+        lost = self._next_sequence(host)
+        later = self._next_sequence(host)
+
+        self.assertEqual([message.command for message in
+                          self._send(host, commands.CMD_CHANGE_USER_PROPERTY, self._profile(8), sequence=later)],
+                         [commands.CMD_ACK])
+        now[0] += 1.0
+        self.assertEqual([message for message in self.engine.tick()
+                          if message.command == commands.CMD_RESULT_WRAPPER], [])
+        now[0] += 1.5
+
+        released = [message for message in self.engine.tick() if message.command == commands.CMD_RESULT_WRAPPER]
+
+        self.assertEqual([message.acknowledge_number for message in released], [later])
+        self.assertEqual(self.plugin._players[host[1]].profile, self._profile(8))  # noqa: SLF001
+        self.assertGreater(later, lost)
+
     def test_town_roster_names_match_each_login_field(self) -> None:
         # A solo Town creator is its Town's master only if the roster spells its
         # name exactly as its client ID, the login field (`0x005ed948` vs `0x003c6350`).
@@ -667,11 +852,12 @@ class MonsterHunterFlowTests(unittest.TestCase):
         retry = self._send(guest, commands.CMD_JOIN, struct.pack('>L', town_id), sequence=60)
 
         self.assertTrue([m for m in first if m.command == commands.CMD_JOIN and m.endpoint == host[0]])
-        # MH re-applies a repeat of its newest unreliable sequence, so the host's
-        # join callback is not sent twice; the guest gets its original result.
-        self.assertEqual([(m.endpoint, m.command) for m in retry], [(guest[0], commands.CMD_RESULT_WRAPPER)])
+        # A second join callback would count the member twice (`0x00619430`), so
+        # the host gets nothing; the guest gets a bare ACK and its original result.
+        self.assertEqual([(m.endpoint, m.command) for m in retry],
+                         [(guest[0], commands.CMD_ACK), (guest[0], commands.CMD_RESULT_WRAPPER)])
         original, = [m for m in first if m.command == commands.CMD_RESULT_WRAPPER]
-        self.assertEqual((retry[0].payload, retry[0].sequence_number), (original.payload, original.sequence_number))
+        self.assertEqual(retry[1], original)
 
     def test_town_directory_events_reach_the_area(self) -> None:
         host, guest, other = self.players
@@ -800,6 +986,30 @@ class MonsterHunterFlowTests(unittest.TestCase):
         moved = self._send(self.players[0], commands.CMD_JOIN, struct.pack('>L', 2), FLAG_CHANNEL_BITS)[0]
         self.assertEqual(moved.command, commands.CMD_RESULT_WRAPPER)
         self.assertEqual(struct.unpack('>2L', moved.payload)[1], 0)
+
+    def test_long_town_list_is_paged_to_fit_the_client_receive_buffer(self) -> None:
+        # 25 Towns in one Area (three categories) are a 912-byte list; the Town
+        # list callback (`0x006173a0`) counts rows across pages.
+        room_ids = [
+            self.engine._rooms.create_room(  # noqa: SLF001
+                name=f'T{index}', password='', rules=((1 << (index % 3)) << 24) | TOWN_RULES, max_players=8,
+                lobby_id=AREA_ID, host_session_id=0x1000 + index,
+            ).room_id
+            for index in range(25)
+        ]
+
+        pages = self._send(self.players[0], commands.CMD_QUERY_GAME_ROOMS, struct.pack('>L', AREA_ID),
+                           FLAG_CHANNEL_BITS | FLAG_RELIABLE)
+
+        self.assertEqual([page.type_flags for page in pages],
+                         [FLAG_LOBBY | FLAG_RESPONSE | FLAG_RELIABLE, FLAG_CHANNEL_BITS | FLAG_RESPONSE | FLAG_RELIABLE])
+        self.assertNotEqual(pages[0].packet_number, 0)
+        listed = []
+        for page in pages:
+            self.assertLessEqual(len(encode_messages([page])), 896)
+            count = struct.unpack_from('>L', page.payload, 8)[0]
+            listed += [struct.unpack_from('>L', page.payload, 12 + index * 36 + 32)[0] for index in range(count)]
+        self.assertEqual(sorted(listed), sorted(room_ids))
 
     def test_town_category_is_limited_to_21_towns(self) -> None:
         for index in range(21):

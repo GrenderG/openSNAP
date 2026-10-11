@@ -83,6 +83,7 @@ class OutbreakLobbyTests(unittest.TestCase):
         self.engine = SnapProtocolEngine(config=self.config, plugin=self.plugin, role='combined')
         self.addCleanup(self.engine.close)
         self.sequences: dict[int, int] = {}
+        self.unreliable_sequences: dict[int, int] = {}
         self.players = [self._login(f'jill{index}', f'10.0.0.{index + 1}', index + 1) for index in range(3)]
 
     def _login(self, username: str, host: str, marker: int) -> tuple[Endpoint, int]:
@@ -105,8 +106,10 @@ class OutbreakLobbyTests(unittest.TestCase):
 
     def _send_raw(self, endpoint, session_id, command, payload, type_flags, sequence=None) -> list[SnapMessage]:
         if sequence is None:
-            sequence = self.sequences.get(session_id, 0) + 1
-            self.sequences[session_id] = sequence
+            # The client numbers reliable and unreliable packets separately.
+            counters = self.sequences if type_flags & FLAG_RELIABLE else self.unreliable_sequences
+            sequence = counters.get(session_id, 0) + 1
+            counters[session_id] = sequence
         message = SnapMessage(
             endpoint=endpoint,
             type_flags=type_flags,
@@ -119,6 +122,9 @@ class OutbreakLobbyTests(unittest.TestCase):
         )
         result = self.engine.handle_datagram(encode_messages([message]), endpoint)
         self.assertFalse(result.errors)
+        if command == commands.CMD_LOGIN_TO_KICS:
+            # The client restarts its reliable numbering at 0 when it sends the KICS login.
+            self.sequences[session_id] = -1
         return result.messages
 
     def _send(self, player, command, payload=b'', type_flags=ROOM_FLAGS, sequence=None):
@@ -139,7 +145,7 @@ class OutbreakLobbyTests(unittest.TestCase):
     def test_area_queries_follow_the_client_names(self) -> None:
         player = self.players[0]
         hall = self._send(player, commands.CMD_QUERY_AREA, _name_search(b'obmft', 1), LOBBY_FLAGS)[0]
-        self.assertEqual(hall.type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE)
+        self.assertEqual(hall.type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE | FLAG_RELIABLE)
         self.assertEqual(struct.unpack_from('>3L', hall.payload), (99, 1, 1))
         name, users, capacity, maximum, _, area_id = struct.unpack_from('>16s5L', hall.payload, 12)
         self.assertEqual((name.rstrip(b'\x00'), users, capacity, maximum, area_id), (b'obmft', 0, 100, 100, 1))
@@ -174,6 +180,53 @@ class OutbreakLobbyTests(unittest.TestCase):
         )[0]
         self.assertEqual(area.payload, struct.pack('>L4sL', FREE_AREA_ID, b'MAXI', 100))
 
+    def test_full_room_roster_is_paged_to_fit_the_client_receive_buffer(self) -> None:
+        # A 4-player roster (1068 bytes) exceeds the client's 896-byte receive
+        # buffer: 3 records with packet number 1 and the room flag clear, then 1
+        # record with the room flag; the roster callback counts records per page.
+        host, guest, third = self.players
+        fourth = self._login('jill3', '10.0.0.4', 4)
+        room_id = self._create_room(host)
+        for player in (guest, third, fourth):
+            self._send(player, commands.CMD_JOIN, _join_payload(room_id))
+        members = [host, guest, third, fourth]
+
+        pages = self._send(host, commands.CMD_QUERY_USER, struct.pack('>L', room_id))
+
+        # The last page keeps the room flag, so its packet number is not read.
+        self.assertEqual([page.type_flags for page in pages], [FLAG_RESPONSE | FLAG_RELIABLE, FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE])
+        self.assertNotEqual(pages[0].packet_number, 0)
+        sids = []
+        for page in pages:
+            self.assertLessEqual(len(encode_messages([page])), 896)
+            room, total, count = struct.unpack_from('>3L', page.payload)
+            self.assertEqual((room, total, len(page.payload)), (room_id, 4, 12 + count * 264))
+            sids += [struct.unpack_from('>L', page.payload, 12 + index * 264 + 16)[0] for index in range(count)]
+        self.assertEqual([struct.unpack_from('>L', page.payload, 8)[0] for page in pages], [3, 1])
+        self.assertEqual(sorted(sids), sorted(player[1] for player in members))
+
+    def test_long_room_list_is_paged_to_fit_the_client_receive_buffer(self) -> None:
+        # 30 rooms are a 1092-byte list; the room list callback (`0x00588df0`)
+        # counts rows across pages.
+        room_ids = [
+            self.engine._rooms.create_room(  # noqa: SLF001
+                name=f'room{index}', password='', rules=0x00027C02, max_players=4, lobby_id=FREE_AREA_ID,
+                host_session_id=0x1000 + index,
+            ).room_id
+            for index in range(30)
+        ]
+
+        pages = self._send(self.players[0], commands.CMD_QUERY_GAME_ROOMS, struct.pack('>L', FREE_AREA_ID), LOBBY_FLAGS)
+
+        self.assertEqual(len(pages), 2)
+        self.assertNotEqual(pages[0].packet_number, 0)
+        listed = []
+        for page in pages:
+            self.assertLessEqual(len(encode_messages([page])), 896)
+            count = struct.unpack_from('>L', page.payload, 8)[0]
+            listed += [struct.unpack_from('>L', page.payload, 12 + index * 36 + 32)[0] for index in range(count)]
+        self.assertEqual(sorted(listed), sorted(room_ids))
+
     def test_room_create_list_join_and_roster(self) -> None:
         host, guest, watcher = self.players
         created = self._send(host, commands.CMD_CREATE_GAME_ROOM, _create_payload(), LOBBY_FLAGS)
@@ -188,7 +241,7 @@ class OutbreakLobbyTests(unittest.TestCase):
         joined = self._send(guest, commands.CMD_JOIN, _join_payload(room_id))
         result = self._to(joined, guest, commands.CMD_RESULT_WRAPPER)[0]
         self.assertEqual(struct.unpack('>2L', result.payload), (commands.CMD_JOIN, 0))
-        self.assertEqual(result.type_flags, FLAG_ROOM | FLAG_RESPONSE)
+        self.assertEqual(result.type_flags, FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE)
         arrival = self._to(joined, host, commands.CMD_JOIN)[0].payload
         self.assertEqual(arrival[:5], b'jill1')
         self.assertEqual(struct.unpack_from('>2L', arrival, 16), (guest[1], 240))

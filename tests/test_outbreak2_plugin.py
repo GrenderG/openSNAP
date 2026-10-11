@@ -120,6 +120,7 @@ class Outbreak2LobbyTests(unittest.TestCase):
             self.engine = SnapProtocolEngine(config=self.config, plugin=self.plugin, role='combined')
         self.addCleanup(self.engine.close)
         self.sequences: dict[int, int] = {}
+        self.unreliable_sequences: dict[int, int] = {}
 
     def _login(
         self, username: str, host: str, marker: int, *, title_code: int = NA_TITLE_CODE, area_id: int | None = AREA_ID
@@ -149,8 +150,10 @@ class Outbreak2LobbyTests(unittest.TestCase):
 
     def _send_raw(self, endpoint, session_id, command, payload, type_flags, sequence=None) -> list[SnapMessage]:
         if sequence is None:
-            sequence = self.sequences.get(session_id, 0) + 1
-            self.sequences[session_id] = sequence
+            # The client numbers reliable and unreliable packets separately.
+            counters = self.sequences if type_flags & FLAG_RELIABLE else self.unreliable_sequences
+            sequence = counters.get(session_id, 0) + 1
+            counters[session_id] = sequence
         message = SnapMessage(
             endpoint=endpoint,
             type_flags=type_flags,
@@ -163,6 +166,9 @@ class Outbreak2LobbyTests(unittest.TestCase):
         )
         result = self.engine.handle_datagram(encode_messages([message]), endpoint)
         self.assertFalse(result.errors)
+        if command == commands.CMD_LOGIN_TO_KICS:
+            # The client restarts its reliable numbering at 0 when it sends the KICS login.
+            self.sequences[session_id] = -1
         return result.messages
 
     def _send(self, player, command, payload=b'', type_flags=ROOM_FLAGS, sequence=None):
@@ -213,7 +219,7 @@ class Outbreak2LobbyTests(unittest.TestCase):
             10, (b'NAME', NAME_AT_LEAST, b'AREA01'.ljust(16, b'\x00')), (b'NAME', NAME_AT_MOST, b'AREA10'.ljust(16, b'\x00'))
         )
         reply = self._send(player, commands.CMD_QUERY_AREA, query, LOBBY_FLAGS)[0]
-        self.assertEqual(reply.type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE)
+        self.assertEqual(reply.type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE | FLAG_RELIABLE)
         self.assertEqual(struct.unpack_from('>3L', reply.payload), (10, 1, 10))
         self.assertEqual(len(reply.payload), 12 + 10 * 36)
         rows = [struct.unpack_from('>16s5L', reply.payload, 12 + 36 * index) for index in range(10)]
@@ -230,13 +236,13 @@ class Outbreak2LobbyTests(unittest.TestCase):
     def test_attribute_replies_echo_the_asked_name(self) -> None:
         host = self.players[0]
         area = self._send(host, commands.CMD_QUERY_ATTRIBUTE, struct.pack('>L', AREA_ID) + b'USER', LOBBY_FLAGS)[0]
-        self.assertEqual(area.type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE)
+        self.assertEqual(area.type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE | FLAG_RELIABLE)
         self.assertEqual(area.payload, struct.pack('>L4sL', AREA_ID, b'USER', 3))
 
         room_id = self._create_room(host)
         user = self._send(host, commands.CMD_QUERY_ATTRIBUTE, struct.pack('>L', room_id) + b'USER')[0]
         maxi = self._send(host, commands.CMD_QUERY_ATTRIBUTE, struct.pack('>L', room_id) + b'MAXI')[0]
-        self.assertEqual(user.type_flags, FLAG_ROOM | FLAG_RESPONSE)
+        self.assertEqual(user.type_flags, FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE)
         self.assertEqual(user.payload, struct.pack('>L4sL', room_id, b'USER', 1))
         self.assertEqual(maxi.payload, struct.pack('>L4sL', room_id, b'MAXI', 4))
 
@@ -250,7 +256,7 @@ class Outbreak2LobbyTests(unittest.TestCase):
         error = self._to(refused, third, commands.CMD_RESULT_ERROR)
         self.assertEqual(len(error), 1)
         self.assertEqual(struct.unpack('>2L', error[0].payload), (commands.CMD_JOIN, 1))
-        self.assertEqual(error[0].type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE)
+        self.assertEqual(error[0].type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE | FLAG_RELIABLE)
         self.assertEqual(self.engine._sessions.get(third[1]).lobby_id, 0)  # noqa: SLF001
 
         moved = self._join_area(first, 3)
@@ -262,6 +268,31 @@ class Outbreak2LobbyTests(unittest.TestCase):
         self.assertEqual(left.payload, struct.pack('>L4sL', AREA_ID, b'USER', 0))
 
     # Rooms.
+
+    def test_full_room_roster_is_paged_to_fit_the_client_receive_buffer(self) -> None:
+        # A 4-player roster (1068 bytes) exceeds the client's 896-byte receive
+        # buffer: 3 records with packet number 1 and the room flag clear, then 1
+        # record with the room flag; the roster callback counts records per page.
+        host, guest, third = self.players
+        fourth = self._login('jill3', '10.0.0.4', 4)
+        room_id = self._create_room(host)
+        for player in (guest, third, fourth):
+            self._join_room(player, room_id)
+        members = [host, guest, third, fourth]
+
+        pages = self._send(host, commands.CMD_QUERY_USER, struct.pack('>L', room_id))
+
+        # The last page keeps the room flag, so its packet number is not read.
+        self.assertEqual([page.type_flags for page in pages], [FLAG_RESPONSE | FLAG_RELIABLE, FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE])
+        self.assertNotEqual(pages[0].packet_number, 0)
+        sids = []
+        for page in pages:
+            self.assertLessEqual(len(encode_messages([page])), 896)
+            room, total, count = struct.unpack_from('>3L', page.payload)
+            self.assertEqual((room, total, len(page.payload)), (room_id, 4, 12 + count * 264))
+            sids += [struct.unpack_from('>L', page.payload, 12 + index * 264 + 16)[0] for index in range(count)]
+        self.assertEqual([struct.unpack_from('>L', page.payload, 8)[0] for page in pages], [3, 1])
+        self.assertEqual(sorted(sids), sorted(player[1] for player in members))
 
     def test_room_create_join_and_roster(self) -> None:
         host, guest, watcher = self.players
@@ -277,7 +308,7 @@ class Outbreak2LobbyTests(unittest.TestCase):
         joined = self._join_room(guest, room_id)
         result = self._to(joined, guest, commands.CMD_RESULT_WRAPPER)[0]
         self.assertEqual(struct.unpack('>2L', result.payload), (commands.CMD_JOIN, 0))
-        self.assertEqual(result.type_flags, FLAG_ROOM | FLAG_RESPONSE)
+        self.assertEqual(result.type_flags, FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE)
         arrival = self._to(joined, host, commands.CMD_JOIN)[0]
         self.assertEqual(arrival.type_flags, FLAG_ROOM | FLAG_RESPONSE)
         self.assertEqual(arrival.payload, b'jill1'.ljust(16, b'\x00') + struct.pack('>2L', guest[1], 240) + _profile(2))
@@ -303,13 +334,28 @@ class Outbreak2LobbyTests(unittest.TestCase):
         # A player in the Area but no room still gets an empty roster for id 0.
         self.assertEqual(self._roster(watcher, 0), {})
 
+    def test_room_search_fits_one_reply_of_the_client_receive_buffer(self) -> None:
+        # `kkSearchRooms` replies go through a one-shot dispatcher keyed on the
+        # packet number (`0x005a3aa0`), so the list cannot be paged; the load
+        # counters ask for up to 250 rows.
+        for index in range(30):
+            self.engine._rooms.create_room(  # noqa: SLF001
+                name=f'room{index}', password='', rules=ROOM_RULES, max_players=4, lobby_id=AREA_ID,
+                host_session_id=0x1000 + index,
+            )
+
+        for limit in (30, 250):
+            listing = self._search_rooms(self.players[0], _search(limit, _loid(AREA_ID)))
+            self.assertEqual(struct.unpack_from('>L', listing.payload, 8)[0], 21)
+            self.assertLessEqual(len(encode_messages([listing])), 896)
+
     def test_room_search_lists_open_titled_rooms_and_counts_started_ones(self) -> None:
         host, guest, watcher = self.players
         room_id = self._create_room(host)
         self._join_room(guest, room_id)
 
         listing = self._search_rooms(watcher, _room_list_query(AREA_ID))
-        self.assertEqual(listing.type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE)
+        self.assertEqual(listing.type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE | FLAG_RELIABLE)
         self.assertEqual(struct.unpack_from('>3L', listing.payload), (0, 1, 1))
         self.assertEqual(len(listing.payload), 12 + 40)
         record = (b'raccoon'.ljust(16, b'\x00'), 0, 2, 0, ROOM_RULES, 4, room_id)
@@ -353,7 +399,7 @@ class Outbreak2LobbyTests(unittest.TestCase):
         refused = self._join_room(guest, room_id, b'claire')
         error = self._to(refused, guest, commands.CMD_RESULT_ERROR)
         self.assertEqual(struct.unpack('>2L', error[0].payload), (commands.CMD_JOIN, 15))
-        self.assertEqual(error[0].type_flags, FLAG_ROOM | FLAG_RESPONSE)
+        self.assertEqual(error[0].type_flags, FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE)
         accepted = self._join_room(guest, room_id, b'leon')
         self.assertEqual(struct.unpack('>2L', self._to(accepted, guest, commands.CMD_RESULT_WRAPPER)[0].payload),
                          (commands.CMD_JOIN, 0))
@@ -450,7 +496,7 @@ class Outbreak2LobbyTests(unittest.TestCase):
         host, guest, _ = self.players
         room_id = self._create_room(host)
         found = self._send(guest, commands.CMD_SEARCH_USERS_BY_NAME, b'jill0-'.ljust(24, b'\x00'), LOBBY_FLAGS)[0]
-        self.assertEqual(found.type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE)
+        self.assertEqual(found.type_flags, FLAG_CHANNEL_BITS | FLAG_RESPONSE | FLAG_RELIABLE)
         self.assertEqual(struct.unpack_from('>3L', found.payload), (0, 1, 1))
         self.assertEqual(found.payload[12:],
                          b'jill0'.ljust(16, b'\x00') + struct.pack('>4L', 1, AREA_ID, room_id, 240) + _profile(1))
