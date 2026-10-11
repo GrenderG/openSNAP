@@ -48,90 +48,16 @@ client comes back to the lobby:
   `0x003243dc`, main `0x001c6e3c`). The summary keeps both as 16 bits.
 - The last two words are never written: the summary is zeroed
   (`0x0057bd88`) and nothing stores them before it is copied.
-"""
 
-from dataclasses import dataclass
-import struct
+The decoder is shared with File#2 (`opensnap_app.capcom.scenario_report`).
+"""
 
 from opensnap.core.accounts import Account
 from opensnap.plugins.outbreak.records import GAME, clear_board, points_board
 from opensnap.storage.interfaces import RecordStore
-from opensnap_app.capcom.protocol import decode_app_field
+from opensnap_app.capcom.scenario_report import ScenarioResult, Teammate, decode_scenario_result
 
-TEAMMATE_SLOTS = 3
-TEAMMATE_ALIVE = 1
-TRAILING_WORDS = 8
-
-
-@dataclass(frozen=True, slots=True)
-class Teammate:
-    name: str
-    alive: bool
-    character: int
-
-
-@dataclass(frozen=True, slots=True)
-class ScenarioResult:
-    """One decoded 6301 report."""
-
-    scenario: int
-    free_mode: bool
-    cleared: bool
-    character: int
-    clear_ticks: int
-    points: int
-    teammates: tuple[Teammate, ...]
-    echo_ticks: int
-    echo_replies: int
-    echo_losses: int
-    network_error: int
-    peak_queue: int
-    peak_location: int
-
-
-def decode_scenario_result(payload: bytes, sequence: int) -> ScenarioResult:
-    """Decode one 6301 request payload."""
-
-    if len(payload) < 3:
-        raise ValueError('Scenario result report is truncated.')
-    cleared, free_mode, scenario = payload[:3]
-    _, size = decode_app_field(payload[3:], sequence)
-    offset = 3 + size
-    if len(payload) < offset + 10:
-        raise ValueError('Scenario result report is truncated.')
-    character = payload[offset + 1]
-    clear_ticks, points = struct.unpack_from('>LL', payload, offset + 2)
-    offset += 10
-    teammates = []
-    for _ in range(TEAMMATE_SLOTS):
-        name, size = decode_app_field(payload[offset:], sequence)
-        offset += size
-        if len(payload) < offset + 2:
-            raise ValueError('Scenario result report is truncated.')
-        status, mate_character = payload[offset:offset + 2]
-        offset += 2
-        if name := _text(name):
-            teammates.append(Teammate(name, status == TEAMMATE_ALIVE, mate_character))
-    if len(payload) != offset + 4 * TRAILING_WORDS:
-        raise ValueError('Scenario result report has an invalid size.')
-    echo_ticks, network_error, echo_replies, echo_losses, peak_queue, peak_location, _, _ = struct.unpack_from(
-        f'>{TRAILING_WORDS}L', payload, offset
-    )
-    return ScenarioResult(
-        scenario=scenario,
-        free_mode=bool(free_mode),
-        cleared=bool(cleared),
-        character=character,
-        clear_ticks=clear_ticks,
-        points=points,
-        teammates=tuple(teammates),
-        echo_ticks=echo_ticks,
-        echo_replies=echo_replies,
-        echo_losses=echo_losses,
-        network_error=network_error,
-        peak_queue=peak_queue,
-        peak_location=peak_location,
-    )
+__all__ = ['ScenarioResult', 'Teammate', 'decode_scenario_result', 'store_scenario_result']
 
 
 def store_scenario_result(records: RecordStore, account: Account, result: ScenarioResult) -> None:
@@ -145,7 +71,7 @@ def store_scenario_result(records: RecordStore, account: Account, result: Scenar
         player=account.username,
         score=result.points,
         details={
-            'free_mode': result.free_mode,
+            'free_mode': bool(result.mode),
             'cleared': result.cleared,
             'clear_ticks': result.clear_ticks,
             'character': result.character,
@@ -161,13 +87,10 @@ def store_scenario_result(records: RecordStore, account: Account, result: Scenar
     if result.cleared:
         records.add(
             game=GAME,
-            board=clear_board(result.scenario, result.free_mode),
+            board=clear_board(result.scenario, bool(result.mode)),
             user_id=account.user_id,
             player=account.username,
             score=result.clear_ticks,
             details={'character': result.character, 'teammates': team},
         )
 
-
-def _text(field: bytes) -> str:
-    return field.split(b'\x00', 1)[0].decode('ascii', errors='replace')

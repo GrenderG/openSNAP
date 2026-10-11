@@ -34,6 +34,9 @@ class BootstrapGameDetectionTests(unittest.TestCase):
             (0xCA0E, FOOTER_BYTES, 'monsterhunter'),
             # Resident Evil Outbreak NA, v1 and v2 (`netwk.bin` `0x00584930`).
             (0xCAE0, FOOTER_BYTES, 'outbreak'),
+            # Resident Evil Outbreak File#2 NA and EU share one server (`netwk.bin` `0x0059d390` / `0x005bd62c`).
+            (0xCA19, FOOTER_BYTES, 'outbreak2'),
+            (0xCAF3, FOOTER_BYTES, 'outbreak2'),
         )
         for title_code, footer, expected in cases:
             message = _message(footer_bytes=footer, payload=_login_payload(title_code))

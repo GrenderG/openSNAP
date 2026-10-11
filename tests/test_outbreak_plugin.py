@@ -536,8 +536,8 @@ class OutbreakScenarioResultTests(unittest.TestCase):
         )
         result = decode_scenario_result(report, 5)
         self.assertEqual(
-            (result.scenario, result.free_mode, result.cleared, result.character, result.clear_ticks, result.points),
-            (4, False, True, 38, 94260, 3780),
+            (result.scenario, result.mode, result.cleared, result.character, result.clear_ticks, result.points),
+            (4, 0, True, 38, 94260, 3780),
         )
         self.assertEqual(result.teammates, (Teammate('kevin', False, 99), Teammate('mark', True, 7)))
         self.assertEqual(

@@ -389,6 +389,89 @@ class WebRouteTests(unittest.TestCase):
         self.assertIn('openSNAP Notice Board', client.get('/reweb/index.jsp').get_data(as_text=True))
         self.assertIn('openSNAP signup service', client.get('/reweb/signup/').get_data(as_text=True))
 
+    _FILE2_SCENARIOS = (
+        'Wild Things', 'Underbelly', 'Flashback', 'Desperate Times', 'End of the Road',
+        'Elimination 1', 'Elimination 2', 'Elimination 3', 'Showdown 1', 'Showdown 2', 'Showdown 3',
+    )
+
+    def _assert_file2_ranking_links(self, page: str) -> None:
+        for number, name in enumerate(self._FILE2_SCENARIOS):
+            self.assertIn(f'href="/reweb/file2/rank_clear_{number}.html">Fastest clears: {name}</a>', page)
+        self.assertIn('href="/reweb/file2/rank_points.html"', page)
+
+    def test_outbreak2_rankings_index(self) -> None:
+        client = self._outbreak_client('outbreak2')
+        for path in ('/reweb/file2/', '/reweb/file2/index.jsp'):
+            response = client.get(path)
+            self.assertEqual(response.status_code, 200)
+            page = response.get_data(as_text=True)
+            self.assertIn('Resident Evil Outbreak File#2 rankings', page)
+            self._assert_file2_ranking_links(page)
+        self.assertEqual(client.get('/reweb/file2/rank_clear_11.html').status_code, 404)
+
+    def test_outbreak2_rankings_show_stored_results(self) -> None:
+        from opensnap.storage.sql import SqlAccountStore, SqlRecordStore
+        from opensnap.storage.sqlite import SqliteConnection
+        from opensnap_app.capcom.outbreak2.results import store_scenario_result
+        from opensnap_app.capcom.scenario_report import ScenarioResult
+
+        client = self._outbreak_client('outbreak2')
+        connection = SqliteConnection(f'{self._temp_directory.name}/web.sqlite')
+        self.addCleanup(connection.close)
+        accounts = SqlAccountStore(connection)
+        records = SqlRecordStore(connection)
+        jill = accounts.create_user('jill', 'secret')
+        carlos = accounts.create_user('carlos', 'secret')
+
+        def report(account, scenario: int, rank_kind: int, character: int, clear_ticks: int, points: int) -> None:
+            result = ScenarioResult(
+                scenario, rank_kind, clear_ticks != 0, character, clear_ticks, points, (), 32, 8, 0, 0, 286, 1001
+            )
+            store_scenario_result(records, account, result)
+
+        report(jill, 3, 1, 6, 89367, 4185)
+        report(carlos, 3, 4, 57, 119668, 3690)
+        report(carlos, 0, 0, 1, 0, 614)
+
+        page = client.get('/reweb/file2/rank_clear_3.html').get_data(as_text=True)
+        normal, host_choice = page.split('Desperate Times: ANY')
+        self.assertIn('Desperate Times: NORMAL', normal)
+        self.assertIn('<td>jill</td><td>Yoko</td><td>49\'38"</td>', normal)
+        self.assertIn('<td>carlos</td><td>Axeman</td>', host_choice)
+        self.assertNotIn('Desperate Times: EASY', page)
+        self.assertEqual(client.get('/reweb/file2/rank_clear_0.html').get_data(as_text=True).count('No clears yet'), 1)
+
+        points = client.get('/reweb/file2/rank_points.html').get_data(as_text=True)
+        self.assertIn('<td>jill</td><td>4185</td>', points)
+        self.assertIn('<td>carlos</td><td>4304</td>', points)
+
+    def test_outbreak2_alone_serves_its_notice_board_on_reweb(self) -> None:
+        client = self._outbreak_client('outbreak2')
+        for path in ('/reweb/', '/reweb/index.jsp'):
+            page = client.get(path).get_data(as_text=True)
+            self.assertIn('openSNAP Notice Board', page)
+            self.assertIn('href="/reweb/signup/"', page)
+            self._assert_file2_ranking_links(page)
+            self.assertNotIn('href="/reweb/rank_clear_', page)
+        self.assertIn('openSNAP signup service', client.get('/reweb/signup/index.jsp').get_data(as_text=True))
+        self.assertEqual(client.get('/reweb/rank_clear_0.html').status_code, 404)
+
+    def test_generic_web_portal_is_file1_and_links_file2(self) -> None:
+        client = self._outbreak_client('generic')
+        page = client.get('/reweb/index.jsp').get_data(as_text=True)
+        self.assertIn('href="/reweb/rank_clear_4.html">Fastest clears: Decisions, Decisions', page)
+        self.assertIn('href="/reweb/file2/index.jsp"', page)
+        self.assertNotIn('href="/reweb/file2/rank_clear_', page)
+        self._assert_file2_ranking_links(client.get('/reweb/file2/index.jsp').get_data(as_text=True))
+
+    def test_outbreak_alone_portal_has_no_file2_link(self) -> None:
+        client = self._outbreak_client('outbreak')
+        for path in ('/reweb/', '/reweb/index.jsp'):
+            self.assertNotIn('href="/reweb/file2/index.jsp"', client.get(path).get_data(as_text=True))
+        self.assertEqual(client.get('/reweb/file2/index.jsp').status_code, 404)
+        self.assertIn('href="/reweb/file2/index.jsp"',
+                      self._outbreak_client('generic').get('/reweb/index.jsp').get_data(as_text=True))
+
     def test_automodellista_beta1_web_plugin_serves_beta1_rule_payload(self) -> None:
         app = create_web_app(
             WebServerConfig(

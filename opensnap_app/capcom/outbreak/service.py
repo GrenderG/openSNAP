@@ -196,7 +196,7 @@ class AppService:
         store_scenario_result(self._records, account, result)
         _LOGGER.info(
             'Scenario result from %s stored: scenario %d (%s mode), cleared %s, %d ticks, %d points.',
-            account.username, result.scenario, 'free' if result.free_mode else 'scenario', result.cleared,
+            account.username, result.scenario, 'free' if result.mode else 'scenario', result.cleared,
             result.clear_ticks, result.points,
         )
 

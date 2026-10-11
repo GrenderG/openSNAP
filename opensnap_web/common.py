@@ -4,7 +4,8 @@ from collections.abc import Callable, Iterable
 import logging
 import re
 
-from flask import Blueprint, Response, request
+from flask import Blueprint, Response, current_app, request
+from werkzeug.exceptions import MethodNotAllowed, NotFound
 
 LOGGER = logging.getLogger('opensnap.web')
 
@@ -39,6 +40,16 @@ def page_view(page: str) -> Callable[..., Response]:
     """Return a view that serves one fixed HTML page."""
 
     return lambda **_kwargs: html_response(page)
+
+
+def serves(path: str) -> bool:
+    """Whether the running app has a GET route for `path` (another game's page, for a cross-link)."""
+
+    try:
+        current_app.url_map.bind('').match(path)
+    except (NotFound, MethodNotAllowed):
+        return False
+    return True
 
 
 def dump_request(title: str) -> None:

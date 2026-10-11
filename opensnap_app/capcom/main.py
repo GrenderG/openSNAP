@@ -8,9 +8,10 @@ from opensnap.env_loader import load_env_file
 from opensnap.logging_utils import configure_logging, exit_with_logged_os_error
 from opensnap.plugins.monsterhunter.directory import read_directory
 from opensnap.plugins.monsterhunter.profile import MONSTER_HUNTER_NA, MONSTER_HUNTER_NA_BETA, MonsterHunterProfile
+from opensnap.plugins.outbreak2.directory import read_directory as read_outbreak2_directory
 from opensnap.storage.factory import create_storage
 from opensnap.storage.interfaces import StorageBundle
-from opensnap_app.capcom import monsterhunter, outbreak
+from opensnap_app.capcom import monsterhunter, outbreak, outbreak2
 from opensnap_app.capcom.server import CapcomAppServer
 
 DEFAULT_HOST = '0.0.0.0'
@@ -30,14 +31,28 @@ def main() -> None:
     resident_evil_outbreak = outbreak.AppService(
         outbreak.read_app_service_config(), accounts=storage.accounts, records=storage.records
     )
+    titles = {
+        monsterhunter.APP_BUILD_NA: monster_hunter,
+        monsterhunter.APP_BUILD_EU: monster_hunter,
+        outbreak.APP_BUILD: resident_evil_outbreak,
+    }
+    try:
+        resident_evil_outbreak2 = outbreak2.AppService(
+            outbreak2.read_app_service_config(config),
+            directory=read_outbreak2_directory(),
+            accounts=storage.accounts,
+            records=storage.records,
+            online_players=storage.online_players,
+        )
+    except ValueError as exc:
+        # A bad OPENSNAP_OUTBREAK2_* setting must not take the other titles down.
+        logger.error('Resident Evil Outbreak File#2 is not served: %s', exc)
+    else:
+        titles[outbreak2.APP_BUILD_NA] = titles[outbreak2.APP_BUILD_EU] = resident_evil_outbreak2
     server = CapcomAppServer(
         host=os.getenv('OPENSNAP_CAPCOM_APP_HOST', '').strip() or DEFAULT_HOST,
         port=int(os.getenv('OPENSNAP_CAPCOM_APP_PORT', '').strip() or DEFAULT_PORT),
-        titles={
-            monsterhunter.APP_BUILD_NA: monster_hunter,
-            monsterhunter.APP_BUILD_EU: monster_hunter,
-            outbreak.APP_BUILD: resident_evil_outbreak,
-        },
+        titles=titles,
         stamped_builds={monsterhunter.NA_PUBLIC_BETA_VERSION: monster_hunter_na_beta},
     )
     try:

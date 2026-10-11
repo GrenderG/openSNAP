@@ -46,11 +46,21 @@ MONSTER_HUNTER_USA_PUBLIC_BETA_DNS_ENTRIES: dict[str, str] = {
     'snap01.reo.capcom.sf.yav4.com': '@default',
 }
 
+# Resident Evil Outbreak File#2 (`SLUS_209.84`, `SLES_533.19`): bootstrap host
+# (main ELF NA `0x002696e0`, EU `0x00248790`) and the default registration page
+# host (`http://stage6.sega.com/mhweb/index.jsp?DNAS=`, NA `0x002696b0`), which
+# the APP 6110 reply redirects; the APP host is the Monster Hunter one above.
+OUTBREAK_FILE2_DNS_ENTRIES: dict[str, str] = {
+    'snap01.capcom.client.sf.yav4.com': '@default',
+    'stage6.sega.com': '@default',
+}
+
 DEFAULT_DNS_ENTRIES: dict[str, str] = {
     **AUTO_MODELLISTA_DNS_ENTRIES,
     **MONSTER_HUNTER_USA_DNS_ENTRIES,
     **MONSTER_HUNTER_PAL_AND_DEMO_DNS_ENTRIES,
     **MONSTER_HUNTER_USA_PUBLIC_BETA_DNS_ENTRIES,
+    **OUTBREAK_FILE2_DNS_ENTRIES,
 }
 
 

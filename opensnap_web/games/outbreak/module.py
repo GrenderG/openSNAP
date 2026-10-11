@@ -3,7 +3,7 @@
 from flask import Blueprint, abort
 
 from opensnap.storage.interfaces import StorageBundle
-from opensnap_web.common import add_routes, html_response, page_view
+from opensnap_web.common import add_routes, html_response
 from opensnap_web.games.outbreak.notice_board import (
     CLEAR_RANKING_PATH,
     INDEX_PATHS,
@@ -29,7 +29,8 @@ class OutbreakWebModule:
         blueprint = Blueprint(self.name, __name__)
         add_signup_routes(blueprint, SignupService(storage.accounts), (SIGNUP_PREFIX,))
         rankings = notice_board_rankings(storage.records)
-        add_routes(blueprint, INDEX_PATHS, page_view(notice_board_page(rankings)))
+        # Rendered per request: the portal links File#2's rankings when that module is served.
+        add_routes(blueprint, INDEX_PATHS, lambda: html_response(notice_board_page(rankings)))
 
         def clear_ranking(scenario: int) -> object:
             page = rankings.clear_page(scenario)

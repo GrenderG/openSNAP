@@ -16,6 +16,8 @@ An open, clean-room server for SEGA's SN@P online middleware, bringing PlayStati
 | Monster Hunter NTSC-U public beta | `SLUS_291.10` | `monsterhunter_na_beta` | Supported, untested. Separate server: beta players only meet each other. DNAS patch required. |
 | Resident Evil Outbreak (File#1) NTSC-U | `SLUS_207.65` | `outbreak` | Supported, v1 and v2 play together. Not yet fully tested in game. |
 | Resident Evil Outbreak (File#1) NTSC-U public beta | `SLUS_290.89` | - | Not supported: same login as the release, but an earlier lobby design (own Areas `obbs01`/`obbf01`, fixed "TEST GAME" rooms, older APP flow) that would need its own reverse engineering. |
+| Resident Evil Outbreak File#2 NTSC-U | `SLUS_209.84` | `outbreak2` | Supported. Plays with PAL. Not yet tested in game. |
+| Resident Evil Outbreak File#2 PAL | `SLES_533.19` | `outbreak2` | Supported. Plays with NTSC-U. Not yet tested in game. |
 
 Monster Hunter and Resident Evil Outbreak also need the [Capcom APP service](#capcom-app-service).
 
@@ -81,7 +83,7 @@ Serves account signup for every game, plus game pages and rankings.
 - `OPENSNAP_WEB_HTTPS_HOST`, `OPENSNAP_WEB_HTTPS_PORT`, `OPENSNAP_WEB_HTTPS_CERTFILE`, `OPENSNAP_WEB_HTTPS_KEYFILE`:
   optional HTTPS listener (port 443), used by Auto Modellista's `rankweb` uploads.
 - `OPENSNAP_WEB_GAME_PLUGIN`: `generic` (default, every game's pages) or one module: `automodellista`,
-  `automodellista_beta1`, `monsterhunter`, `outbreak`. Also `python3 run.py web --web-plugin <module>`.
+  `automodellista_beta1`, `monsterhunter`, `outbreak`, `outbreak2`. Also `python3 run.py web --web-plugin <module>`.
 
 Signup creates the account on first use and logs in afterwards. Usernames are 4-10 letters, digits and single inner
 `_` (the longest ID the game browsers keep). Passwords are 4-15 characters (the in-game keyboard limit).
@@ -122,6 +124,8 @@ connection's first answer.
 
 - Monster Hunter: World and Land menus, Market, Events, quest records.
 - Resident Evil Outbreak: lobby welcome page, data files, scenario results and the DATABASE rankings.
+- Resident Evil Outbreak File#2: server list, lobby information page, Area and room-rule data, scenario results and
+  the DATABASE rankings.
 
 It needs the same storage and game settings as the game servers (`OPENSNAP_MH_WORLDS`, `OPENSNAP_DATA_DIR`), and
 finds the Monster Hunter game server through `OPENSNAP_GAME_SERVER_MAP` like the bootstrap does.
@@ -239,6 +243,51 @@ Both releases (v1 and v2) play together.
   The game shows `ERR:D9xx` when that upload fails.
 - `OPENSNAP_DATA_DIR`: the welcome page is `data/outbreak/files/01/TOP_INFOR.HTM` (included; at most 4095 bytes,
   game page markup such as `<BODY><SIZE=2><CENTER>...<END>`).
+
+### Resident Evil Outbreak File#2
+
+```bash
+OPENSNAP_GAME_PLUGIN=outbreak2 python3 run.py game
+```
+
+NA and PAL players meet on the same server.
+
+Settings:
+
+- `OPENSNAP_OUTBREAK2_SERVER_NAME`, `OPENSNAP_OUTBREAK2_SERVER_DESCRIPTION`: the server as the game's server list
+  shows it: name (1-15 ASCII characters, default `openSNAP`) and description (up to 255). On "Connect" the game logs
+  into the bootstrap at the address the list carries: `OPENSNAP_BOOTSTRAP_ADVERTISE_HOST`, else the bind address
+  `OPENSNAP_BOOTSTRAP_HOST`, else the address of this machine towards the player.
+- `OPENSNAP_OUTBREAK2_AREA_KEY`: Area name prefix, exactly 4 ASCII letters or digits (default `AREA`); the ten
+  Areas are `<key>01`..`<key>10`.
+- `OPENSNAP_OUTBREAK2_CAPACITY`: players the server admits over all ten Areas (default 400; "Server full." beyond
+  it).
+
+- `OPENSNAP_OUTBREAK2_AREAS`: what each of the ten Areas offers, as a JSON list of ten objects
+  `{"title": "...", "subtitle": "...", "description": "...", "difficulty": "...", "rank_kind": N}` (ASCII; titles up to
+  23 characters, descriptions up to 255 in game page markup such as `<BODY>...<END>`). `difficulty` fixes the rooms' difficulty (`easy`, `normal`,
+  `hard`, `very hard`) or lets the room host choose it (`host`); `rank_kind` (0-7) is the ranking category the
+  results of that Area count for; the rankings label a rank kind with the subtitle of its first Area. Default: two
+  Areas per difficulty (rank kinds 0-3) and two where the host chooses (rank kind 4, so that board mixes
+  difficulties). The Capcom APP service sends this table to the game on login and players compare their copies,
+  so change it with every service stopped.
+
+Behaviour:
+
+- Rooms: the host picks the number of players (2-4), the waiting time (3-30 minutes) and Friendly Fire (off by
+  default), and the difficulty in the host-choice Areas; a quick-start room takes 2-4 players and starts when full
+  or after 3 minutes. The five story scenarios are always offered; Elimination and Showdown as the save has
+  unlocked them. Rooms keep their players after a scenario, as the game does.
+- Rankings: every scenario result is stored. The fastest clears per scenario and rank kind and the total result
+  points appear in the lobby's DATABASE menu and on the Notice Board. The game itself reports no time or points for
+  a run with Friendly Fire, NIGHTMARE, INFINITY or a point multiplier.
+
+- Web: the registration menu is sent to the signup page by the Capcom APP service, and the Notice Board opens the
+  same `regweb.reo.capcom.sf.yav4.com/reweb/` portal as File#1, which links to the File#2 rankings (`reweb/file2/`).
+- Accounts: a File#2 NTSC-U console logs in with the ID saved by File#1, so one account serves both games.
+- `OPENSNAP_DATA_DIR`: the lobby information page is `data/outbreak2/files/04/TOP_INFOR.HTM` (NTSC-U) and
+  `data/outbreak2/files/06/<language>/TOP_INFOR.HTM` (PAL: `01` English, `02` French, `03` Spanish, `04` German,
+  `05` Italian). Included; at most 4095 bytes.
 
 ## Logging
 
