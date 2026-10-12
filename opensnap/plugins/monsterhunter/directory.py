@@ -129,7 +129,7 @@ def read_directory(*, max_players_per_town: int, environment_key: str = WORLDS_E
     """Build the directory from `environment_key`: World name -> World object, in list order."""
 
     raw = os.getenv(environment_key, '').strip()
-    specs = _parse_worlds(raw) if raw else DEFAULT_WORLDS
+    specs = _parse_worlds(raw, environment_key) if raw else DEFAULT_WORLDS
     if not 1 <= len(specs) <= MAX_WORLDS:
         raise ValueError(f'{environment_key} must define between 1 and {MAX_WORLDS} Worlds.')
 
@@ -177,13 +177,13 @@ def read_directory(*, max_players_per_town: int, environment_key: str = WORLDS_E
     return Directory(tuple(worlds), max_players_per_town=max_players_per_town)
 
 
-def _parse_worlds(raw: str) -> dict:
+def _parse_worlds(raw: str, environment_key: str) -> dict:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise ValueError(f'{WORLDS_ENVIRONMENT_KEY} is not valid JSON: {exc}') from None
+        raise ValueError(f'{environment_key} is not valid JSON: {exc}') from None
     if not isinstance(parsed, dict):
-        raise ValueError(f'{WORLDS_ENVIRONMENT_KEY} must be an object of World name -> World.')
+        raise ValueError(f'{environment_key} must be an object of World name -> World.')
     return parsed
 
 

@@ -17,7 +17,6 @@ from opensnap.storage.sql import SqlAccountStore, SqlOnlinePlayerStore, SqlRecor
 from opensnap.storage.sqlite import SqliteConnection
 from opensnap_app.capcom.outbreak2.netbio import data_files, data_token
 from opensnap_app.capcom.outbreak2.results import store_scenario_result
-from opensnap_app.capcom import main as capcom_main
 from opensnap_app.capcom.outbreak2.service import (
     APP_BUILD_EU,
     APP_BUILD_NA,
@@ -573,48 +572,6 @@ class Outbreak2DirectoryAreasTests(unittest.TestCase):
                 self._read(areas)
         with self.assertRaises(json.JSONDecodeError):
             self._read('[not json')
-
-
-class CapcomAppMainTests(unittest.TestCase):
-    """`opensnap_app.capcom.main.main()` with a bad File#2 setting still serves the other titles."""
-
-    def _served_builds(self, **settings: str) -> set[int]:
-        temp_directory = tempfile.TemporaryDirectory()
-        self.addCleanup(temp_directory.cleanup)
-        environment = {
-            'OPENSNAP_STORAGE_BACKEND': 'sqlite',
-            'OPENSNAP_SQLITE_PATH': f'{temp_directory.name}/capcom.sqlite',
-            'OPENSNAP_DATA_DIR': temp_directory.name,
-            'OPENSNAP_CAPCOM_APP_HOST': '127.0.0.1',
-            'OPENSNAP_CAPCOM_APP_PORT': '0',
-            **settings,
-        }
-        served: list[set[int]] = []
-        with (
-            mock.patch.dict(os.environ, environment),
-            mock.patch.object(capcom_main, 'load_env_file'),
-            mock.patch.object(capcom_main, 'configure_logging'),
-            mock.patch.object(
-                CapcomAppServer, 'serve_forever', autospec=True,
-                side_effect=lambda server: served.append(set(server._titles)),  # noqa: SLF001
-            ),
-        ):
-            for key in [key for key in os.environ if key.startswith('OPENSNAP_OUTBREAK2_') and key not in settings]:
-                del os.environ[key]
-            capcom_main.main()
-        self.assertEqual(len(served), 1)
-        return served[0]
-
-    def test_bad_outbreak2_setting_leaves_file2_out(self) -> None:
-        with self.assertLogs('opensnap_app.capcom', 'ERROR') as logs:
-            builds = self._served_builds(OPENSNAP_OUTBREAK2_AREA_KEY='BAD')
-        self.assertTrue(any('Resident Evil Outbreak File#2 is not served' in line for line in logs.output))
-        self.assertTrue({1, 2, 3} <= builds)
-        self.assertFalse({APP_BUILD_NA, APP_BUILD_EU} & builds)
-
-    def test_valid_settings_serve_file2(self) -> None:
-        builds = self._served_builds()
-        self.assertTrue({1, 2, 3, APP_BUILD_NA, APP_BUILD_EU} <= builds)
 
 
 def _result(

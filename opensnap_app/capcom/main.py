@@ -1,5 +1,6 @@
 """Capcom APP process entrypoint: `python run.py app capcom`."""
 
+from collections.abc import Callable
 import logging
 import os
 
@@ -12,48 +13,41 @@ from opensnap.plugins.outbreak2.directory import read_directory as read_outbreak
 from opensnap.storage.factory import create_storage
 from opensnap.storage.interfaces import StorageBundle
 from opensnap_app.capcom import monsterhunter, outbreak, outbreak2
-from opensnap_app.capcom.server import CapcomAppServer
+from opensnap_app.capcom.server import CapcomAppServer, TitleService
 
 DEFAULT_HOST = '0.0.0.0'
 # Every Capcom title hardcodes this port.
 DEFAULT_PORT = 10127
 
+logger = logging.getLogger('opensnap_app.capcom')
+
 
 def main() -> None:
     load_env_file()
     configure_logging(service_name='capcom-app')
-    logger = logging.getLogger('opensnap_app.capcom')
 
     config = default_app_config()
     storage = create_storage(config)
-    monster_hunter = _monster_hunter_service(config, storage, MONSTER_HUNTER_NA)
-    monster_hunter_na_beta = _monster_hunter_service(config, storage, MONSTER_HUNTER_NA_BETA)
-    resident_evil_outbreak = outbreak.AppService(
-        outbreak.read_app_service_config(), accounts=storage.accounts, records=storage.records
+    titles: dict[int, TitleService] = {}
+    stamped_builds: dict[bytes, TitleService] = {}
+    _add_title(
+        titles, (monsterhunter.APP_BUILD_NA, monsterhunter.APP_BUILD_EU), 'Monster Hunter',
+        lambda: _monster_hunter_service(config, storage, MONSTER_HUNTER_NA),
     )
-    titles = {
-        monsterhunter.APP_BUILD_NA: monster_hunter,
-        monsterhunter.APP_BUILD_EU: monster_hunter,
-        outbreak.APP_BUILD: resident_evil_outbreak,
-    }
-    try:
-        resident_evil_outbreak2 = outbreak2.AppService(
-            outbreak2.read_app_service_config(config),
-            directory=read_outbreak2_directory(),
-            accounts=storage.accounts,
-            records=storage.records,
-            online_players=storage.online_players,
-        )
-    except ValueError as exc:
-        # A bad OPENSNAP_OUTBREAK2_* setting must not take the other titles down.
-        logger.error('Resident Evil Outbreak File#2 is not served: %s', exc)
-    else:
-        titles[outbreak2.APP_BUILD_NA] = titles[outbreak2.APP_BUILD_EU] = resident_evil_outbreak2
+    _add_title(
+        stamped_builds, (monsterhunter.NA_PUBLIC_BETA_VERSION,), 'Monster Hunter NA public beta',
+        lambda: _monster_hunter_service(config, storage, MONSTER_HUNTER_NA_BETA),
+    )
+    _add_title(titles, (outbreak.APP_BUILD,), 'Resident Evil Outbreak', lambda: _outbreak_service(storage))
+    _add_title(
+        titles, (outbreak2.APP_BUILD_NA, outbreak2.APP_BUILD_EU), 'Resident Evil Outbreak File#2',
+        lambda: _outbreak2_service(config, storage),
+    )
     server = CapcomAppServer(
         host=os.getenv('OPENSNAP_CAPCOM_APP_HOST', '').strip() or DEFAULT_HOST,
         port=int(os.getenv('OPENSNAP_CAPCOM_APP_PORT', '').strip() or DEFAULT_PORT),
         titles=titles,
-        stamped_builds={monsterhunter.NA_PUBLIC_BETA_VERSION: monster_hunter_na_beta},
+        stamped_builds=stamped_builds,
     )
     try:
         server.serve_forever()
@@ -63,6 +57,20 @@ def main() -> None:
         exit_with_logged_os_error(logger, service_name='capcom-app', error=exc)
     finally:
         storage.close()
+
+
+def _add_title[K](
+    services: dict[K, TitleService], keys: tuple[K, ...], name: str, build: Callable[[], TitleService]
+) -> None:
+    """Serve one title under its keys; a bad setting leaves only that title out, with the reason logged."""
+
+    try:
+        service = build()
+    except ValueError as exc:
+        logger.error('%s is not served: %s', name, exc)
+        return
+    for key in keys:
+        services[key] = service
 
 
 def _monster_hunter_service(
@@ -79,4 +87,22 @@ def _monster_hunter_service(
         ),
         online_players=storage.online_players,
         records=storage.records,
+    )
+
+
+def _outbreak_service(storage: StorageBundle) -> outbreak.AppService:
+    """Resident Evil Outbreak File#1."""
+
+    return outbreak.AppService(outbreak.read_app_service_config(), accounts=storage.accounts, records=storage.records)
+
+
+def _outbreak2_service(config: AppConfig, storage: StorageBundle) -> outbreak2.AppService:
+    """Resident Evil Outbreak File#2: NA and EU share one service, so they share Areas and rooms."""
+
+    return outbreak2.AppService(
+        outbreak2.read_app_service_config(config),
+        directory=read_outbreak2_directory(),
+        accounts=storage.accounts,
+        records=storage.records,
+        online_players=storage.online_players,
     )
