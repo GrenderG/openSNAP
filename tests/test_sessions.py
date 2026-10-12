@@ -2,7 +2,7 @@
 
 import unittest
 
-from opensnap.core.sessions import RELIABLE_RECEIVE_WINDOW, ReliableReceipt, SessionHandoff, SessionRegistry
+from opensnap.core.sessions import ReliableReceipt, SessionHandoff, SessionRegistry
 from opensnap.protocol.models import Endpoint
 
 
@@ -47,13 +47,14 @@ class SessionRegistryTests(unittest.TestCase):
         self.assertIs(accept(session.session_id, 2), ReliableReceipt.DELIVER)
         # Ahead of a missing sequence, inside the 16-packet window: held.
         self.assertIs(accept(session.session_id, 4), ReliableReceipt.HOLD)
-        session.held_reliable[4] = (0.0, [])
+        session.held_reliable[4] = []
         self.assertIs(accept(session.session_id, 4), ReliableReceipt.DUPLICATE)
+        # Any sequence ahead is held (the MH-family receivers have no upper
+        # bound), and held packets are never discarded.
+        self.assertIs(accept(session.session_id, 40), ReliableReceipt.HOLD)
+        self.assertEqual(session.held_reliable, {4: []})
         self.assertIs(accept(session.session_id, 3), ReliableReceipt.DELIVER)
         self.assertEqual(session.last_incoming_sequence, 3)
-        # Beyond the window the numbering restarts there.
-        self.assertIs(accept(session.session_id, 3 + RELIABLE_RECEIVE_WINDOW + 1), ReliableReceipt.DELIVER)
-        self.assertEqual(session.held_reliable, {})
 
     def test_rebind_endpoint_moves_session_lookup_to_new_endpoint(self) -> None:
         registry = SessionRegistry()

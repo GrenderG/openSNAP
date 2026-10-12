@@ -238,7 +238,10 @@ def _login_success(context: HandlerContext, message: SnapMessage, session_id: in
 
     The client drops unreliable packets numbered below the last one it
     accepted, across the move to the game server, so the game server continues
-    from this reply's sequence (see `SessionHandoff`).
+    from the bootstrap's unreliable counter (see `SessionHandoff`). The reply
+    itself is reliable when the login request was, and a reliable sequence
+    must not be handed over: AM release then drops the game server's first
+    unreliable answers (`0x002f5028`).
     """
 
     reply = context.reply(
@@ -248,7 +251,7 @@ def _login_success(context: HandlerContext, message: SnapMessage, session_id: in
         payload=payload,
         session_id=session_id,
     )
-    context.handoffs.set_sequence(session_id, reply.sequence_number)
+    context.handoffs.set_sequence(session_id, context.sessions.get(session_id).sequence_number)
     return reply
 
 

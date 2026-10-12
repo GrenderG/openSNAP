@@ -753,12 +753,20 @@ class MonsterHunterPlugin(GamePlugin):
         room = context.rooms.get(session.room_id)
         if room is not None and len(message.payload) == 8 and message.payload[:4] == STAT_ATTRIBUTE:
             rules = get_u32(message.payload, 4)
-            origin = self._origin_town(context, session) if _is_quest_return(room, rules) else None
-            if origin is not None and origin.rules == rules:
+            if not _is_quest_return(room, rules):
+                context.rooms.set_rules(room.room_id, rules)
+            elif (origin := self._origin_town(context, session, rules)) is not None:
                 self._return_to_origin(context, session, room, origin)
                 arrivals = self._arrival_callbacks(context, origin, session)
             else:
-                context.rooms.set_rules(room.room_id, rules)
+                # The STAT asks to go back to a Town, never to turn the
+                # nameless quest room into one (an unnamed Town row).
+                _LOGGER.warning(
+                    'Session 0x%08x: no listing Town with rules 0x%08x to return to from room %d.',
+                    session.session_id,
+                    rules,
+                    room.room_id,
+                )
 
         return [
             self._result(context, message, session, GameTags.JOIN_OK, RESULT_WRAPPER_STATUS_OK, FLAG_ROOM)
@@ -937,8 +945,8 @@ class MonsterHunterPlugin(GamePlugin):
             and session.session_id in room.members
         ]
 
-    def _origin_town(self, context: HandlerContext, session: Session) -> GameRoom | None:
-        towns = self._listing_towns(context, session)
+    def _origin_town(self, context: HandlerContext, session: Session, rules: int) -> GameRoom | None:
+        towns = [town for town in self._listing_towns(context, session) if town.rules == rules]
         return towns[0] if len(towns) == 1 else None
 
     def _server_room_id(self, session: Session, room_id: int) -> int:

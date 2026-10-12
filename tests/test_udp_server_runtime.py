@@ -75,6 +75,8 @@ class UdpServerRuntimeTests(unittest.TestCase):
             payload=b'\x80\x07' + b'\x00' * 62,
         )
         server._track_reliable(outgoing, b'packet', 9.95)
+        # Wait = RTT estimate + (len + 131) // 100 ms + 17 ms backoff = 0.2 s.
+        server._rtt_estimate_by_endpoint[(endpoint.host, endpoint.port)] = 0.182
 
         timeout = server._poll_timeout_seconds(10.0, 20.0)
 
@@ -82,7 +84,6 @@ class UdpServerRuntimeTests(unittest.TestCase):
 
     def test_run_logs_and_continues_after_recvfrom_os_error(self) -> None:
         runtime_errors = (
-            BlockingIOError(errno.EAGAIN, 'Resource temporarily unavailable'),
             OSError('network down'),
             OSError(errno.EBADF, 'Bad file descriptor'),
         )
@@ -107,6 +108,25 @@ class UdpServerRuntimeTests(unittest.TestCase):
                 engine.tick.assert_called()
                 engine.close.assert_called_once_with()
                 self.assertIn('UDP recvfrom failed on', '\n'.join(captured.output))
+
+    def test_run_treats_eagain_from_a_zero_poll_timeout_as_no_datagram(self) -> None:
+        # `settimeout(0)` (a retransmit already due) makes the socket
+        # non-blocking, so an empty queue raises EAGAIN instead of a timeout.
+        engine = Mock()
+        server = SnapUdpServer(config=ServerConfig(), engine=engine, tick_interval_seconds=0.0)
+        fake_socket = _TransientRecvSocket(BlockingIOError(errno.EAGAIN, 'Resource temporarily unavailable'))
+
+        def _stop_on_tick() -> list[object]:
+            server.stop()
+            return []
+
+        engine.tick.side_effect = _stop_on_tick
+
+        with self.assertNoLogs('opensnap.game', level='ERROR'):
+            with patch('opensnap.udp_server.socket.socket', return_value=fake_socket):
+                server.run()
+
+        engine.tick.assert_called()
 
     def test_send_socket_datagram_logs_and_continues_on_os_error(self) -> None:
         send_errors = (

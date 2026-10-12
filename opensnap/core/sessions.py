@@ -13,13 +13,13 @@ from opensnap.core.accounts import Account
 from opensnap.protocol.constants import FLAG_RELIABLE
 from opensnap.protocol.models import Endpoint, SnapMessage
 
-# Reliable receive window. The client holds reliable packets that arrive ahead
-# of a missing sequence and hands them on in order once it arrives; a sequence
-# below the next expected one is a duplicate, ACKed again (MH `0x001fe778`, AM
-# `kkReceiveExtentCheck` `0x002f4d5c`). It keeps at most 16 of its own
-# reliable packets in flight, so a sequence further ahead means the window
-# was lost (a new login on a reused session) and numbering starts again there.
-RELIABLE_RECEIVE_WINDOW = 16
+# Reliable receive order, as the clients keep it (AM `kkReceiveExtentCheck`
+# `0x002f4d84..0x002f4e84`, MH `0x001fe778`, Outbreak F1 `0x001dc7b8`): a packet
+# ahead of a missing sequence is stored and ACKed and handed on in order once
+# the gap is filled, and a gap is never skipped. A sequence below the next
+# expected one is a duplicate, ACKed again. The MH-family receivers store any
+# sequence ahead (no upper bound) and AM never sends more than 16 ahead, so
+# nothing ahead is dropped.
 
 
 class ReliableReceipt(Enum):
@@ -44,11 +44,8 @@ class Session:
     # Highest reliable sequence handled in order (unreliable packets use their own counter).
     last_incoming_sequence: int = -1
     # Reliable datagrams received ahead of a missing sequence: sequence ->
-    # (arrival time, decoded messages), handled once the gap is filled.
-    held_reliable: dict[int, tuple[float, list[SnapMessage]]] = field(default_factory=dict)
-    # Replies to the requester per handled reliable sequence, replayed for a
-    # duplicate.
-    reply_history: dict[int, tuple[SnapMessage, ...]] = field(default_factory=dict)
+    # decoded messages, handled once the gap is filled.
+    held_reliable: dict[int, list[SnapMessage]] = field(default_factory=dict)
     lobby_id: int = 0
     room_id: int = 0
     # Serial of the handoff this runtime session was built from.
@@ -124,7 +121,6 @@ class SessionRegistry:
         session.request_number = 0
         session.last_incoming_sequence = -1
         session.held_reliable.clear()
-        session.reply_history.clear()
 
     def rebind_endpoint(self, session_id: int, endpoint: Endpoint) -> Session | None:
         """Bind an existing session to a new client endpoint."""
@@ -193,9 +189,8 @@ class SessionRegistry:
             return ReliableReceipt.DUPLICATE
 
         last = session.last_incoming_sequence
-        if last < 0 or sequence_number > last + RELIABLE_RECEIVE_WINDOW:
+        if last < 0:
             session.last_incoming_sequence = sequence_number
-            session.held_reliable.clear()
             return ReliableReceipt.DELIVER
         if sequence_number <= last or sequence_number in session.held_reliable:
             return ReliableReceipt.DUPLICATE

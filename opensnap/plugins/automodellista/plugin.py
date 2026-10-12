@@ -326,7 +326,7 @@ class AutoModellistaPlugin(GamePlugin):
         if session is None:
             return []
 
-        # A retry is answered by the engine's reliable replay: a second result
+        # A retry is only ACKed by the engine, never run again: a second result
         # would make `ResultCreateGameRoomCallBack` (`0x00288480`, Beta1
         # `0x002ca360`) clear the room member table and re-enter the room.
         if not _is_allowed_lobby_id(context, session.lobby_id):

@@ -256,7 +256,7 @@ class AutoModellistaBeta1PluginTests(unittest.TestCase):
         )
         self.assertEqual(host_user_callback.payload, struct.pack('>L4sL', room_id, b'USER', 2))
 
-    def test_duplicate_reliable_room_join_replays_only_joiner_result_without_host_callbacks(self) -> None:
+    def test_duplicate_reliable_room_join_is_ack_only_without_host_callbacks(self) -> None:
         endpoint_one = Endpoint(host='127.0.0.1', port=51126)
         endpoint_two = Endpoint(host='127.0.0.2', port=51127)
         host_session = _create_session_via_login(self._engine, endpoint_one, 'test')
@@ -300,18 +300,17 @@ class AutoModellistaBeta1PluginTests(unittest.TestCase):
             message for message in first_result.messages if message.endpoint == endpoint_two
         )
 
-        # An exact reliable retry gets a bare ACK plus the joiner's original
-        # wrapper; the host JOIN and USER count callbacks are not repeated.
+        # An exact reliable retry gets a bare ACK only; the joiner's wrapper is
+        # resent by the transport, and the host callbacks are not repeated.
         duplicate_result = self._engine.handle_datagram(_encode(self._engine, request), endpoint_two)
         self.assertFalse(duplicate_result.errors)
-        self.assertEqual(len(duplicate_result.messages), 2)
+        self.assertEqual(len(duplicate_result.messages), 1)
         ack = duplicate_result.messages[0]
         self.assertEqual(ack.command, commands.CMD_ACK)
         self.assertEqual(ack.endpoint, endpoint_two)
         self.assertEqual(ack.sequence_number, 0)
         self.assertEqual(ack.packet_number, 0)
         self.assertEqual(ack.acknowledge_number, 18)
-        self.assertEqual(duplicate_result.messages[1], first_wrapper)
         self.assertEqual(first_wrapper.endpoint, endpoint_two)
         self.assertEqual(first_wrapper.type_flags & FLAG_RELIABLE, FLAG_RELIABLE)
         self.assertEqual(first_host_callback.command, commands.CMD_JOIN)

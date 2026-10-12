@@ -11,10 +11,8 @@ from opensnap.core.engine import SnapProtocolEngine
 from opensnap.logging_utils import format_hexdump
 from opensnap.protocol.codec import PacketDecodeError, detect_footer_bytes
 from opensnap.protocol.constants import (
-    FLAG_CHANNEL_BITS,
     FLAG_RESPONSE,
     FLAG_RELIABLE,
-    FLAG_ROOM,
     FOOTER_BYTES,
 )
 from opensnap.protocol.models import Endpoint, SnapMessage
@@ -32,7 +30,6 @@ class _ReliablePending:
     datagram: bytes
     last_sent_at: float
     retransmit_attempts: int = 0
-    retry_cap_logged: bool = False
 
 
 class SnapUdpServer:
@@ -99,10 +96,24 @@ class SnapUdpServer:
     separation instead of collapsing both into one ACK rule.
     """
 
-    # `kkSendOperation` adds `0x00c8` (`200 ms`) to the next-send timestamp in
-    # both builds:
-    # - `SLUS_204.98` `0x002e6b64`
-    # - `SLUS_206.42` `0x002ea8f0`
+    # Every unacknowledged reliable packet is resent on its own timer, timed
+    # like the MH-family sender (MH NA `slus_208.96`; the same code in MH EU and
+    # Outbreak F1/F2), which walks every queued item (`0x001fd250`): resend once
+    # `last send + RTT estimate + (len + 131) / 100 ms + backoff` has passed
+    # (`0x001fd2e8..0x001fd328`, send stamp `0x001fe594..0x001fe5f0`, line speed
+    # 100), the backoff starting at 17 ms (`0x00209724`) and growing by 200 ms
+    # per resend (`0x001fd3c0..0x001fd3d8`). The estimate starts at the games'
+    # INITIAL_LATENCY 1600 (`0x003760b0`) and is replaced by each ACK's sample
+    # (`0x00212e78`). A copy sent before the ACK could come back is delivered
+    # twice by these clients when the original waits behind a gap (no dedup:
+    # append `0x002131a8`, consumer `0x00209a00`), so the first resend must
+    # follow the measured round trip. Every copy is ACKed (MH `0x001fe83c`,
+    # AM `0x002f4e78`), so resending until the ACK gets through is safe.
+    _INITIAL_RTT_ESTIMATE_SECONDS = 1.6
+    _INITIAL_BACKOFF_SECONDS = 0.017
+    _BACKOFF_STEP_SECONDS = 0.20
+    _RTT_ESTIMATE_LIMITS_SECONDS = (0.017, 32.0)
+    # Upper bound on one socket wait while reliable packets are pending.
     _RETRANSMIT_INTERVAL_SECONDS = 0.20
     # Idle socket poll fallback. When no reliable packet is pending, the recv
     # loop can sleep longer without smearing the binary-backed `200 ms`
@@ -127,12 +138,6 @@ class SnapUdpServer:
     # session is torn down.
     #_SESSION_INACTIVITY_TIMEOUT_SECONDS = 5.0
     _SESSION_INACTIVITY_TIMEOUT_SECONDS = 60.0
-    # `kkSendOperation` keeps requeueing only while the resend count is `< 5`,
-    # so the server mirrors that as four counted retransmits after the initial
-    # send:
-    # - `SLUS_204.98` `0x002e6b6c`
-    # - `SLUS_206.42` `0x002ea900`
-    _MAX_RETRANSMIT_ATTEMPTS = 4
 
     def __init__(
         self,
@@ -151,6 +156,7 @@ class SnapUdpServer:
         self._deferred_reliable: dict[tuple[str, int, int], deque[SnapMessage]] = {}
         self._footer_bytes_by_endpoint: dict[tuple[str, int], bytes] = {}
         self._last_inbound_at_by_endpoint: dict[tuple[str, int], float] = {}
+        self._rtt_estimate_by_endpoint: dict[tuple[str, int], float] = {}
 
     def run(self) -> None:
         """Run UDP loop until stopped."""
@@ -187,7 +193,8 @@ class SnapUdpServer:
 
                     try:
                         payload, (host, port) = udp_socket.recvfrom(4096)
-                    except socket.timeout:
+                    except (socket.timeout, BlockingIOError):
+                        # A zero poll timeout makes the socket non-blocking.
                         payload = b''
                     except OSError as exc:
                         self._logger.exception(
@@ -217,7 +224,9 @@ class SnapUdpServer:
                         self._remember_footer_variant(payload, endpoint)
                         self._process_transport_acks(payload, endpoint)
                         result = self._engine.handle_datagram(payload, endpoint)
-                        self._apply_room_pending_clears(result.room_pending_clears)
+                        for restarted_endpoint, restarted_session_id in result.reliable_restarts:
+                            self._clear_session_pending(restarted_endpoint, restarted_session_id)
+                            self._clear_session_deferred(restarted_endpoint, restarted_session_id)
                         self._send_messages(udp_socket, result.messages)
                         self._log_engine_errors(endpoint, payload, result.errors)
 
@@ -259,19 +268,44 @@ class SnapUdpServer:
         return min(tick_delay, retransmit_delay, self._RETRANSMIT_INTERVAL_SECONDS)
 
     def _next_retransmit_delay_seconds(self, now: float) -> float | None:
-        """Return seconds until the next oldest pending reliable becomes due."""
+        """Return seconds until the next pending reliable becomes due."""
 
         next_delay: float | None = None
-        for key in self._oldest_pending_keys_by_session():
-            pending = self._reliable_pending.get(key)
-            if pending is None:
-                continue
-            if pending.retransmit_attempts >= self._MAX_RETRANSMIT_ATTEMPTS:
-                continue
-            delay = max(0.0, self._RETRANSMIT_INTERVAL_SECONDS - (now - pending.last_sent_at))
+        for pending in self._reliable_pending.values():
+            delay = max(0.0, self._retransmit_wait(pending) - (now - pending.last_sent_at))
             if next_delay is None or delay < next_delay:
                 next_delay = delay
         return next_delay
+
+    def _retransmit_wait(self, pending: _ReliablePending) -> float:
+        """Return how long one pending reliable waits after its last send."""
+
+        return self._rtt_estimate(pending.endpoint) + (len(pending.datagram) + 131) // 100 / 1000 + self._backoff(pending)
+
+    def _backoff(self, pending: _ReliablePending) -> float:
+        return self._INITIAL_BACKOFF_SECONDS + self._BACKOFF_STEP_SECONDS * pending.retransmit_attempts
+
+    def _rtt_estimate(self, endpoint: Endpoint) -> float:
+        return self._rtt_estimate_by_endpoint.get((endpoint.host, endpoint.port), self._INITIAL_RTT_ESTIMATE_SECONDS)
+
+    def _sample_rtt(self, pending: _ReliablePending, now: float) -> None:
+        """Replace the peer's RTT estimate with this ACK's sample, as the MH sender does (`0x00212e78`).
+
+        A resent packet's sample adds the waits already spent on it
+        (`0x00209800..0x00209834`); the sample is clamped to 17 ms..32 s, and
+        one 11 times the old estimate or more becomes ten times it
+        (`0x00212f04..0x00212f78`).
+        """
+
+        old = self._rtt_estimate(pending.endpoint)
+        sample = now - pending.last_sent_at
+        if pending.retransmit_attempts:
+            sample += pending.retransmit_attempts * old + self._backoff(pending)
+        low, high = self._RTT_ESTIMATE_LIMITS_SECONDS
+        sample = min(max(sample, low), high)
+        if sample >= old * 11:
+            sample = old * 10
+        self._rtt_estimate_by_endpoint[(pending.endpoint.host, pending.endpoint.port)] = sample
 
     def _send_messages(self, udp_socket: socket.socket, messages: list[SnapMessage]) -> None:
         """Encode and send outbound messages.
@@ -356,46 +390,6 @@ class SnapUdpServer:
             last_sent_at=send_time,
         )
 
-    def _apply_room_pending_clears(self, clears: list[tuple[Endpoint, int]]) -> None:
-        """Drop stale room-channel pending packets for sessions that just left a room."""
-
-        for endpoint, session_id in clears:
-            self._clear_room_pending(endpoint, session_id)
-            self._clear_room_deferred(endpoint, session_id)
-
-    def _clear_room_pending(self, endpoint: Endpoint, session_id: int) -> None:
-        """Remove pending room-channel reliable packets for one endpoint/session."""
-
-        room_keys = [
-            key
-            for key, pending in self._reliable_pending.items()
-            if key[0] == endpoint.host
-            and key[1] == endpoint.port
-            and key[2] == session_id
-            and (pending.type_flags & FLAG_CHANNEL_BITS) == FLAG_ROOM
-        ]
-        for key in room_keys:
-            self._reliable_pending.pop(key, None)
-
-    def _clear_room_deferred(self, endpoint: Endpoint, session_id: int) -> None:
-        """Remove deferred room-channel reliable packets for one endpoint/session."""
-
-        session_key = (endpoint.host, endpoint.port, session_id)
-        deferred = self._deferred_reliable.get(session_key)
-        if not deferred:
-            return
-
-        kept = deque(
-            queued
-            for queued in deferred
-            if (queued.type_flags & FLAG_CHANNEL_BITS) != FLAG_ROOM
-        )
-        if kept:
-            self._deferred_reliable[session_key] = kept
-            return
-
-        self._deferred_reliable.pop(session_key, None)
-
     def _clear_reliable_pending(self, endpoint: Endpoint, session_id: int, acknowledge_number: int) -> None:
         """Clear one exactly acknowledged reliable packet for one peer/session."""
 
@@ -407,8 +401,11 @@ class SnapUdpServer:
             and key[2] == session_id
             and key[3] == acknowledge_number
         ]
+        now = time.monotonic()
         for key in keys_to_remove:
-            self._reliable_pending.pop(key, None)
+            pending = self._reliable_pending.pop(key, None)
+            if pending is not None:
+                self._sample_rtt(pending, now)
 
     def _retransmit_due(self, udp_socket: socket.socket) -> None:
         """Retransmit due reliable packets."""
@@ -418,16 +415,16 @@ class SnapUdpServer:
 
         now = time.monotonic()
 
-        for key in self._oldest_pending_keys_by_session():
+        for key in sorted(self._reliable_pending):
             pending = self._reliable_pending.get(key)
             if pending is None:
                 continue
             if self._drop_missing_session_pending(pending):
                 continue
-            if pending.retransmit_attempts >= self._MAX_RETRANSMIT_ATTEMPTS:
-                self._handle_capped_pending(udp_socket, pending, now)
+            if self._peer_is_inactive(pending.endpoint, now):
+                self._timeout_session(udp_socket, pending)
                 continue
-            if (now - pending.last_sent_at) < self._RETRANSMIT_INTERVAL_SECONDS:
+            if (now - pending.last_sent_at) < self._retransmit_wait(pending):
                 continue
 
             self._logger.debug(
@@ -452,51 +449,6 @@ class SnapUdpServer:
                 continue
             pending.retransmit_attempts += 1
             pending.last_sent_at = now
-
-    def _handle_capped_pending(
-        self,
-        udp_socket: socket.socket,
-        pending: _ReliablePending,
-        now: float,
-    ) -> None:
-        """Handle one reliable packet after it exhausts the fast retry budget."""
-
-        if not pending.retry_cap_logged:
-            pending.retry_cap_logged = True
-            self._logger.warning(
-                (
-                    'Reliable packet 0x%02x to %s:%d '
-                    '(sess=0x%08x seq=%d) reached retry cap; '
-                    'keeping it pending while transport timeout is being watched.'
-                ),
-                pending.command,
-                pending.endpoint.host,
-                pending.endpoint.port,
-                pending.session_id,
-                pending.sequence_number,
-            )
-
-        if self._peer_is_inactive(pending.endpoint, now):
-            self._timeout_session(udp_socket, pending)
-            return
-
-        # After the fourth retry the client leaves the packet in timeout-watch
-        # state; it does not keep requeueing it on the normal `200 ms` resend
-        # cadence.
-        return
-
-    def _oldest_pending_keys_by_session(self) -> list[tuple[str, int, int, int]]:
-        """Return the oldest pending reliable packet per endpoint/session."""
-
-        oldest_keys: list[tuple[str, int, int, int]] = []
-        seen_sessions: set[tuple[str, int, int]] = set()
-        for key in sorted(self._reliable_pending):
-            session_key = key[:3]
-            if session_key in seen_sessions:
-                continue
-            seen_sessions.add(session_key)
-            oldest_keys.append(key)
-        return oldest_keys
 
     def _drop_missing_session_pending(self, pending: _ReliablePending) -> bool:
         """Drop reliable transport state for sessions that no longer exist."""
@@ -549,6 +501,7 @@ class SnapUdpServer:
 
         self._footer_bytes_by_endpoint.pop((endpoint.host, endpoint.port), None)
         self._last_inbound_at_by_endpoint.pop((endpoint.host, endpoint.port), None)
+        self._rtt_estimate_by_endpoint.pop((endpoint.host, endpoint.port), None)
 
     def _timeout_session(self, udp_socket: socket.socket, pending: _ReliablePending) -> None:
         """Fail one peer session after reliable retransmits outlive inbound activity."""

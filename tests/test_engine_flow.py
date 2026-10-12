@@ -110,6 +110,45 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(kics_result.messages[0].command, 0x29)
         self.assertEqual(get_u32(kics_result.messages[0].payload, 8), session_id)
 
+    def test_kics_result_follows_bootstrap_unreliable_sequence_after_reliable_check(self) -> None:
+        """AM release sends the login check reliably (0x41, `b0 98`) and drops an
+        unreliable packet numbered below the last one it accepted plus one
+        (`0x002f5028`), which the KICS login does not reset; the KICS result
+        must follow the bootstrap's unreliable 0x40, not its reliable 0x2d."""
+
+        config = self._config
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        endpoint = Endpoint(host='127.0.0.1', port=50004)
+
+        swan = engine.handle_datagram(_encode(SnapMessage(
+            endpoint=endpoint, type_flags=FLAG_CHANNEL_BITS, packet_number=0,
+            command=commands.CMD_LOGIN_CLIENT, session_id=0, sequence_number=0,
+            acknowledge_number=0, payload=login_client_payload(b'test'),
+        )), endpoint).messages[0]
+        self.assertFalse(swan.type_flags & FLAG_RELIABLE)
+        session_id = swan.session_id
+
+        success = engine.handle_datagram(_encode(SnapMessage(
+            endpoint=endpoint, type_flags=FLAG_CHANNEL_BITS | FLAG_RELIABLE, packet_number=0,
+            command=commands.CMD_BOOTSTRAP_LOGIN_SWAN_CHECK, session_id=session_id, sequence_number=0,
+            acknowledge_number=0,
+            payload=_build_valid_bootstrap_check_payload(config.server.bootstrap_key, config.server.server_secret),
+        )), endpoint).messages[0]
+        self.assertEqual(success.command, commands.CMD_BOOTSTRAP_LOGIN_SUCCESS)
+        handoff = engine._storage.handoffs.get(session_id)  # noqa: SLF001
+        self.assertEqual(handoff.sequence_number, swan.sequence_number)
+
+        team_payload = bytearray(0x130)
+        team_payload[0x128:0x12F] = b'team-a\x00'
+        kics = engine.handle_datagram(_encode(SnapMessage(
+            endpoint=endpoint, type_flags=FLAG_CHANNEL_BITS, packet_number=0,
+            command=commands.CMD_LOGIN_TO_KICS, session_id=session_id, sequence_number=1,
+            acknowledge_number=0, payload=bytes(team_payload),
+        )), endpoint).messages
+        result = [m for m in kics if m.command == 0x29][0]
+        self.assertFalse(result.type_flags & FLAG_RELIABLE)
+        self.assertGreater(result.sequence_number, swan.sequence_number)
+
     def test_login_and_kics_flow_tolerates_zero_sequence_reuse(self) -> None:
         """Keep the observed bootstrap/login sequence-0 reuse behavior."""
 
@@ -815,7 +854,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(result.messages[0].command, commands.CMD_RESULT_WRAPPER)
         self.assertEqual(struct.unpack_from('>2L', result.messages[0].payload), (0x06, 0))
 
-    def test_duplicate_reliable_room_join_replays_only_joiner_result(self) -> None:
+    def test_duplicate_reliable_room_join_is_ack_only(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint_one = Endpoint(host='127.0.0.1', port=50110)
@@ -849,27 +888,19 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(first_callback.endpoint, endpoint_one)
         self.assertEqual(first_callback.session_id, host_session)
 
-        # The engine answers the retry with a bare ACK plus the joiner's cached
-        # result; the host's JOIN callback is recovered by the plugin, not here.
+        # The retry gets only a bare ACK: the result is reliable and resent by
+        # the transport until ACKed, and the join is not run again.
         duplicate_result = engine.handle_datagram(_encode(join_request), endpoint_two)
         self.assertFalse(duplicate_result.errors)
-        self.assertEqual(len(duplicate_result.messages), 2)
+        self.assertEqual(len(duplicate_result.messages), 1)
         ack = duplicate_result.messages[0]
         self.assertEqual(ack.command, commands.CMD_ACK)
         self.assertEqual(ack.endpoint, endpoint_two)
         self.assertEqual(ack.sequence_number, 0)
         self.assertEqual(ack.packet_number, 0)
         self.assertEqual(ack.acknowledge_number, 18)
-        duplicate_wrapper = duplicate_result.messages[1]
-        self.assertEqual(duplicate_wrapper.command, commands.CMD_RESULT_WRAPPER)
-        self.assertEqual(duplicate_wrapper.endpoint, endpoint_two)
-        self.assertEqual(struct.unpack_from('>2L', duplicate_wrapper.payload), (0x06, 0))
-        self.assertEqual(duplicate_wrapper.type_flags, first_wrapper.type_flags)
-        self.assertEqual(duplicate_wrapper.sequence_number, first_wrapper.sequence_number)
-        self.assertEqual(duplicate_wrapper.payload, first_wrapper.payload)
-        self.assertFalse(any(message.endpoint == endpoint_one for message in duplicate_result.messages))
 
-    def test_duplicate_reliable_room_join_replays_only_joiner_result_after_intermediate_sync(self) -> None:
+    def test_duplicate_reliable_room_join_after_intermediate_sync_is_ack_only(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint_one = Endpoint(host='127.0.0.1', port=50120)
@@ -911,19 +942,13 @@ class EngineFlowTests(unittest.TestCase):
 
         stale_duplicate_result = engine.handle_datagram(_encode(join_request), endpoint_two)
         self.assertFalse(stale_duplicate_result.errors)
-        self.assertEqual(len(stale_duplicate_result.messages), 2)
+        self.assertEqual(len(stale_duplicate_result.messages), 1)
         ack = stale_duplicate_result.messages[0]
         self.assertEqual(ack.command, commands.CMD_ACK)
         self.assertEqual(ack.endpoint, endpoint_two)
         self.assertEqual(ack.sequence_number, 0)
         self.assertEqual(ack.packet_number, 0)
         self.assertEqual(ack.acknowledge_number, 4)
-        self.assertEqual(stale_duplicate_result.messages[1].command, commands.CMD_RESULT_WRAPPER)
-        self.assertEqual(stale_duplicate_result.messages[1].endpoint, endpoint_two)
-        self.assertEqual(stale_duplicate_result.messages[1].sequence_number, join_result.messages[0].sequence_number)
-        self.assertEqual(stale_duplicate_result.messages[1].payload, join_result.messages[0].payload)
-        # No host JOIN callback in the replay.
-        self.assertFalse(any(message.endpoint == endpoint_one for message in stale_duplicate_result.messages))
 
     def test_room_join_does_not_enqueue_background_retry_callbacks(self) -> None:
         config = self._config
@@ -979,7 +1004,9 @@ class EngineFlowTests(unittest.TestCase):
         leave_result = engine.handle_datagram(_encode(leave_request), endpoint_two)
         self.assertFalse(leave_result.errors)
         self.assertEqual(len(leave_result.messages), 2)
-        self.assertEqual(leave_result.room_pending_clears, [(endpoint_two, leaver_session)])
+        # Numbered reliable packets are never dropped: the client's window
+        # does not move on a room exit, so a dropped one is a permanent gap.
+        self.assertEqual(leave_result.reliable_restarts, [])
 
         result_wrapper = leave_result.messages[0]
         callback = leave_result.messages[1]
@@ -994,7 +1021,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(callback.type_flags & FLAG_RELIABLE, 0)
         self.assertEqual(struct.unpack('>L', callback.payload)[0], leaver_session)
 
-    def test_login_to_kics_reentry_clears_room_state_and_room_pending(self) -> None:
+    def test_login_to_kics_reentry_clears_room_state_and_restarts_reliable_transport(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint = Endpoint(host='127.0.0.1', port=50124)
@@ -1021,7 +1048,9 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(relogin_result.messages), 1)
         self.assertEqual(relogin_result.messages[0].command, commands.CMD_RESULT_LOGIN_TO_KICS)
         self.assertEqual(relogin_result.messages[0].session_id, host_session)
-        self.assertEqual(relogin_result.room_pending_clears, [(endpoint, host_session)])
+        # The client restarts its reliable numbering at the KICS login, so the
+        # transport drops what it still holds under the old numbering.
+        self.assertEqual(relogin_result.reliable_restarts, [(endpoint, host_session)])
         self.assertEqual(engine._sessions.get(host_session).room_id, 0)
         self.assertIsNone(engine._rooms.get(room_id))
 
@@ -1118,7 +1147,7 @@ class EngineFlowTests(unittest.TestCase):
         leave_result = engine.handle_datagram(_encode(leave_request), endpoint_one)
         self.assertFalse(leave_result.errors)
         self.assertEqual(len(leave_result.messages), 2)
-        self.assertEqual(leave_result.room_pending_clears, [(endpoint_one, host_session)])
+        self.assertEqual(leave_result.reliable_restarts, [])
 
         result_wrapper = leave_result.messages[0]
         leave_callback = leave_result.messages[1]
@@ -1763,7 +1792,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(change.acknowledge_number, 5)
         self.assertEqual(struct.unpack_from('>2L', change.payload), (0x08, 0))
 
-    def test_duplicate_reliable_multi_start_bundle_replays_only_the_requesters_answers(self) -> None:
+    def test_duplicate_reliable_multi_start_bundle_is_ack_only(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint_one = Endpoint(host='127.0.0.1', port=50098)
@@ -1824,16 +1853,11 @@ class EngineFlowTests(unittest.TestCase):
         # Embedded children are not run again: the first relay is already
         # retried by the server, and a re-relay would reach the peer under a new
         # sequence it cannot drop (a late `0x8008` clears the member table). The
-        # requester gets a bare ACK and its reliable messages again, sequences
-        # included, which its receive window drops if they arrived.
-        to_requester = [
-            message for message in first_result.messages
-            if message.endpoint == endpoint_one and message.type_flags & FLAG_RELIABLE
-        ]
+        # requester gets a bare ACK only; its reliable answers are resent by the
+        # transport until ACKed.
+        self.assertEqual(len(duplicate_result.messages), 1)
         self.assertEqual(duplicate_result.messages[0].command, commands.CMD_ACK)
         self.assertEqual(duplicate_result.messages[0].acknowledge_number, 5)
-        self.assertEqual(duplicate_result.messages[1:], to_requester)
-        self.assertNotIn(endpoint_two, [message.endpoint for message in duplicate_result.messages])
 
     def test_duplicate_reliable_multi_start_bundle_does_not_rebroadcast_embedded_send(self) -> None:
         config = self._config
@@ -1897,20 +1921,8 @@ class EngineFlowTests(unittest.TestCase):
             endpoint_one,
         )
         self.assertFalse(duplicate_result.errors)
-        # No relay reaches a peer again; the sender's own copy is replayed
-        # under its original sequence.
-        self.assertNotIn(
-            endpoint_two,
-            [message.endpoint for message in duplicate_result.messages if message.command == commands.CMD_SEND],
-        )
-        self.assertEqual(
-            sum(1 for message in duplicate_result.messages if message.command == commands.CMD_RESULT_WRAPPER),
-            1,
-        )
-        self.assertEqual(
-            sum(1 for message in duplicate_result.messages if message.command == commands.CMD_ACK),
-            1,
-        )
+        # No relay reaches a peer again, and the sender gets a bare ACK only.
+        self.assertEqual([message.command for message in duplicate_result.messages], [commands.CMD_ACK])
 
     def test_multi_send_subcommand_1468_relays_to_other_room_members_only(self) -> None:
         config = self._config
@@ -2496,7 +2508,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(room.max_players, 2)
         self.assertEqual(room.members, {host_session, guest_session})
 
-    def test_create_room_reliable_retransmit_reuses_previous_result(self) -> None:
+    def test_create_room_reliable_retransmit_is_ack_only(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint = Endpoint(host='127.0.0.1', port=50041)
@@ -2518,17 +2530,13 @@ class EngineFlowTests(unittest.TestCase):
 
         second_result = engine.handle_datagram(_encode(request), endpoint)
         self.assertFalse(second_result.errors)
-        self.assertEqual(len(second_result.messages), 2)
+        self.assertEqual(len(second_result.messages), 1)
         ack = second_result.messages[0]
         self.assertEqual(ack.command, commands.CMD_ACK)
         self.assertEqual(ack.endpoint, endpoint)
         self.assertEqual(ack.sequence_number, 0)
         self.assertEqual(ack.packet_number, 0)
         self.assertEqual(ack.acknowledge_number, 4)
-        _, second_room_id = struct.unpack_from('>2L', second_result.messages[1].payload)
-        self.assertEqual(first_room_id, second_room_id)
-        # Original sequence: the client drops it if the first result arrived.
-        self.assertEqual(second_result.messages[1], first_result.messages[0])
 
     def test_create_room_normalizes_event_no_password_sentinel(self) -> None:
         config = self._config
@@ -2734,7 +2742,7 @@ class EngineFlowTests(unittest.TestCase):
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
-            sequence_number=22,
+            sequence_number=5,
             acknowledge_number=0,
             payload=payload,
         )
@@ -2754,9 +2762,9 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(duplicate_result.messages[0].endpoint, endpoint_one)
         self.assertEqual(duplicate_result.messages[0].sequence_number, 0)
         self.assertEqual(duplicate_result.messages[0].packet_number, 0)
-        self.assertEqual(duplicate_result.messages[0].acknowledge_number, 22)
+        self.assertEqual(duplicate_result.messages[0].acknowledge_number, 5)
 
-    def test_duplicate_reliable_leave_replays_result_wrapper(self) -> None:
+    def test_duplicate_reliable_leave_is_ack_only(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint = Endpoint(host='127.0.0.1', port=50140)
@@ -2771,7 +2779,7 @@ class EngineFlowTests(unittest.TestCase):
             packet_number=0,
             command=commands.CMD_LEAVE,
             session_id=session_id,
-            sequence_number=22,
+            sequence_number=5,
             acknowledge_number=0,
             payload=b'',
         )
@@ -2780,26 +2788,18 @@ class EngineFlowTests(unittest.TestCase):
         self.assertFalse(first_result.errors)
         self.assertEqual(len(first_result.messages), 1)
         self.assertEqual(first_result.messages[0].command, commands.CMD_RESULT_WRAPPER)
-        first_wrapper = first_result.messages[0]
 
         duplicate_result = engine.handle_datagram(_encode(request), endpoint)
         self.assertFalse(duplicate_result.errors)
-        self.assertEqual(len(duplicate_result.messages), 2)
+        self.assertEqual(len(duplicate_result.messages), 1)
         ack = duplicate_result.messages[0]
         self.assertEqual(ack.command, commands.CMD_ACK)
         self.assertEqual(ack.endpoint, endpoint)
         self.assertEqual(ack.sequence_number, 0)
         self.assertEqual(ack.packet_number, 0)
-        self.assertEqual(ack.acknowledge_number, 22)
-        duplicate_wrapper = duplicate_result.messages[1]
-        self.assertEqual(duplicate_wrapper.command, commands.CMD_RESULT_WRAPPER)
-        self.assertEqual(duplicate_wrapper.endpoint, endpoint)
-        self.assertEqual(duplicate_wrapper.acknowledge_number, 22)
-        self.assertEqual(duplicate_wrapper.type_flags & FLAG_RELIABLE, FLAG_RELIABLE)
-        self.assertEqual(duplicate_wrapper.sequence_number, first_wrapper.sequence_number)
-        self.assertEqual(duplicate_wrapper.payload, first_wrapper.payload)
+        self.assertEqual(ack.acknowledge_number, 5)
 
-    def test_duplicate_reliable_lobby_leave_replays_result_wrapper(self) -> None:
+    def test_duplicate_reliable_lobby_leave_is_ack_only(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint = Endpoint(host='127.0.0.1', port=50141)
@@ -2822,24 +2822,16 @@ class EngineFlowTests(unittest.TestCase):
         self.assertFalse(first_result.errors)
         self.assertEqual(len(first_result.messages), 1)
         self.assertEqual(first_result.messages[0].command, commands.CMD_RESULT_WRAPPER)
-        first_wrapper = first_result.messages[0]
 
         duplicate_result = engine.handle_datagram(_encode(request), endpoint)
         self.assertFalse(duplicate_result.errors)
-        self.assertEqual(len(duplicate_result.messages), 2)
+        self.assertEqual(len(duplicate_result.messages), 1)
         ack = duplicate_result.messages[0]
         self.assertEqual(ack.command, commands.CMD_ACK)
         self.assertEqual(ack.endpoint, endpoint)
         self.assertEqual(ack.sequence_number, 0)
         self.assertEqual(ack.packet_number, 0)
         self.assertEqual(ack.acknowledge_number, 23)
-        duplicate_wrapper = duplicate_result.messages[1]
-        self.assertEqual(duplicate_wrapper.command, commands.CMD_RESULT_WRAPPER)
-        self.assertEqual(duplicate_wrapper.endpoint, endpoint)
-        self.assertEqual(duplicate_wrapper.acknowledge_number, 23)
-        self.assertEqual(duplicate_wrapper.type_flags & FLAG_RELIABLE, FLAG_RELIABLE)
-        self.assertEqual(duplicate_wrapper.sequence_number, first_wrapper.sequence_number)
-        self.assertEqual(duplicate_wrapper.payload, first_wrapper.payload)
 
     def test_duplicate_reliable_room_leave_does_not_repeat_peer_callback(self) -> None:
         config = self._config
@@ -2861,7 +2853,7 @@ class EngineFlowTests(unittest.TestCase):
             packet_number=0,
             command=commands.CMD_LEAVE,
             session_id=leaver_session,
-            sequence_number=22,
+            sequence_number=5,
             acknowledge_number=0,
             payload=b'',
         )
@@ -2872,24 +2864,19 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(first_result.messages[0].command, commands.CMD_RESULT_WRAPPER)
         self.assertEqual(first_result.messages[1].command, commands.CMD_LEAVE)
         self.assertEqual(first_result.messages[1].endpoint, endpoint_two)
-        first_wrapper = first_result.messages[0]
 
         duplicate_result = engine.handle_datagram(_encode(request), endpoint_one)
         self.assertFalse(duplicate_result.errors)
-        self.assertEqual(len(duplicate_result.messages), 2)
+        self.assertEqual(len(duplicate_result.messages), 1)
         ack = duplicate_result.messages[0]
         self.assertEqual(ack.command, commands.CMD_ACK)
         self.assertEqual(ack.endpoint, endpoint_one)
         self.assertEqual(ack.sequence_number, 0)
         self.assertEqual(ack.packet_number, 0)
-        self.assertEqual(ack.acknowledge_number, 22)
-        self.assertEqual(duplicate_result.messages[1].command, commands.CMD_RESULT_WRAPPER)
-        self.assertEqual(duplicate_result.messages[1].endpoint, endpoint_one)
-        self.assertEqual(duplicate_result.messages[1].sequence_number, first_wrapper.sequence_number)
-        self.assertEqual(duplicate_result.messages[1].payload, first_wrapper.payload)
+        self.assertEqual(ack.acknowledge_number, 5)
         self.assertFalse(any(message.endpoint == endpoint_two for message in duplicate_result.messages))
 
-    def test_stale_duplicate_reliable_room_leave_gets_its_original_wrapper(self) -> None:
+    def test_stale_duplicate_reliable_room_leave_is_ack_only(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint = Endpoint(host='127.0.0.1', port=50144)
@@ -2904,7 +2891,7 @@ class EngineFlowTests(unittest.TestCase):
             packet_number=0,
             command=commands.CMD_LEAVE,
             session_id=session_id,
-            sequence_number=22,
+            sequence_number=5,
             acknowledge_number=0,
             payload=b'',
         )
@@ -2914,7 +2901,7 @@ class EngineFlowTests(unittest.TestCase):
             packet_number=0,
             command=commands.CMD_LEAVE,
             session_id=session_id,
-            sequence_number=23,
+            sequence_number=6,
             acknowledge_number=0,
             payload=b'',
         )
@@ -2927,19 +2914,17 @@ class EngineFlowTests(unittest.TestCase):
         self.assertFalse(newer_result.errors)
         self.assertEqual(newer_result.messages[0].command, commands.CMD_RESULT_WRAPPER)
 
-        # Still within the replay window: bare ACK plus the room leave's own
-        # wrapper, not the newer lobby leave's.
+        # A stale retry is ACKed again and not run again.
         stale_duplicate = engine.handle_datagram(_encode(room_leave), endpoint)
         self.assertFalse(stale_duplicate.errors)
-        self.assertEqual(len(stale_duplicate.messages), 2)
+        self.assertEqual(len(stale_duplicate.messages), 1)
         self.assertEqual(stale_duplicate.messages[0].command, commands.CMD_ACK)
         self.assertEqual(stale_duplicate.messages[0].endpoint, endpoint)
         self.assertEqual(stale_duplicate.messages[0].sequence_number, 0)
         self.assertEqual(stale_duplicate.messages[0].packet_number, 0)
-        self.assertEqual(stale_duplicate.messages[0].acknowledge_number, 22)
-        self.assertEqual(stale_duplicate.messages[1], first_result.messages[0])
+        self.assertEqual(stale_duplicate.messages[0].acknowledge_number, 5)
 
-    def test_stale_duplicate_reliable_lobby_leave_gets_its_original_wrapper(self) -> None:
+    def test_stale_duplicate_reliable_lobby_leave_is_ack_only(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
         endpoint = Endpoint(host='127.0.0.1', port=50145)
@@ -2976,17 +2961,15 @@ class EngineFlowTests(unittest.TestCase):
         self.assertFalse(newer_result.errors)
         self.assertEqual(newer_result.messages[0].command, commands.CMD_RESULT_WRAPPER)
 
-        # Still within the replay window: bare ACK plus the first leave's own
-        # wrapper, not the newer leave's.
+        # A stale retry is ACKed again and not run again.
         stale_duplicate = engine.handle_datagram(_encode(first_leave), endpoint)
         self.assertFalse(stale_duplicate.errors)
-        self.assertEqual(len(stale_duplicate.messages), 2)
+        self.assertEqual(len(stale_duplicate.messages), 1)
         self.assertEqual(stale_duplicate.messages[0].command, commands.CMD_ACK)
         self.assertEqual(stale_duplicate.messages[0].endpoint, endpoint)
         self.assertEqual(stale_duplicate.messages[0].sequence_number, 0)
         self.assertEqual(stale_duplicate.messages[0].packet_number, 0)
         self.assertEqual(stale_duplicate.messages[0].acknowledge_number, 23)
-        self.assertEqual(stale_duplicate.messages[1], first_result.messages[0])
 
     def test_duplicate_reliable_send_target_is_ack_only(self) -> None:
         config = self._config
@@ -3049,7 +3032,7 @@ class EngineFlowTests(unittest.TestCase):
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
-            sequence_number=1482,
+            sequence_number=5,
             acknowledge_number=1619,
             payload=bytes.fromhex(
                 '4020000029f44027e8147f3f68d78e3d'
@@ -3073,7 +3056,7 @@ class EngineFlowTests(unittest.TestCase):
             packet_number=0,
             command=commands.CMD_SEND,
             session_id=sender_session,
-            sequence_number=1482,
+            sequence_number=5,
             acknowledge_number=1621,
             payload=request.payload,
         )

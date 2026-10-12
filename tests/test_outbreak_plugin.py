@@ -264,15 +264,15 @@ class OutbreakLobbyTests(unittest.TestCase):
         accepted = self._send(guest, commands.CMD_JOIN, _join_payload(room_id, b'leon'))
         self.assertEqual(self._to(accepted, guest, commands.CMD_RESULT_WRAPPER)[0].command, commands.CMD_RESULT_WRAPPER)
 
-    def test_reliable_create_retry_replays_the_same_room(self) -> None:
+    def test_reliable_create_retry_creates_nothing_again(self) -> None:
         host = self.players[0]
         sequence = self.sequences[host[1]] + 1
         self.sequences[host[1]] = sequence
         first = self._send(host, commands.CMD_CREATE_GAME_ROOM, _create_payload(), LOBBY_FLAGS, sequence=sequence)
         retry = self._send(host, commands.CMD_CREATE_GAME_ROOM, _create_payload(), LOBBY_FLAGS, sequence=sequence)
-        wrapper = [message.payload for message in first + retry if message.command == commands.CMD_RESULT_WRAPPER]
-        self.assertEqual(len(wrapper), 2)
-        self.assertEqual(wrapper[0], wrapper[1])
+        self.assertEqual(len([message for message in first if message.command == commands.CMD_RESULT_WRAPPER]), 1)
+        # The retry is only ACKed; the answer is resent by the transport.
+        self.assertEqual([message.command for message in retry], [commands.CMD_ACK])
         listing = self._send(host, commands.CMD_QUERY_GAME_ROOMS, struct.pack('>L', FREE_AREA_ID), LOBBY_FLAGS)[0]
         self.assertEqual(struct.unpack_from('>L', listing.payload, 8)[0], 1)
 

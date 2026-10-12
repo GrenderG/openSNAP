@@ -528,6 +528,22 @@ class MonsterHunterFlowTests(unittest.TestCase):
                     for index in range(struct.unpack_from('>L', rooms[0].payload, 8)[0])]
         self.assertEqual(room_ids, [town_id])
 
+    def test_quest_return_without_its_town_listing_never_makes_an_unnamed_town(self) -> None:
+        # `11 10 2026 1538.pcapng`: a hunter that had lost its Town listing came
+        # back from a quest and its STAT turned the nameless quest room into a
+        # Town row with the Allsburg rules, which then spread to later quests.
+        town_id = self._town_with_residents()
+        host, guest, waiting = self.players
+        self._join(waiting, town_id)
+        quest_id = self._depart(host, guest, town_id)
+        self.engine._rooms.leave(town_id, guest[1])  # noqa: SLF001
+        quest_rules = self.engine._rooms.get(quest_id).rules  # noqa: SLF001
+
+        guest_return = self._stat(guest, TOWN_RULES)
+
+        self.assertEqual([message.command for message in guest_return], [commands.CMD_RESULT_WRAPPER])
+        self.assertEqual(self.engine._rooms.get(quest_id).rules, quest_rules)  # noqa: SLF001
+
     def _posted(self, marker: int, town_room: int) -> bytes:
         """A profile posting a quest (party state 1) in the Town room `town_room`."""
 
@@ -712,13 +728,13 @@ class MonsterHunterFlowTests(unittest.TestCase):
 
         self.assertEqual(relayed, [0, 1, 2])
 
-    def test_retried_request_gets_its_own_answer_again_not_a_second_one(self) -> None:
+    def test_retried_request_is_acked_not_answered_again(self) -> None:
         # Live capture (issue 5): the status request was resent at 200 ms, the
         # server ran it again and sent a second result under a new sequence, and
         # the client took it as the result of its next request (the Town create,
         # whose room id was still -1). Results are routed by selector into fixed
-        # callbacks (`0x00202e10`), so only the client's receive window can drop
-        # a repeat: answers are reliable and replayed under their sequence.
+        # callbacks (`0x00202e10`), so a retry is only ACKed: the answer is
+        # reliable and resent by the transport until ACKed.
         host = self.players[0]
         status = struct.pack('>L', 0x97200001)
         sequence = self._next_sequence(host)
@@ -727,11 +743,8 @@ class MonsterHunterFlowTests(unittest.TestCase):
 
         self.assertEqual(len(first), 1)
         self.assertEqual(first[0].type_flags & FLAG_RELIABLE, FLAG_RELIABLE)
-        # A bare ACK plus the very same answer, sequence included: the client's
-        # receive window drops it if the first answer arrived.
-        self.assertEqual([message.command for message in retry], [commands.CMD_ACK, commands.CMD_RESULT_WRAPPER])
+        self.assertEqual([message.command for message in retry], [commands.CMD_ACK])
         self.assertEqual(retry[0].sequence_number, 0)
-        self.assertEqual(retry[1], first[0])
 
         created = self._create(host, TOWN_RULES)
         self.assertGreater(created, 0)
@@ -777,7 +790,11 @@ class MonsterHunterFlowTests(unittest.TestCase):
 
         self.assertEqual(replies, [])
 
-    def test_a_gap_that_never_fills_is_given_up(self) -> None:
+    def test_a_gap_is_never_skipped(self) -> None:
+        # The client's window never skips a missing sequence (AM
+        # `kkReceiveExtentCheck`), and MH resends for 30 s and more: a late
+        # departure selector handed on after later ones fails the guest's quest
+        # join (`Chaoz and Ike recieved an error ...pcapng`, selector 5 after 8).
         now = [1000.0]
         self.engine._clock = lambda: now[0]  # noqa: SLF001
         host = self.players[0]
@@ -788,16 +805,15 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self.assertEqual([message.command for message in
                           self._send(host, commands.CMD_CHANGE_USER_PROPERTY, self._profile(8), sequence=later)],
                          [commands.CMD_ACK])
-        now[0] += 1.0
+        now[0] += 30.0
         self.assertEqual([message for message in self.engine.tick()
                           if message.command == commands.CMD_RESULT_WRAPPER], [])
-        now[0] += 1.5
 
-        released = [message for message in self.engine.tick() if message.command == commands.CMD_RESULT_WRAPPER]
+        handled = self._send(host, commands.CMD_CHANGE_USER_PROPERTY, self._profile(5), sequence=lost)
 
-        self.assertEqual([message.acknowledge_number for message in released], [later])
+        self.assertEqual([message.acknowledge_number for message in handled
+                          if message.command == commands.CMD_RESULT_WRAPPER], [lost, later])
         self.assertEqual(self.plugin._players[host[1]].profile, self._profile(8))  # noqa: SLF001
-        self.assertGreater(later, lost)
 
     def test_town_roster_names_match_each_login_field(self) -> None:
         # A solo Town creator is its Town's master only if the roster spells its
@@ -825,39 +841,37 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from('>2L', callback.payload, 16), (guest[1], self.layout.size))
         self.assertEqual(callback.payload[24:], self._profile(2))
 
-    def test_exact_reliable_create_retry_replays_the_same_room(self) -> None:
+    def test_exact_reliable_create_retry_creates_nothing_again(self) -> None:
         host = self.players[0]
         payload = bytearray(0x2C)
         payload[0x28:0x2C] = struct.pack('>L', TOWN_RULES)
 
-        first = self._send(host, commands.CMD_CREATE_GAME_ROOM, bytes(payload), sequence=50)
-        retry = self._send(host, commands.CMD_CREATE_GAME_ROOM, bytes(payload), sequence=50)
+        sequence = self.sequences.get(host[1], 0) + 1
+        self.sequences[host[1]] = sequence
+        first = self._send(host, commands.CMD_CREATE_GAME_ROOM, bytes(payload), sequence=sequence)
+        retry = self._send(host, commands.CMD_CREATE_GAME_ROOM, bytes(payload), sequence=sequence)
 
-        first_result, = [message for message in first if message.command == commands.CMD_RESULT_WRAPPER]
-        retry_result, = [message for message in retry if message.command == commands.CMD_RESULT_WRAPPER]
-        self.assertEqual(first_result.payload, retry_result.payload)
-        self.assertEqual(first_result.sequence_number, retry_result.sequence_number)
-        # The retry changes no Town, so it announces nothing again.
-        self.assertFalse([message for message in retry if message.command == commands.CMD_CREATE_GAME_ROOM])
+        self.assertEqual(len([message for message in first if message.command == commands.CMD_RESULT_WRAPPER]), 1)
+        # The retry is only ACKed: no second Town, no announcement.
+        self.assertEqual([message.command for message in retry], [commands.CMD_ACK])
         rooms = self._send(host, commands.CMD_QUERY_GAME_ROOMS, struct.pack('>L', AREA_ID), FLAG_CHANNEL_BITS)
         self.assertEqual(struct.unpack_from('>L', rooms[0].payload, 8)[0], 1)
 
-    def test_exact_join_retry_replays_only_the_joiners_result(self) -> None:
+    def test_exact_join_retry_is_acked_only(self) -> None:
         host, guest, _ = self.players
         self._publish(host, self._profile(1))
         self._publish(guest, self._profile(2))
         town_id = self._create(host, TOWN_RULES)
 
-        first = self._send(guest, commands.CMD_JOIN, struct.pack('>L', town_id), sequence=60)
-        retry = self._send(guest, commands.CMD_JOIN, struct.pack('>L', town_id), sequence=60)
+        sequence = self.sequences.get(guest[1], 0) + 1
+        self.sequences[guest[1]] = sequence
+        first = self._send(guest, commands.CMD_JOIN, struct.pack('>L', town_id), sequence=sequence)
+        retry = self._send(guest, commands.CMD_JOIN, struct.pack('>L', town_id), sequence=sequence)
 
         self.assertTrue([m for m in first if m.command == commands.CMD_JOIN and m.endpoint == host[0]])
         # A second join callback would count the member twice (`0x00619430`), so
-        # the host gets nothing; the guest gets a bare ACK and its original result.
-        self.assertEqual([(m.endpoint, m.command) for m in retry],
-                         [(guest[0], commands.CMD_ACK), (guest[0], commands.CMD_RESULT_WRAPPER)])
-        original, = [m for m in first if m.command == commands.CMD_RESULT_WRAPPER]
-        self.assertEqual(retry[1], original)
+        # the host gets nothing; the guest gets a bare ACK only.
+        self.assertEqual([(m.endpoint, m.command) for m in retry], [(guest[0], commands.CMD_ACK)])
 
     def test_town_directory_events_reach_the_area(self) -> None:
         host, guest, other = self.players

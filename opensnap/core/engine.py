@@ -1,6 +1,6 @@
 """Protocol engine orchestrating decode, dispatch, and tick."""
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 import logging
 import time
 from typing import Literal
@@ -32,23 +32,15 @@ from opensnap.core.rooms import RoomRegistry
 from opensnap.core.sessions import ReliableReceipt, Session, SessionRegistry
 
 
-# A gap in a client's reliable sequences older than this is given up (checked
-# on the engine tick): the client resends every 200 ms and stops after four
-# retransmits.
-RELIABLE_GAP_LIMIT_SECONDS = 2.0
-# Reliable requests whose answers are kept for replay: the client has at most
-# 16 reliable packets in flight, so a retry is never more than 16 behind the
-# newest; 32 leaves a margin.
-RELIABLE_REPLY_HISTORY = 32
-
-
 @dataclass(slots=True)
 class EngineResult:
     """Response bundle for one datagram."""
 
     messages: list[SnapMessage]
     errors: list[str]
-    room_pending_clears: list[tuple[Endpoint, int]] = field(default_factory=list)
+    # Sessions whose client restarted its reliable numbering (KICS login): the
+    # transport drops what it still has pending or deferred for them.
+    reliable_restarts: list[tuple[Endpoint, int]] = field(default_factory=list)
 
 
 class SnapProtocolEngine:
@@ -121,8 +113,8 @@ class SnapProtocolEngine:
         )
         outbound: list[SnapMessage] = []
         errors: list[str] = []
-        room_pending_clears: list[tuple[Endpoint, int]] = []
-        self._handle_in_order(messages, outbound, errors, room_pending_clears)
+        reliable_restarts: list[tuple[Endpoint, int]] = []
+        self._handle_in_order(messages, outbound, errors, reliable_restarts)
 
         self._logger.debug(
             'Datagram from %s:%d produced %d outbound message(s) and %d error(s).',
@@ -134,7 +126,7 @@ class SnapProtocolEngine:
         return EngineResult(
             messages=outbound,
             errors=errors,
-            room_pending_clears=list(dict.fromkeys(room_pending_clears)),
+            reliable_restarts=reliable_restarts,
         )
 
     def _handle_in_order(
@@ -142,29 +134,27 @@ class SnapProtocolEngine:
         messages: list[SnapMessage],
         outbound: list[SnapMessage],
         errors: list[str],
-        room_pending_clears: list[tuple[Endpoint, int]],
+        reliable_restarts: list[tuple[Endpoint, int]],
     ) -> None:
         """Handle one datagram, then every held datagram it puts back in order."""
 
         pending = [messages]
         while pending:
-            for session_id in self._handle_datagram_messages(pending.pop(0), outbound, errors, room_pending_clears):
+            for session_id in self._handle_datagram_messages(pending.pop(0), outbound, errors, reliable_restarts):
                 session = self._sessions.get(session_id)
                 if session is not None and session.last_incoming_sequence + 1 in session.held_reliable:
-                    pending.append(session.held_reliable.pop(session.last_incoming_sequence + 1)[1])
+                    pending.append(session.held_reliable.pop(session.last_incoming_sequence + 1))
 
     def _handle_datagram_messages(
         self,
         messages: list[SnapMessage],
         outbound: list[SnapMessage],
         errors: list[str],
-        room_pending_clears: list[tuple[Endpoint, int]],
+        reliable_restarts: list[tuple[Endpoint, int]],
     ) -> set[int]:
         """Handle the messages of one datagram; return the sessions they belong to."""
 
         session_ids: set[int] = set()
-        replies_start = len(outbound)
-        reliable_request: SnapMessage | None = None
         skip_embedded = False
         for index, message in enumerate(messages):
             if skip_embedded and message.embedded_in_multi:
@@ -177,7 +167,6 @@ class SnapProtocolEngine:
             active = self._sessions.get(message.session_id)
             if active is not None:
                 active.last_inbound_at = self._clock()
-            prior_room_id = self._room_id_for_session(message.session_id)
             self._logger.debug(
                 (
                     'Handling command 0x%02x from %s:%d '
@@ -217,29 +206,25 @@ class SnapProtocolEngine:
                         # does for a stored packet, and handle the datagram
                         # once the gap is filled.
                         outbound.append(self._transport_ack(message))
-                        active.held_reliable[message.sequence_number] = (self._clock(), messages[index:])
+                        active.held_reliable[message.sequence_number] = messages[index:]
                         return session_ids
-                    held = active is not None and message.sequence_number in active.held_reliable
                     if receipt is ReliableReceipt.DUPLICATE and active is not None:
-                        # A resend of a held datagram is handled once, in order;
-                        # a resend of a handled request gets the same answers
-                        # again (the client's window drops them).
-                        # Embedded children are not run again either.
-                        answers = () if held else active.reply_history.get(message.sequence_number, ())
+                        # A resend of a held or handled datagram is ACKed again,
+                        # as the client does, and not run again, embedded
+                        # children included. The answers are reliable and resent
+                        # by the transport until ACKed; replaying them could
+                        # deliver one twice (MH-family clients do not dedup a
+                        # packet held behind a gap, `0x00209a00`).
                         outbound.append(self._transport_ack(message))
-                        outbound.extend(replace(answer, endpoint=message.endpoint) for answer in answers)
                         self._logger.debug(
-                            'Duplicate reliable command 0x%02x seq=%d from %s:%d: %s.',
+                            'Duplicate reliable command 0x%02x seq=%d from %s:%d: ACKed again.',
                             message.command,
                             message.sequence_number,
                             message.endpoint.host,
                             message.endpoint.port,
-                            'held' if held else f'replayed {len(answers)} answer(s)',
                         )
                         skip_embedded = True
                         continue
-                    if receipt is ReliableReceipt.DELIVER:
-                        reliable_request = message
 
             if not self._router.has_handler(message.command):
                 payload_preview = message.payload[:32].hex(' ')
@@ -267,8 +252,10 @@ class SnapProtocolEngine:
             try:
                 produced = self._router.dispatch(self._context, message)
                 outbound.extend(produced)
-                if self._should_clear_room_pending_after_message(message, prior_room_id):
-                    room_pending_clears.append((message.endpoint, message.session_id))
+                if message.command == commands.CMD_LOGIN_TO_KICS:
+                    restarted = self._sessions.get_by_endpoint(message.endpoint)
+                    if restarted is not None:
+                        reliable_restarts.append((message.endpoint, restarted.session_id))
                 self._logger.debug(
                     'Handler for command 0x%02x produced %d outbound message(s).',
                     message.command,
@@ -283,59 +270,7 @@ class SnapProtocolEngine:
                 )
                 errors.append(f'Handler error for command 0x{message.command:02x}: {exc}')
 
-        if reliable_request is not None:
-            self._remember_reliable_replies(reliable_request, outbound[replies_start:])
         return session_ids
-
-    def _remember_reliable_replies(self, request: SnapMessage, produced: list[SnapMessage]) -> None:
-        """Keep the reliable answers one reliable request (and its embedded children) got.
-
-        Only the requester's answers are kept: callbacks to other players are
-        not replayed (MH room join `0x00619430` counts a member again).
-        """
-
-        session = self._sessions.get(request.session_id)
-        if session is None:
-            return
-        session.reply_history[request.sequence_number] = tuple(
-            reply for reply in produced
-            if reply.session_id == request.session_id and reply.type_flags & FLAG_RELIABLE
-        )
-        oldest = request.sequence_number - RELIABLE_REPLY_HISTORY
-        for sequence in [sequence for sequence in session.reply_history if sequence <= oldest]:
-            del session.reply_history[sequence]
-
-    def _release_stalled_reliable(self) -> list[SnapMessage]:
-        """Hand on held datagrams whose missing sequence will not come any more.
-
-        The client resends a reliable packet every 200 ms and stops after four
-        retransmits (`kkSendOperation`), so a gap older than
-        `RELIABLE_GAP_LIMIT_SECONDS` at an engine tick is given up.
-        """
-
-        now = self._clock()
-        outbound: list[SnapMessage] = []
-        errors: list[str] = []
-        for session in self._sessions.all():
-            if not session.held_reliable:
-                continue
-            if now - min(arrival for arrival, _ in session.held_reliable.values()) < RELIABLE_GAP_LIMIT_SECONDS:
-                continue
-            first_held = min(session.held_reliable)
-            self._logger.warning(
-                'Session 0x%08x: reliable sequence(s) %d..%d never arrived; handling held packets from %d.',
-                session.session_id,
-                session.last_incoming_sequence + 1,
-                first_held - 1,
-                first_held,
-            )
-            session.last_incoming_sequence = first_held - 1
-            # A released LEAVE's room-pending clear is not applied: the tick
-            # returns messages only.
-            self._handle_in_order(session.held_reliable.pop(first_held)[1], outbound, errors, [])
-        for error in errors:
-            self._logger.error('Held packet error: %s', error)
-        return outbound
 
     def decode_datagram(self, payload: bytes, endpoint: Endpoint) -> list[SnapMessage]:
         """Decode one inbound datagram using the configured game plugin when applicable."""
@@ -360,10 +295,9 @@ class SnapProtocolEngine:
     def tick(self) -> list[SnapMessage]:
         """Run periodic plugin tasks and end sessions idle past their plugin's limit."""
 
-        released = self._release_stalled_reliable()
         if self._plugin is None:
-            return released
-        return released + self._end_idle_sessions() + self._plugin.on_tick(self._context)
+            return []
+        return self._end_idle_sessions() + self._plugin.on_tick(self._context)
 
     def _end_idle_sessions(self) -> list[SnapMessage]:
         assert self._plugin is not None
@@ -411,23 +345,6 @@ class SnapProtocolEngine:
         self._sessions.remove(session.session_id)
         self._handoffs.remove(session.session_id)
         return messages
-
-    def _room_id_for_session(self, session_id: int) -> int:
-        """Return the current room id for one session, or `0` if unknown."""
-
-        session = self._sessions.get(session_id)
-        if session is None:
-            return 0
-        return session.room_id
-
-    def _should_clear_room_pending_after_message(self, message: SnapMessage, prior_room_id: int) -> bool:
-        """Report whether one handled message moved a session out of a room."""
-
-        if message.command not in {commands.CMD_LEAVE, commands.CMD_LOGIN_TO_KICS}:
-            return False
-        if prior_room_id <= 0:
-            return False
-        return self._room_id_for_session(message.session_id) == 0
 
     def resolve_session(self, endpoint: Endpoint, session_id: int) -> Session | None:
         """Resolve one session by id first, then by bound endpoint."""

@@ -66,18 +66,13 @@ class HandlerContext:
             sequence_number = 0
             packet_number = 0
         else:
-            # Answers to reliable requests are sent reliably, and the engine
-            # answers a retried request with a bare ACK plus the same answers
-            # under their original sequence, which the client's reliable
-            # receive window drops if it already has them. The clients route
+            # Answers to reliable requests are sent reliably, so the transport
+            # resends a lost answer until it is ACKed: a retried request is
+            # only ACKed again, never run again, because the clients route
             # results by selector into fixed callbacks with no pending-request
             # check (MH `0x00202e10`, AM `0x002ed0b8`, Outbreak F1 `0x001e0e50`,
-            # F2 `0x001663e8`), so a second answer completes whatever request is
-            # pending next, and an unreliable answer cannot be replayed safely:
-            # MH and Outbreak accept a repeat of their newest unreliable sequence
-            # (MH `0x001fe8bc`, Outbreak F1 `0x001dc8fc`, F2 `0x00161e94`), and AM
-            # drops an unreliable replay once any newer unreliable packet arrived
-            # (`0x002f5028`), ending the wait in error 815.
+            # F2 `0x001663e8`) and a second answer would complete whatever
+            # request is pending next.
             if (
                 command != commands.CMD_ACK
                 and request.type_flags & FLAG_RELIABLE
