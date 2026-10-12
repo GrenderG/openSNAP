@@ -7,13 +7,13 @@ File#2's Notice Board opens the same hard-coded
 service serving File#2 alone shows this module's portal there. Its
 registration menu arrives at the signup page the APP 6110 reply names
 (`opensnap_app.capcom.outbreak2.service`). The rankings are the shared ranking
-pages (`opensnap.plugins.scenario_rankings`) with File#2's boards.
+pages (`opensnap.plugins.outbreak.scenario_rankings`) with File#2's boards.
 """
 
 from opensnap.core.browser_pages import document, panel
 from opensnap.plugins.outbreak2.directory import read_directory
 from opensnap.plugins.outbreak2.ranking_pages import boards
-from opensnap.plugins.scenario_rankings import BROWSER_CLOSE_LINK, RankingLinks, RankingPages
+from opensnap.plugins.outbreak.scenario_rankings import BROWSER_CLOSE_LINK, RankingLinks, RankingPages
 from opensnap.storage.interfaces import RecordStore
 
 PORTAL_DIRECTORY = '/reweb'

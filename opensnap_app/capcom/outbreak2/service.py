@@ -54,7 +54,7 @@ from opensnap_app.capcom.protocol import (
     frame_payload,
     frame_sequence,
 )
-from opensnap_app.capcom.scenario_report import decode_scenario_result
+from opensnap_app.capcom.outbreak.scenario_report import decode_scenario_result
 
 _LOGGER = logging.getLogger('opensnap_app.capcom.outbreak2')
 

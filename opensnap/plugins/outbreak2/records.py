@@ -2,7 +2,7 @@
 
 The Capcom APP service fills these boards from the 6301 result reports
 (`opensnap_app.capcom.outbreak2.results`); the DATABASE pages and the web
-Notice Board rank them (`opensnap.plugins.scenario_rankings`). Addresses are
+Notice Board rank them (`opensnap.plugins.outbreak.scenario_rankings`). Addresses are
 `SLUS_209.84`; `SLES_533.19` holds the same tables in its language overlays
 (`tasks/re_outbreak2_results.md`).
 """

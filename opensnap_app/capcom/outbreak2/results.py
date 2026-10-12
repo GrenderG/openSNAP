@@ -1,6 +1,6 @@
 """Scenario result reports uploaded by Resident Evil Outbreak File#2 (APP 6301).
 
-The report has File#1's layout (`opensnap_app.capcom.scenario_report`). The
+The report has File#1's layout (`opensnap_app.capcom.outbreak.scenario_report`). The
 File#2 client builds it at NA `0x001fd530` (EU `0x001c8b60`) from the
 156-byte scenario summary `0x0064dfc4` that `netwk.bin` fills on the return
 from a scenario (`0x005938d0`); `tasks/re_outbreak2_results.md` traces each
@@ -16,7 +16,7 @@ points when Friendly Fire, NIGHTMARE, INFINITY or a Point Multiplier is on
 from opensnap.core.accounts import Account
 from opensnap.plugins.outbreak2.records import GAME, clear_board, points_board
 from opensnap.storage.interfaces import RecordStore
-from opensnap_app.capcom.scenario_report import ScenarioResult
+from opensnap_app.capcom.outbreak.scenario_report import ScenarioResult
 
 
 def store_scenario_result(records: RecordStore, account: Account, result: ScenarioResult) -> None:

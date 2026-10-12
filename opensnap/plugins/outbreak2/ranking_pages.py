@@ -1,4 +1,4 @@
-"""Resident Evil Outbreak File#2 ranking boards for `opensnap.plugins.scenario_rankings`."""
+"""Resident Evil Outbreak File#2 ranking boards for `opensnap.plugins.outbreak.scenario_rankings`."""
 
 from opensnap.plugins.outbreak2.directory import Directory
 from opensnap.plugins.outbreak2.records import (
@@ -9,7 +9,7 @@ from opensnap.plugins.outbreak2.records import (
     character_name,
     clear_board,
 )
-from opensnap.plugins.scenario_rankings import ScenarioBoards
+from opensnap.plugins.outbreak.scenario_rankings import ScenarioBoards
 
 
 def boards(directory: Directory) -> ScenarioBoards:

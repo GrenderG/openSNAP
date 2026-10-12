@@ -8,7 +8,7 @@ from the APP service, named by the URL past `lbs://lbs/` (`nethttp.bin`
 `0x007417b0`), so the page arrives as a 6101/6102 request for
 `04/DATABASE.HTM` or `06/NN/DATABASE.HTM`. Its links point at further pages of
 the same directory. The pages are the shared ranking pages
-(`opensnap.plugins.scenario_rankings`) with File#2's boards.
+(`opensnap.plugins.outbreak.scenario_rankings`) with File#2's boards.
 """
 
 import re
@@ -16,7 +16,7 @@ import re
 from opensnap.core.browser_pages import document, panel
 from opensnap.plugins.outbreak2.directory import Directory
 from opensnap.plugins.outbreak2.ranking_pages import boards
-from opensnap.plugins.scenario_rankings import BROWSER_CLOSE_LINK, RankingLinks, RankingPages
+from opensnap.plugins.outbreak.scenario_rankings import BROWSER_CLOSE_LINK, RankingLinks, RankingPages
 from opensnap.storage.interfaces import RecordStore
 
 URL_PREFIX = 'lbs://lbs/'

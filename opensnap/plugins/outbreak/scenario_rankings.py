@@ -1,7 +1,7 @@
 """Scenario ranking pages for the Resident Evil Outbreak games, shown in the in-game browser.
 
 Both Outbreak games upload a result report after each scenario (APP 6301,
-`opensnap_app.capcom.scenario_report`) and reach the rankings two ways, each
+`opensnap_app.capcom.outbreak.scenario_report`) and reach the rankings two ways, each
 with its own links: the lobby's Notice Board opens the web portal and the
 lobby's DATABASE menu opens an `lbs://` page the browser fetches from the
 Capcom APP service. The browser is Monster Hunter's (File#1 attribute table

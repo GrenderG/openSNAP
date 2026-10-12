@@ -1,4 +1,4 @@
-"""Resident Evil Outbreak File#1 ranking pages (`opensnap.plugins.scenario_rankings` with File#1's boards).
+"""Resident Evil Outbreak File#1 ranking pages (`opensnap.plugins.outbreak.scenario_rankings` with File#1's boards).
 
 The lobby's DATABASE menu opens `lbs://lbs/01/DATABASE.HTM` (`netwk.bin`
 `0x00629a40`), fetched from the Capcom APP service, and the Notice Board opens
@@ -13,8 +13,8 @@ from opensnap.plugins.outbreak.records import (
     character_name,
     clear_board,
 )
-from opensnap.plugins.scenario_rankings import BROWSER_CLOSE_LINK, RankingLinks, ScenarioBoards
-from opensnap.plugins.scenario_rankings import RankingPages as _RankingPages
+from opensnap.plugins.outbreak.scenario_rankings import BROWSER_CLOSE_LINK, RankingLinks, ScenarioBoards
+from opensnap.plugins.outbreak.scenario_rankings import RankingPages as _RankingPages
 from opensnap.storage.interfaces import RecordStore
 
 __all__ = ['BROWSER_CLOSE_LINK', 'RankingLinks', 'RankingPages']

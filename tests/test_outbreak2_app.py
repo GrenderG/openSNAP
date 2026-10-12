@@ -39,7 +39,7 @@ from opensnap_app.capcom.protocol import (
     frame_sequence,
     pop_app_frame,
 )
-from opensnap_app.capcom.scenario_report import ScenarioResult
+from opensnap_app.capcom.outbreak.scenario_report import ScenarioResult
 from opensnap_app.capcom.server import CapcomAppServer
 
 REGISTRATION_URL = b'http://regweb.reo.capcom.sf.yav4.com/reweb/signup/'

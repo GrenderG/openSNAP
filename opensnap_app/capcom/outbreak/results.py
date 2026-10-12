@@ -49,13 +49,13 @@ client comes back to the lobby:
 - The last two words are never written: the summary is zeroed
   (`0x0057bd88`) and nothing stores them before it is copied.
 
-The decoder is shared with File#2 (`opensnap_app.capcom.scenario_report`).
+The decoder is shared with File#2 (`opensnap_app.capcom.outbreak.scenario_report`).
 """
 
 from opensnap.core.accounts import Account
 from opensnap.plugins.outbreak.records import GAME, clear_board, points_board
 from opensnap.storage.interfaces import RecordStore
-from opensnap_app.capcom.scenario_report import ScenarioResult, Teammate, decode_scenario_result
+from opensnap_app.capcom.outbreak.scenario_report import ScenarioResult, Teammate, decode_scenario_result
 
 __all__ = ['ScenarioResult', 'Teammate', 'decode_scenario_result', 'store_scenario_result']
 

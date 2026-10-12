@@ -413,7 +413,7 @@ class WebRouteTests(unittest.TestCase):
         from opensnap.storage.sql import SqlAccountStore, SqlRecordStore
         from opensnap.storage.sqlite import SqliteConnection
         from opensnap_app.capcom.outbreak2.results import store_scenario_result
-        from opensnap_app.capcom.scenario_report import ScenarioResult
+        from opensnap_app.capcom.outbreak.scenario_report import ScenarioResult
 
         client = self._outbreak_client('outbreak2')
         connection = SqliteConnection(f'{self._temp_directory.name}/web.sqlite')
