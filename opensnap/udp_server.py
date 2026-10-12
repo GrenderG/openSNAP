@@ -224,9 +224,10 @@ class SnapUdpServer:
                         self._remember_footer_variant(payload, endpoint)
                         self._process_transport_acks(payload, endpoint)
                         result = self._engine.handle_datagram(payload, endpoint)
-                        for restarted_endpoint, restarted_session_id in result.reliable_restarts:
-                            self._clear_session_pending(restarted_endpoint, restarted_session_id)
-                            self._clear_session_deferred(restarted_endpoint, restarted_session_id)
+                        for old_endpoint, new_endpoint, moved_session_id in result.endpoint_moves:
+                            self._move_session_transport(old_endpoint, new_endpoint, moved_session_id)
+                        for _, restarted_session_id in result.reliable_restarts:
+                            self._forget_session_reliables(restarted_session_id)
                         self._send_messages(udp_socket, result.messages)
                         self._log_engine_errors(endpoint, payload, result.errors)
 
@@ -486,6 +487,37 @@ class SnapUdpServer:
         ]
         for key in session_keys:
             self._reliable_pending.pop(key, None)
+
+    def _forget_session_reliables(self, session_id: int) -> None:
+        """Drop what one session has pending or deferred, on any port (a KICS may come from a new one)."""
+
+        for key in [key for key in self._reliable_pending if key[2] == session_id]:
+            self._reliable_pending.pop(key, None)
+        for key in [key for key in self._deferred_reliable if key[2] == session_id]:
+            self._deferred_reliable.pop(key, None)
+
+    def _move_session_transport(self, old: Endpoint, new: Endpoint, session_id: int) -> None:
+        """Re-address what one session still has pending or deferred to its client's new port.
+
+        Packets sent to the old port never arrived and the client takes
+        reliable packets only in order, so the pending ones are resent now.
+        """
+
+        for key in [key for key in self._reliable_pending if key[:3] == (old.host, old.port, session_id)]:
+            pending = self._reliable_pending.pop(key)
+            pending.endpoint = new
+            # Due at once: the receive loop's resend pass right after this sends it.
+            pending.last_sent_at = float('-inf')
+            self._reliable_pending[(new.host, new.port, session_id, key[3])] = pending
+        deferred = self._deferred_reliable.pop((old.host, old.port, session_id), None)
+        if deferred:
+            for message in deferred:
+                message.endpoint = new
+            self._deferred_reliable[(new.host, new.port, session_id)] = deferred
+        rtt_estimate = self._rtt_estimate_by_endpoint.get((old.host, old.port))
+        self._clear_session_runtime(old)
+        if rtt_estimate is not None:
+            self._rtt_estimate_by_endpoint.setdefault((new.host, new.port), rtt_estimate)
 
     def _clear_session_deferred(
         self,

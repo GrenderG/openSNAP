@@ -41,6 +41,9 @@ class EngineResult:
     # Sessions whose client restarted its reliable numbering (KICS login): the
     # transport drops what it still has pending or deferred for them.
     reliable_restarts: list[tuple[Endpoint, int]] = field(default_factory=list)
+    # Sessions whose client now sends from a new port of the same host (NAT
+    # mapping changed): (old endpoint, new endpoint, session id).
+    endpoint_moves: list[tuple[Endpoint, Endpoint, int]] = field(default_factory=list)
 
 
 class SnapProtocolEngine:
@@ -114,6 +117,7 @@ class SnapProtocolEngine:
         outbound: list[SnapMessage] = []
         errors: list[str] = []
         reliable_restarts: list[tuple[Endpoint, int]] = []
+        endpoint_moves = self._follow_port_change(messages, endpoint)
         self._handle_in_order(messages, outbound, errors, reliable_restarts)
 
         self._logger.debug(
@@ -127,7 +131,39 @@ class SnapProtocolEngine:
             messages=outbound,
             errors=errors,
             reliable_restarts=reliable_restarts,
+            endpoint_moves=endpoint_moves,
         )
+
+    def _follow_port_change(
+        self,
+        messages: list[SnapMessage],
+        endpoint: Endpoint,
+    ) -> list[tuple[Endpoint, Endpoint, int]]:
+        """Move a session to the new port its client's packets come from.
+
+        A NAT drops an idle UDP mapping (a player in an MH Town browser sends
+        no keepalive for minutes) and gives the next packets a new public
+        port. Answers go back to where a request came from, but relays and
+        callbacks go to the session's endpoint, so it must follow; only the
+        port may change, so no other host can take a session over.
+        """
+
+        for message in messages:
+            session = self._sessions.get(message.session_id)
+            if session is None or session.endpoint == endpoint or session.endpoint.host != endpoint.host:
+                continue
+            old = session.endpoint
+            self._logger.info(
+                'Session 0x%08x moved from %s:%d to %s:%d.',
+                session.session_id,
+                old.host,
+                old.port,
+                endpoint.host,
+                endpoint.port,
+            )
+            self._sessions.rebind_endpoint(session.session_id, endpoint)
+            return [(old, endpoint, session.session_id)]
+        return []
 
     def _handle_in_order(
         self,

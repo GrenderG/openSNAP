@@ -1,5 +1,6 @@
 """UDP reliability transport hardening tests."""
 
+from collections import deque
 from unittest.mock import Mock, patch
 import unittest
 
@@ -496,6 +497,33 @@ class UdpReliabilityTests(unittest.TestCase):
         self.assertEqual(len(fake_socket.sent), 0)
         self.assertNotIn(key, server._reliable_pending)
         server._engine.handle_transport_timeout.assert_called_once_with(endpoint, session_id)
+
+    def test_session_moved_to_a_new_port_takes_its_pending_packets_along(self) -> None:
+        # A packet left pending at the old port no longer times the session out
+        # (the old port is silent for good) and is resent to the new port now.
+        server = self._server()
+        old = Endpoint(host='127.0.0.1', port=50018)
+        new = Endpoint(host='127.0.0.1', port=50019)
+        session_id = 0x18181818
+        server._track_reliable(
+            self._reliable_message(endpoint=old, session_id=session_id, sequence_number=102), b'packet', 0.0,
+        )
+        server._deferred_reliable[(old.host, old.port, session_id)] = deque(
+            [self._reliable_message(endpoint=old, session_id=session_id, sequence_number=118)]
+        )
+        self._mark_inbound_active(server, old, 0.0)
+        self._mark_inbound_active(server, new, 200.0)
+
+        with patch('opensnap.udp_server.time.monotonic', return_value=200.0):
+            server._move_session_transport(old, new, session_id)
+            fake_socket = _FakeSocket()
+            server._retransmit_due(fake_socket)  # type: ignore[arg-type]
+
+        self.assertEqual(fake_socket.sent, [(b'packet', (new.host, new.port))])
+        self.assertIn((new.host, new.port, session_id, 102), server._reliable_pending)
+        self.assertEqual([message.endpoint for message in server._deferred_reliable[(new.host, new.port, session_id)]],
+                         [new])
+        server._engine.handle_transport_timeout.assert_not_called()
 
     def test_pending_for_missing_session_is_cleared(self) -> None:
         server = self._server()

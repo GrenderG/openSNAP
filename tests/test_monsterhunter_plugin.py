@@ -341,6 +341,29 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self._publish(relogged, self._profile(4))
         self.assertEqual(sorted(self._area_roster(self.players[1])), [b'hunter2', b'hunter3'])
 
+    def test_session_follows_its_clients_new_port(self) -> None:
+        # `12 10 2026 1754.pcapng`: after 171 s in the Town browser the console's
+        # NAT gave it a new public port; answers still arrived, but every relay
+        # went to the old port until the transport timed the session out there.
+        self._town_with_residents()
+        host, (guest_endpoint, guest_id), _ = self.players
+        moved = Endpoint(host=guest_endpoint.host, port=guest_endpoint.port + 1)
+
+        keepalive = SnapMessage(endpoint=moved, type_flags=FLAG_ROOM, packet_number=0, command=commands.CMD_SEND,
+                                session_id=guest_id, sequence_number=50, acknowledge_number=0,
+                                payload=bytes.fromhex('0010'))
+        result = self.engine.handle_datagram(encode_messages([keepalive]), moved)
+        self.assertEqual(result.endpoint_moves, [(guest_endpoint, moved, guest_id)])
+
+        relays = self._send(host, commands.CMD_SEND, bytes.fromhex('0000'), FLAG_ROOM)
+        self.assertEqual([message.endpoint for message in relays if message.session_id == guest_id], [moved])
+
+        # Another host never takes a session over.
+        stranger = Endpoint(host='10.0.0.99', port=moved.port)
+        result = self.engine.handle_datagram(encode_messages([replace(keepalive, endpoint=stranger)]), stranger)
+        self.assertEqual(result.endpoint_moves, [])
+        self.assertEqual(self.engine._sessions.get(guest_id).endpoint, moved)  # noqa: SLF001
+
     def test_silent_sessions_end_after_their_idle_limit(self) -> None:
         now = [1000.0]
         self.engine._clock = lambda: now[0]  # noqa: SLF001
