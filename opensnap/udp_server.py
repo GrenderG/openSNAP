@@ -30,6 +30,7 @@ class _ReliablePending:
     datagram: bytes
     last_sent_at: float
     retransmit_attempts: int = 0
+    first_sent_at: float = 0.0
 
 
 class SnapUdpServer:
@@ -362,7 +363,12 @@ class SnapUdpServer:
                 continue
             if (message.type_flags & FLAG_RESPONSE) == 0:
                 continue
-            self._clear_reliable_pending(endpoint, message.session_id, message.acknowledge_number)
+            # Until the KICS answer the client's header carries its own word,
+            # `(local IP << 16) | port` (AM `0x002e9bc0`, MH NA `0x001fc958`),
+            # not the session id: find the session by endpoint then.
+            session = self._engine.resolve_session(endpoint, message.session_id)
+            session_id = message.session_id if session is None else session.session_id
+            self._clear_reliable_pending(endpoint, session_id, message.acknowledge_number)
 
     def _track_reliable(
         self,
@@ -389,6 +395,7 @@ class SnapUdpServer:
             command=message.command,
             datagram=datagram,
             last_sent_at=send_time,
+            first_sent_at=send_time,
         )
 
     def _clear_reliable_pending(self, endpoint: Endpoint, session_id: int, acknowledge_number: int) -> None:
@@ -422,7 +429,7 @@ class SnapUdpServer:
                 continue
             if self._drop_missing_session_pending(pending):
                 continue
-            if self._peer_is_inactive(pending.endpoint, now):
+            if self._peer_is_inactive(pending, now):
                 self._timeout_session(udp_socket, pending)
                 continue
             if (now - pending.last_sent_at) < self._retransmit_wait(pending):
@@ -452,10 +459,15 @@ class SnapUdpServer:
             pending.last_sent_at = now
 
     def _drop_missing_session_pending(self, pending: _ReliablePending) -> bool:
-        """Drop reliable transport state for sessions that no longer exist."""
+        """Drop reliable transport state for sessions that no longer exist or left that endpoint.
+
+        A packet still pending at an endpoint its session no longer uses (a
+        failed login's answer after a new login from another port) is
+        obsolete; timing it out would end the session's new login.
+        """
 
         session = self._engine.resolve_session(pending.endpoint, pending.session_id)
-        if session is None:
+        if session is None or session.endpoint != pending.endpoint:
             self._clear_session_pending(pending.endpoint, pending.session_id)
             self._clear_session_deferred(pending.endpoint, pending.session_id)
             self._clear_session_runtime(pending.endpoint)
@@ -463,13 +475,22 @@ class SnapUdpServer:
 
         return False
 
-    def _peer_is_inactive(self, endpoint: Endpoint, now: float) -> bool:
-        """Check whether one endpoint has been inbound-silent long enough to time out."""
+    def _peer_is_inactive(self, pending: _ReliablePending, now: float) -> bool:
+        """Whether the peer stayed silent for the whole timeout while it owed an ACK for this packet.
 
+        A client sends nothing while it has nothing to say: an MH player in a
+        Town only echoes every ~60 s (`0x0061d440`), an AM client echoes only
+        during a race (`SystemMove` `0x001fa190`), and peers' movement needs
+        no ACK. So silence counts from when this packet was first sent, which
+        a live client ACKs at once.
+        """
+
+        endpoint = pending.endpoint
         last_inbound_at = self._last_inbound_at_by_endpoint.get((endpoint.host, endpoint.port))
         if last_inbound_at is None:
             return False
-        return (now - last_inbound_at) >= self._SESSION_INACTIVITY_TIMEOUT_SECONDS
+        silent_since = max(last_inbound_at, pending.first_sent_at)
+        return (now - silent_since) >= self._SESSION_INACTIVITY_TIMEOUT_SECONDS
 
     def _clear_session_pending(
         self,

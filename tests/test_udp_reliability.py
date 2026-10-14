@@ -44,7 +44,10 @@ class UdpReliabilityTests(unittest.TestCase):
             footer_bytes=footer_bytes,
         )
         engine.handle_transport_timeout.return_value = []
-        engine.resolve_session.return_value = Mock(room_id=1)
+        # The session lives at the endpoint it is looked up from.
+        engine.resolve_session.side_effect = lambda endpoint, session_id: Mock(
+            room_id=1, endpoint=endpoint, session_id=session_id,
+        )
         return SnapUdpServer(config=ServerConfig(), engine=engine)
 
     def _reliable_message(self, *, endpoint: Endpoint, session_id: int, sequence_number: int) -> SnapMessage:
@@ -525,6 +528,70 @@ class UdpReliabilityTests(unittest.TestCase):
                          [new])
         server._engine.handle_transport_timeout.assert_not_called()
 
+    def test_quiet_client_is_not_timed_out_by_a_packet_it_was_just_sent(self) -> None:
+        # snap00.pcap: a hunter idle in a Town sent nothing for 60.1 s (its
+        # peers' movement needs no ACK); a reliable relay queued for it then was
+        # timed out at once, before it could ACK. Silence counts from the send.
+        server = self._server()
+        endpoint = Endpoint(host='2.245.17.21', port=55639)
+        session_id = 0x8F3DA84A
+        self._mark_inbound_active(server, endpoint, 0.0)
+        server._track_reliable(
+            self._reliable_message(endpoint=endpoint, session_id=session_id, sequence_number=8882), b'packet', 60.1,
+        )
+
+        with patch('opensnap.udp_server.time.monotonic', return_value=60.1):
+            server._retransmit_due(_FakeSocket())  # type: ignore[arg-type]
+        server._engine.handle_transport_timeout.assert_not_called()
+        self.assertIn((endpoint.host, endpoint.port, session_id, 8882), server._reliable_pending)
+
+        # A peer that never answers it is still timed out, a full window after the send.
+        with patch('opensnap.udp_server.time.monotonic', return_value=60.2 + server._SESSION_INACTIVITY_TIMEOUT_SECONDS):
+            server._retransmit_due(_FakeSocket())  # type: ignore[arg-type]
+        server._engine.handle_transport_timeout.assert_called_once_with(endpoint, session_id)
+
+    def test_ack_with_the_clients_pre_login_word_clears_the_answer(self) -> None:
+        # snap00.pcap: the bootstrap's login failure (0x2e) was ACKed at once with
+        # header session 0x6fe607d0, the client's own word before KICS, and was
+        # resent for 60 s regardless.
+        server = self._server()
+        endpoint = Endpoint(host='2.245.17.21', port=61342)
+        session_id = 0x8F3DA84A
+        server._engine.resolve_session.side_effect = lambda found_at, header_id: (
+            Mock(endpoint=found_at, session_id=session_id) if found_at == endpoint else None
+        )
+        server._track_reliable(
+            self._control_reliable_message(endpoint=endpoint, session_id=session_id, sequence_number=0), b'fail', 0.0,
+        )
+
+        ack = SnapMessage(endpoint=endpoint, type_flags=FLAG_ROOM | FLAG_RESPONSE, packet_number=0,
+                          command=commands.CMD_ACK, session_id=0x6FE607D0, sequence_number=0,
+                          acknowledge_number=0, payload=b'')
+        server._process_transport_acks(encode_messages([ack]), endpoint)
+
+        self.assertEqual(server._reliable_pending, {})
+
+    def test_pending_at_a_port_its_session_left_never_ends_the_session(self) -> None:
+        # snap00.pcap: that unmatched 0x2e at port 61342 timed out after the
+        # player had logged in again from 51687 and ended the new login.
+        server = self._server()
+        old = Endpoint(host='2.245.17.21', port=61342)
+        new = Endpoint(host='2.245.17.21', port=51687)
+        session_id = 0x8F3DA84A
+        server._engine.resolve_session.side_effect = lambda endpoint, header_id: Mock(
+            endpoint=new, session_id=session_id,
+        )
+        server._track_reliable(
+            self._control_reliable_message(endpoint=old, session_id=session_id, sequence_number=0), b'fail', 0.0,
+        )
+        self._mark_inbound_active(server, old, 0.0)
+
+        with patch('opensnap.udp_server.time.monotonic', return_value=61.0):
+            server._retransmit_due(_FakeSocket())  # type: ignore[arg-type]
+
+        self.assertEqual(server._reliable_pending, {})
+        server._engine.handle_transport_timeout.assert_not_called()
+
     def test_pending_for_missing_session_is_cleared(self) -> None:
         server = self._server()
         endpoint = Endpoint(host='127.0.0.1', port=50017)
@@ -533,7 +600,7 @@ class UdpReliabilityTests(unittest.TestCase):
             self._reliable_message(endpoint=endpoint, session_id=session_id, sequence_number=101), b'packet', 0.0,
         )
         key = (endpoint.host, endpoint.port, session_id, 101)
-        server._engine.resolve_session.return_value = None
+        server._engine.resolve_session.side_effect = lambda endpoint, session_id: None
 
         fake_socket = _FakeSocket()
         with patch('opensnap.udp_server.time.monotonic', return_value=105.1):

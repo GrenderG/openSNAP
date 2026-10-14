@@ -227,8 +227,10 @@ class MonsterHunterPlugin(GamePlugin):
     def session_idle_limit(self, context: HandlerContext, session: Session) -> float | None:
         """End a crashed player's session once its client has gone silent.
 
-        In an Area or Town the client sends a profile keepalive every 30 s
-        (longer gaps, up to about 2 minutes, while its browser is open). A
+        In an Area or Town the client's only timed packet is a 1-byte echo
+        every ~60 s: 6213 timing word 6 (1800) counted by a 30 Hz lobby tick
+        (NA `0x0061d440`, EU `0x005cab80`), with longer gaps while that tick
+        is paused (gate byte NA `0x0041698c`). A
         started quest runs in `game.bin`, which sends nothing until the quest
         ends (at most 50 minutes in any quest file). On World and Land
         selection the client talks only to the APP service, so no limit
