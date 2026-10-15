@@ -646,10 +646,35 @@ class UdpReliabilityTests(unittest.TestCase):
 
         first = self._pump_at(server, 100.0)
         self.assertEqual([decode_datagram(d, endpoint)[0].sequence_number for d in first], [134])
-        # max(17, (80 + 7 + 31) // 7) = 17 ms after the first send.
-        self.assertEqual(self._pump_at(server, 100.017), [])
-        second = self._pump_at(server, 100.018)
+        # max(17, (80 + 7 + 31) // 7) = 17 ms of pacing, raised to the 25 ms gap.
+        self.assertEqual(self._pump_at(server, 100.025), [])
+        second = self._pump_at(server, 100.026)
         self.assertEqual([decode_datagram(d, endpoint)[0].sequence_number for d in second], [135])
+
+    def test_framed_client_gets_no_ack_in_the_frame_after_a_datagram(self) -> None:
+        # A bare ACK sent one frame after a relay can reach the client within
+        # one poll; Beta1 reads only the relay's header, the ACK is lost and the
+        # game fails with error 601 16 packets later.
+        endpoint = Endpoint(host='170.253.44.213', port=2000)
+        session_id = 0x61384AE8
+        server = self._framed_server(endpoint, session_id)
+        relay = self._reliable_message(endpoint=endpoint, session_id=session_id, sequence_number=5351)
+        server._send_messages(_FakeSocket(), [relay])  # type: ignore[arg-type]
+        self.assertEqual(len(self._pump_at(server, 100.0)), 1)
+        ack = SnapMessage(
+            endpoint=endpoint,
+            type_flags=FLAG_ROOM | FLAG_RESPONSE,
+            packet_number=0,
+            command=commands.CMD_ACK,
+            session_id=session_id,
+            sequence_number=0,
+            acknowledge_number=5341,
+        )
+        server._send_messages(_FakeSocket(), [ack])  # type: ignore[arg-type]
+
+        self.assertEqual(self._pump_at(server, 100.0167), [])
+        (datagram,) = self._pump_at(server, 100.0334)
+        self.assertEqual(decode_datagram(datagram, endpoint)[0].acknowledge_number, 5341)
 
     def test_framed_client_gets_its_ack_on_the_next_queued_datagram(self) -> None:
         endpoint = Endpoint(host='170.253.44.213', port=1026)

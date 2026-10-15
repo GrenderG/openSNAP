@@ -41,6 +41,10 @@ class _ReliablePending:
     awaiting_send: bool = False
 
 
+# Shortest gap between two datagrams to a framed client: more than one 60 Hz
+# frame, so the next datagram goes two frames after the previous one.
+_FRAMED_MIN_GAP_MS = 25
+
 # Line speed the KAGE-generation SDK assumes when none is set (bytes/ms,
 # `DeviceModuleInitialize_blocking` `SLUS_204.98` 0x0035dd18).
 _DEFAULT_LINE_SPEED = 1000
@@ -63,6 +67,15 @@ class _FramedLink:
     Used for games whose plugin sets `framed_sender`: a client that can only
     take this rhythm (see `AutoModellistaBeta1Plugin`) jams its send window when
     the server sends two datagrams in one frame or a bare ACK ahead of data.
+
+    Unlike the SDK, no datagram follows the previous one within
+    `_FRAMED_MIN_GAP_MS`, an ACK included: two datagrams sent one frame apart
+    reach the client within one poll about half the time (none sent two
+    frames apart did in captures), and the client merges
+    them (`CopyDataToBuf`) and reads an ACK only from the first header
+    (`kkSetRevAck`'s one call, `kkDispatchingPacket` 0x002e8480). A skipped ACK
+    leaves its packet behind the next one ACKed, which stops it being resent,
+    and 16 packets later the game fails with error 601.
     """
 
     endpoint: Endpoint
@@ -90,7 +103,8 @@ class _FramedLink:
         if not self.queue:
             return None
         message, ack = self.queue[0]
-        if ack is None and now_ms <= self.last_send_ms + self.pace_ms:
+        wait_ms = _FRAMED_MIN_GAP_MS if ack is not None else max(_FRAMED_MIN_GAP_MS, self.pace_ms)
+        if now_ms <= self.last_send_ms + wait_ms:
             return None
         self.queue.popleft()
         if ack is not None:
