@@ -367,6 +367,32 @@ class AutoModellistaBeta1PluginTests(unittest.TestCase):
         )
         self.assertEqual(host_user_callback.payload, struct.pack('>L4sL', room_id, b'USER', 1))
 
+    def test_silent_sessions_get_one_reliable_keepalive_per_silence(self) -> None:
+        now = [1000.0]
+        self._engine._clock = lambda: now[0]  # noqa: SLF001
+        endpoint = Endpoint(host='170.253.44.213', port=2000)
+        session_id = _create_session_via_login(self._engine, endpoint, 'test')
+        session = self._engine._sessions.get(session_id)  # noqa: SLF001
+        session.last_inbound_at = now[0]
+
+        now[0] += 19.9
+        self.assertEqual(self._engine.tick(), [])
+        now[0] += 0.2
+        keepalives = self._engine.tick()
+        self.assertEqual(len(keepalives), 1)
+        keepalive = keepalives[0]
+        self.assertEqual(
+            (keepalive.endpoint, keepalive.session_id, keepalive.command, keepalive.type_flags, keepalive.payload),
+            (endpoint, session_id, commands.CMD_ACK, FLAG_RELIABLE, b''),
+        )
+        # Unanswered: the transport resends it; no second one.
+        now[0] += 60.0
+        self.assertEqual(self._engine.tick(), [])
+        # Its ACK (any datagram) starts a new silence.
+        session.last_inbound_at = now[0]
+        now[0] += 20.0
+        self.assertEqual(len(self._engine.tick()), 1)
+
 
 def _encode(engine: SnapProtocolEngine, message: SnapMessage) -> bytes:
     """Encode one SNAP message as one datagram."""

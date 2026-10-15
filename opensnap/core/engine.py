@@ -333,7 +333,41 @@ class SnapProtocolEngine:
 
         if self._plugin is None:
             return []
-        return self._end_idle_sessions() + self._plugin.on_tick(self._context)
+        return self._end_idle_sessions() + self._keep_idle_sessions_alive() + self._plugin.on_tick(self._context)
+
+    @property
+    def reliable_timeout_seconds(self) -> float:
+        """Seconds a client may stay silent while it owes an ACK (the plugin's, else 60)."""
+
+        return 60.0 if self._plugin is None else self._plugin.reliable_timeout_seconds
+
+    def _keep_idle_sessions_alive(self) -> list[SnapMessage]:
+        """Send a reliable empty packet to sessions silent past the plugin's keepalive interval.
+
+        At most one per silence: a new one only after the client sent
+        something (its ACK included) since the last. An unacknowledged one is
+        resent by the transport and never times the session out by itself.
+        """
+
+        assert self._plugin is not None
+        interval = self._plugin.keepalive_interval_seconds
+        if interval is None:
+            return []
+        now = self._clock()
+        messages: list[SnapMessage] = []
+        for session in self._sessions.all():
+            if now - session.last_inbound_at < interval or session.keepalive_sent_at > session.last_inbound_at:
+                continue
+            session.keepalive_sent_at = now
+            messages.append(
+                self._context.direct(
+                    endpoint=session.endpoint,
+                    session_id=session.session_id,
+                    type_flags=FLAG_RELIABLE,
+                    command=commands.CMD_ACK,
+                )
+            )
+        return messages
 
     def _end_idle_sessions(self) -> list[SnapMessage]:
         assert self._plugin is not None

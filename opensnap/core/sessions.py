@@ -52,6 +52,8 @@ class Session:
     handoff_serial: int = 0
     # `time.monotonic()` of the last datagram received for this session.
     last_inbound_at: float = field(default_factory=time.monotonic)
+    # When the last keepalive was sent (see `GamePlugin.keepalive_interval_seconds`).
+    keepalive_sent_at: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

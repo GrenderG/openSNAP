@@ -44,6 +44,7 @@ class UdpReliabilityTests(unittest.TestCase):
             footer_bytes=footer_bytes,
         )
         engine.handle_transport_timeout.return_value = []
+        engine.reliable_timeout_seconds = 60.0
         # The session lives at the endpoint it is looked up from.
         engine.resolve_session.side_effect = lambda endpoint, session_id: Mock(
             room_id=1, endpoint=endpoint, session_id=session_id,
@@ -493,7 +494,7 @@ class UdpReliabilityTests(unittest.TestCase):
         fake_socket = _FakeSocket()
         with patch(
             'opensnap.udp_server.time.monotonic',
-            return_value=100.0 + server._SESSION_INACTIVITY_TIMEOUT_SECONDS + 0.1,
+            return_value=100.0 + server._engine.reliable_timeout_seconds + 0.1,
         ):
             server._retransmit_due(fake_socket)  # type: ignore[arg-type]
 
@@ -546,7 +547,71 @@ class UdpReliabilityTests(unittest.TestCase):
         self.assertIn((endpoint.host, endpoint.port, session_id, 8882), server._reliable_pending)
 
         # A peer that never answers it is still timed out, a full window after the send.
-        with patch('opensnap.udp_server.time.monotonic', return_value=60.2 + server._SESSION_INACTIVITY_TIMEOUT_SECONDS):
+        with patch('opensnap.udp_server.time.monotonic', return_value=60.2 + server._engine.reliable_timeout_seconds):
+            server._retransmit_due(_FakeSocket())  # type: ignore[arg-type]
+        server._engine.handle_transport_timeout.assert_called_once_with(endpoint, session_id)
+
+    def test_unacknowledged_keepalive_is_resent_and_never_times_the_session_out(self) -> None:
+        # AM Beta1 stops polling between a race's finish and the lobby; it ACKs
+        # the keepalive later. An ordinary packet still times the session out.
+        server = self._server()
+        endpoint = Endpoint(host='170.253.44.213', port=2000)
+        session_id = 0x61384AE8
+        self._mark_inbound_active(server, endpoint, 0.0)
+        keepalive = SnapMessage(
+            endpoint=endpoint,
+            type_flags=FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_ACK,
+            session_id=session_id,
+            sequence_number=7,
+            acknowledge_number=0,
+        )
+        server._track_reliable(keepalive, b'keepalive', 20.0)
+
+        late = 20.0 + server._engine.reliable_timeout_seconds * 3
+        with patch('opensnap.udp_server.time.monotonic', return_value=late):
+            fake_socket = _FakeSocket()
+            server._retransmit_due(fake_socket)  # type: ignore[arg-type]
+        self.assertEqual(fake_socket.sent, [(b'keepalive', (endpoint.host, endpoint.port))])
+        self.assertIn((endpoint.host, endpoint.port, session_id, 7), server._reliable_pending)
+        server._engine.handle_transport_timeout.assert_not_called()
+
+        server._track_reliable(
+            self._reliable_message(endpoint=endpoint, session_id=session_id, sequence_number=8), b'packet', late,
+        )
+        with patch(
+            'opensnap.udp_server.time.monotonic',
+            return_value=late + server._engine.reliable_timeout_seconds + 0.1,
+        ):
+            server._retransmit_due(_FakeSocket())  # type: ignore[arg-type]
+        server._engine.handle_transport_timeout.assert_called_once_with(endpoint, session_id)
+
+    def test_a_longer_plugin_timeout_lets_a_silent_client_ack_late(self) -> None:
+        # AM Beta1 does not poll on the results and car save screens: a packet
+        # pending for 200 s is still ACKed in time under its 300 s timeout.
+        server = self._server()
+        server._engine.reliable_timeout_seconds = 300.0
+        endpoint = Endpoint(host='170.253.44.213', port=2000)
+        session_id = 0x61384AE8
+        self._mark_inbound_active(server, endpoint, 0.0)
+        server._track_reliable(
+            self._reliable_message(endpoint=endpoint, session_id=session_id, sequence_number=9), b'packet', 0.0,
+        )
+
+        with patch('opensnap.udp_server.time.monotonic', return_value=200.0):
+            server._retransmit_due(_FakeSocket())  # type: ignore[arg-type]
+        server._engine.handle_transport_timeout.assert_not_called()
+        server._clear_reliable_pending(endpoint, session_id, 9)
+        self.assertEqual(server._reliable_pending, {})
+
+        server._track_reliable(
+            self._reliable_message(endpoint=endpoint, session_id=session_id, sequence_number=10), b'packet', 200.0,
+        )
+        with patch('opensnap.udp_server.time.monotonic', return_value=499.0):
+            server._retransmit_due(_FakeSocket())  # type: ignore[arg-type]
+        server._engine.handle_transport_timeout.assert_not_called()
+        with patch('opensnap.udp_server.time.monotonic', return_value=500.1):
             server._retransmit_due(_FakeSocket())  # type: ignore[arg-type]
         server._engine.handle_transport_timeout.assert_called_once_with(endpoint, session_id)
 

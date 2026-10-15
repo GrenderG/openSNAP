@@ -34,6 +34,24 @@ class GamePlugin:
     # Companion service (`opensnap_app`) this game also connects to, run as
     # its own process: `python run.py app <companion_app>`.
     companion_app: str | None = None
+    # Seconds of client silence after which the server sends the session a
+    # reliable empty packet (command 0), or None for none. The client ACKs it,
+    # and that outbound ACK keeps its NAT mapping open while the game sends
+    # nothing (AM in a lobby or room, MH while it receives Town relays, MH NA
+    # beta and Outbreak File#1 always, File#2 for 60 s at a time); otherwise a
+    # router reassigns the idle port, and another console behind it logging
+    # in from that port supersedes the session. Every served SN@P build takes
+    # a reliable packet into its receive window and ACKs it without reading
+    # the command (AM `kkReceiveExtentCheck`; MH/Outbreak packet handler, e.g.
+    # MH NA 0x001fe778, F2 NA 0x00161d50), and command 0 never runs a callback
+    # (AM `kkDispatchingPacket` skips it: Beta1 0x002e84b4, release 0x002ee774,
+    # Beta2 0x002ed254; MH/Outbreak dispatch `cmd - 3 < 118` returns: MH NA
+    # 0x002035c0, F1 v2 0x001e1600, F2 NA 0x00166b98). 20 s stays under the
+    # common 30 s router UDP timeout.
+    keepalive_interval_seconds: float | None = 20.0
+    # Seconds a client may stay silent while it owes an ACK before the
+    # transport ends its session.
+    reliable_timeout_seconds: float = 60.0
 
     def register_handlers(self, router: CommandRouter, context: HandlerContext) -> None:
         """Register game-specific command handlers."""

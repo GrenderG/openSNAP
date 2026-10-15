@@ -49,6 +49,12 @@ class AutoModellistaBeta1Plugin(AutoModellistaPlugin):
     # `SLUS_204.98` (`0x0035de34`) shares 0xCAAD with release but builds the
     # legacy footer.
     snap_titles = (SnapTitle(title_code=0xCAAD, footer_marker=FOOTER_MARKER_KAGE, name='Auto Modellista beta1'),)
+    # Beta1 stops polling the network from a race's finish until it is back in
+    # the lobby (`race_finish_func` 0x001f8694 and `to_net_car_save` 0x001f70d4
+    # clear the flag `flmwVSyncCallback` 0x0013dfd0 polls on), so it cannot ACK
+    # the room's result transition or relays on the results and car save
+    # screens, which the player leaves at their own pace.
+    reliable_timeout_seconds = 300.0
 
     def register_handlers(self, router, context: HandlerContext) -> None:
         super().register_handlers(router, context)

@@ -9,6 +9,7 @@ import time
 from opensnap.config import DEFAULT_TICK_INTERVAL_SECONDS, ServiceEndpointConfig
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.logging_utils import format_hexdump
+from opensnap.protocol import commands
 from opensnap.protocol.codec import PacketDecodeError, detect_footer_bytes
 from opensnap.protocol.constants import (
     FLAG_RESPONSE,
@@ -137,8 +138,6 @@ class SnapUdpServer:
     # openSNAP intentionally uses a broader `60 s` server-side grace so clients
     # have more room to recover from temporary network hiccups before the
     # session is torn down.
-    #_SESSION_INACTIVITY_TIMEOUT_SECONDS = 5.0
-    _SESSION_INACTIVITY_TIMEOUT_SECONDS = 60.0
 
     def __init__(
         self,
@@ -429,7 +428,7 @@ class SnapUdpServer:
                 continue
             if self._drop_missing_session_pending(pending):
                 continue
-            if self._peer_is_inactive(pending, now):
+            if not self._is_keepalive(pending) and self._peer_is_inactive(pending, now):
                 self._timeout_session(udp_socket, pending)
                 continue
             if (now - pending.last_sent_at) < self._retransmit_wait(pending):
@@ -475,6 +474,20 @@ class SnapUdpServer:
 
         return False
 
+    @staticmethod
+    def _is_keepalive(pending: _ReliablePending) -> bool:
+        """Whether this is a keepalive (reliable command 0, see `GamePlugin.keepalive_interval_seconds`).
+
+        A client that stops polling the network (AM Beta1 between a race's
+        finish and its return to the lobby: `race_finish_func` clears the
+        receive flag polled by `flmwVSyncCallback`, `SLUS_204.98` 0x001f8694 /
+        0x0013dfd0) ACKs it only later; it is resent until then, as dropping it
+        would leave a gap in the client's receive window, and never ends the
+        session itself.
+        """
+
+        return pending.command == commands.CMD_ACK
+
     def _peer_is_inactive(self, pending: _ReliablePending, now: float) -> bool:
         """Whether the peer stayed silent for the whole timeout while it owed an ACK for this packet.
 
@@ -490,7 +503,7 @@ class SnapUdpServer:
         if last_inbound_at is None:
             return False
         silent_since = max(last_inbound_at, pending.first_sent_at)
-        return (now - silent_since) >= self._SESSION_INACTIVITY_TIMEOUT_SECONDS
+        return (now - silent_since) >= self._engine.reliable_timeout_seconds
 
     def _clear_session_pending(
         self,
