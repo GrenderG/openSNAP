@@ -99,11 +99,15 @@ def handle_login_to_kics(context: HandlerContext, message: SnapMessage) -> list[
         if rebound is not None:
             session = rebound
 
-    if len(message.payload) < 0x130:
+    # A KICS login holds at least the 296-byte struct `kkLoginClient` clears
+    # (`SLUS_204.98` 0x002e8bcc, `SLUS_206.42` 0x002ef3d0). Builds may append
+    # fields, such as the AM release team at `0x128` (328 bytes in captures;
+    # MH and Outbreak send 310 to 550); AM Beta1 sends the struct alone.
+    if len(message.payload) < 0x128:
         LOGGER.warning(
             (
                 'Received short login-to-kics payload from %s:%d '
-                '(len=%d, expected>=304); parsing available fields only.'
+                '(len=%d, expected>=296); parsing available fields only.'
             ),
             message.endpoint.host,
             message.endpoint.port,
