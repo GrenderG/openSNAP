@@ -253,7 +253,8 @@ class WebRouteTests(unittest.TestCase):
 
     def test_ranking_uploads_fill_the_ranking_page_best_first(self) -> None:
         def utl(login: str, team: str, lap_ms: int) -> str:
-            return f'{login:<15}{team:<15}{lap_ms:010d}'
+            # Right-aligned, as `BsPoster00_PostData0` builds it.
+            return f'{login:>15}{team:>15}{lap_ms:010d}'
 
         self._client.get('/amweb/create_id.html?username=racer&password=abc123')
         uploads = [

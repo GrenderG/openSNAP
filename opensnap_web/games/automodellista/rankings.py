@@ -100,24 +100,27 @@ def _rank_text(text: str) -> str:
 #        ranking data table, so `R` is the release event-ranking
 #        selector.
 # 2) `utl`
-#    - fixed-width 40-character value assembled as:
-#      - `0x004b5cc0`: 15 chars, padded/truncated with ASCII space
-#      - `0x004b5cd0`: 15 chars, padded/truncated with ASCII space
-#      - `0x004b5ce0`: 10 chars, padded/truncated with ASCII `0`
+#    - fixed-width 40-character value assembled by `BsPoster00_PostData0`
+#      (`browser.bin` `0x006d0a38..0x006d0b90`), each field right-aligned:
+#      it writes the padding first, then the text (a longer text aborts
+#      the upload):
+#      - `0x004b5cc0`: 15 chars, space padded on the left
+#      - `0x004b5cd0`: 15 chars, space padded on the left
+#      - `0x004b5ce0`: 10 chars, `0` padded on the left
 #    - semantic meaning of those three slices:
 #      - `utl[0:15]`: selected account login/user ID. The account-select
 #        path copies `tmp_user_id[slot]` into `cw+0x280` with
 #        `strncpy(..., 6)`, `cpnLoginLobbyServer` passes that same
 #        buffer to `kkLoginClient`, and `lbc_prelogin_02` then copies it
 #        into `BsPostUserResult+0x00`. Effective payload: the selected
-#        login ID, max 6 significant chars, then space padded to 15.
+#        login ID, max 6 significant chars, space padded to 15.
 #      - `utl[15:30]`: selected account team/call-sign text from
 #        `tmp_user_team[slot]`, copied via `cw+0x290` into
 #        `BsPostUserResult+0x10`. Release also loads
 #        `tmp_user_handle[slot]`, but immediately overwrites that same
 #        destination with `tmp_user_team[slot]`, so the handle/nickname
 #        is confirmed NOT to be uploaded. Effective transmitted width:
-#        max 15 significant chars, then space padded to 15.
+#        max 15 significant chars, space padded to 15.
 #      - `utl[30:40]`: normally the selected ranking bucket's best-lap
 #        record as a decimal integer in milliseconds. `lbc_prelogin_02`
 #        formats the source with `sprintf("%d")`, and
@@ -171,18 +174,20 @@ def _rank_text(text: str) -> str:
 #     - semantic meaning: course selector only, always `'A' + stage_index`
 #       from `cw+0x4856` in the proven upload producer. Unlike release, the
 #       Beta1 producer has no special `R`/`S` event or club-meeting branch.
-#   - `utl` slices: `0x0052ab90` (15, space padded),
-#     `0x0052aba0` (15, space padded), `0x0052abb0` (10, `0` padded)
+#   - `utl` slices, right-aligned as in release (`BsPoster00_PostData0`
+#     `0x008bda48..0x008bdb94`): `0x0052ab90` (15, space padded on the
+#     left), `0x0052aba0` (15, space padded on the left), `0x0052abb0`
+#     (10, `0` padded on the left)
 #     - `utl[0:15]`: selected account login/user ID. Account selection
 #       copies `tmp_user_id[slot]` into `cw+0x280` with `strncpy(..., 6)`,
 #       `cpnLoginLobbyServer` passes that buffer to `kkLoginClient`, and
 #       `lbc_prelogin_02` copies it into `BsPostUserResult+0x00`. Effective
-#       payload: the selected login ID, max 6 significant chars, then space
+#       payload: the selected login ID, max 6 significant chars, space
 #       padded to 15 by the browser serializer.
 #     - `utl[15:30]`: selected account team/call-sign text from
 #       `tmp_user_team[slot]`, copied via `cw+0x29a` into
 #       `BsPostUserResult+0x10`. Effective transmitted width: max 15
-#       significant chars, then space padded to 15.
+#       significant chars, space padded to 15.
 #     - `utl[30:40]`: selected board's best-lap record as a decimal integer
 #       in milliseconds. Beta1 uses the same `lap_time_disp_sub` logic as
 #       release, with divisors proving `mm / ss / ms` formatting.
@@ -227,14 +232,14 @@ class AutoModellistaRankings:
 
         Only boards the ranking page shows are kept: the club meeting upload
         (`S`) carries a literal 0 instead of a lap, and 0 is never a lap time.
-        The login ID must name an existing account.
+        The login ID, right-aligned like the team, must name an existing account.
         """
 
         lap = utl[30:40]
         if course not in self._rows_by_board or len(utl) != 40 or not lap.isdigit() or int(lap) == 0:
             self._logger.info('Ignoring ranking upload crs=%r utl=%r.', course, utl)
             return
-        account = self._accounts.get_by_name(utl[:15].rstrip(' '))
+        account = self._accounts.get_by_name(utl[:15].lstrip(' '))
         if account is None:
             self._logger.warning('Ignoring ranking upload for unknown login ID %r.', utl[:15])
             return
@@ -244,7 +249,7 @@ class AutoModellistaRankings:
             user_id=account.user_id,
             player=account.username,
             score=int(lap),
-            details={'team': utl[15:30].rstrip(' ')},
+            details={'team': utl[15:30].lstrip(' ')},
         )
         self._logger.info('Stored %s lap %s ms on course %s.', account.username, int(lap), course)
 
