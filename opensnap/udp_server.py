@@ -99,6 +99,13 @@ class _FramedLink:
                 return
         self.add(ack_message)
 
+    # TODO: bundle the messages waiting here into one datagram if AM Beta1
+    # rooms of 4+ lag; only Beta1 (the one `framed_sender` plugin) is paced
+    # like this, other games send each message at once. One datagram per two
+    # frames carries ~30 per second, while each racer relays ~7.5. The SDK bundles reliable messages set in one frame into one
+    # item, one seq and ACK, children flagged 0x800 with seq 0 (`kkSetMessage`
+    # 0x002eb7a8..0x002eb850), and reads them back with
+    # `kkMultipleRUDPMessageHandle` (0x002ef120).
     def pop_due(self, now_ms: int) -> SnapMessage | None:
         if not self.queue:
             return None
