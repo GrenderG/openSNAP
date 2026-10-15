@@ -646,9 +646,9 @@ class UdpReliabilityTests(unittest.TestCase):
 
         first = self._pump_at(server, 100.0)
         self.assertEqual([decode_datagram(d, endpoint)[0].sequence_number for d in first], [134])
-        # max(17, (80 + 7 + 31) // 7) = 17 ms of pacing, raised to the 25 ms gap.
-        self.assertEqual(self._pump_at(server, 100.025), [])
-        second = self._pump_at(server, 100.026)
+        # 17 ms of pacing, max(17, (80 + 7 + 31) // 7), but never the next frame.
+        self.assertEqual(self._pump_at(server, 100.0167), [])
+        second = self._pump_at(server, 100.0334)
         self.assertEqual([decode_datagram(d, endpoint)[0].sequence_number for d in second], [135])
 
     def test_framed_client_gets_no_ack_in_the_frame_after_a_datagram(self) -> None:

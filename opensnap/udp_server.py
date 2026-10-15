@@ -41,9 +41,8 @@ class _ReliablePending:
     awaiting_send: bool = False
 
 
-# Shortest gap between two datagrams to a framed client: more than one 60 Hz
-# frame, so the next datagram goes two frames after the previous one.
-_FRAMED_MIN_GAP_MS = 25
+# Frames between two datagrams to a framed client (see the TODO in `_FramedLink`).
+_FRAMED_MIN_FRAMES = 2
 
 # Line speed the KAGE-generation SDK assumes when none is set (bytes/ms,
 # `DeviceModuleInitialize_blocking` `SLUS_204.98` 0x0035dd18).
@@ -67,22 +66,31 @@ class _FramedLink:
     Used for games whose plugin sets `framed_sender`: a client that can only
     take this rhythm (see `AutoModellistaBeta1Plugin`) jams its send window when
     the server sends two datagrams in one frame or a bare ACK ahead of data.
-
-    Unlike the SDK, no datagram follows the previous one within
-    `_FRAMED_MIN_GAP_MS`, an ACK included: two datagrams sent one frame apart
-    reach the client within one poll about half the time (none sent two
-    frames apart did in captures), and the client merges
-    them (`CopyDataToBuf`) and reads an ACK only from the first header
-    (`kkSetRevAck`'s one call, `kkDispatchingPacket` 0x002e8480). A skipped ACK
-    leaves its packet behind the next one ACKed, which stops it being resent,
-    and 16 packets later the game fails with error 601.
     """
+
+    # TODO: this is a workaround, not SDK behaviour, and only for AM Beta1. The
+    # SDK sends an ACK in the very next frame, but an AM Beta1 client that gets
+    # two datagrams within one poll merges them (`CopyDataToBuf`) and reads only
+    # the first one's ACK (`kkSetRevAck` is called once, `kkDispatchingPacket`
+    # 0x002e8480). The lost ACK leaves its packet unsent forever and, 16 packets
+    # later, the game fails with error 601; only AM Beta1's older SDK has the
+    # `kkSetRevAck` branch that stops the resend (0x002ebaf4), so no other game
+    # needs this. Packets sent one frame apart arrive together about half
+    # the time over long (worldwide) round trips; two frames apart they never
+    # did in our captures. So no datagram goes in the frame after the previous
+    # one, which only delays lone ACKs by a frame (data is already paced to two
+    # frames at line speed 3). This most likely only shows up because we serve
+    # players worldwide: the original servers were regional, with short, steady
+    # round trips that keep one-frame gaps intact. A lead that could remove it:
+    # bundling the ACK into the next data datagram so lone ACKs become rare
+    # (see the TODO below).
 
     endpoint: Endpoint
     line_speed: int
     # [message, ACK it carries or None], in send order.
     queue: deque[list] = field(default_factory=deque)
     last_send_ms: int = 0
+    last_send_frame: int = -_FRAMED_MIN_FRAMES
     pace_ms: int = 0
     # `ReCalcRealSpeed` ring of 32 samples, each starting at 34 ms (`kkBootStrapLoginSuccess` 0x002e7c18..0x002e7c50).
     adjust_ring: list[int] = field(default_factory=lambda: [34] * 32)
@@ -100,23 +108,24 @@ class _FramedLink:
         self.add(ack_message)
 
     # TODO: bundle the messages waiting here into one datagram if AM Beta1
-    # rooms of 4+ lag; only Beta1 (the one `framed_sender` plugin) is paced
+    # rooms of 4+ lag; only AM Beta1 (the one `framed_sender` plugin) is paced
     # like this, other games send each message at once. One datagram per two
-    # frames carries ~30 per second, while each racer relays ~7.5. The SDK bundles reliable messages set in one frame into one
-    # item, one seq and ACK, children flagged 0x800 with seq 0 (`kkSetMessage`
-    # 0x002eb7a8..0x002eb850), and reads them back with
-    # `kkMultipleRUDPMessageHandle` (0x002ef120).
-    def pop_due(self, now_ms: int) -> SnapMessage | None:
-        if not self.queue:
+    # frames carries ~30 per second, while each racer relays ~7.5. The SDK
+    # bundles reliable messages set in one frame into one item, one seq and
+    # ACK, children flagged 0x800 with seq 0 (`kkSetMessage` 0x002eb7a8..
+    # 0x002eb850), and reads them back with `kkMultipleRUDPMessageHandle`
+    # (0x002ef120).
+    def pop_due(self, frame: int, now_ms: int) -> SnapMessage | None:
+        if not self.queue or frame < self.last_send_frame + _FRAMED_MIN_FRAMES:
             return None
         message, ack = self.queue[0]
-        wait_ms = _FRAMED_MIN_GAP_MS if ack is not None else max(_FRAMED_MIN_GAP_MS, self.pace_ms)
-        if now_ms <= self.last_send_ms + wait_ms:
+        if ack is None and now_ms <= self.last_send_ms + self.pace_ms:
             return None
         self.queue.popleft()
         if ack is not None:
             message = replace(message, type_flags=message.type_flags | FLAG_RESPONSE, acknowledge_number=ack)
         self.last_send_ms = now_ms
+        self.last_send_frame = frame
         self.pace_ms = max(17, (_message_length(message) + self.line_speed + 31) // self.line_speed)
         return message
 
@@ -263,6 +272,7 @@ class SnapUdpServer:
         self._rtt_estimate_by_endpoint: dict[tuple[str, int], float] = {}
         self._framed_links: dict[int, _FramedLink] = {}
         self._next_frame_at = 0.0
+        self._frame = 0
 
     def run(self) -> None:
         """Run UDP loop until stopped."""
@@ -819,13 +829,14 @@ class SnapUdpServer:
         if not self._framed_links or now < self._next_frame_at:
             return
         self._next_frame_at = now + 1 / 60
+        self._frame += 1
         now_ms = int(now * 1000)
         for session_id, link in list(self._framed_links.items()):
             session = self._engine.resolve_session(link.endpoint, session_id)
             if session is None or session.session_id != session_id:
                 del self._framed_links[session_id]
                 continue
-            message = link.pop_due(now_ms)
+            message = link.pop_due(self._frame, now_ms)
             if message is None:
                 continue
             datagram = self._encode(message)
