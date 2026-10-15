@@ -69,7 +69,7 @@ class Outbreak2AppServiceTests(unittest.TestCase):
         self.data_directory = Path(temp_directory.name)
         connection = SqliteConnection(self.data_directory / 'shared.sqlite')
         self.addCleanup(connection.close)
-        self.accounts = SqlAccountStore(connection)
+        self.accounts = SqlAccountStore(connection, server_secret='test secret')
         self.records = SqlRecordStore(connection)
         self.online_players = SqlOnlinePlayerStore(connection)
         self.directory = build_directory()

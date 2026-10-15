@@ -43,6 +43,8 @@ class AutoModellistaWebModule:
             root_aliases=True,
             # Beta1's browser only knows `AMUSA_GAME_BACK` (`browser.bin` `0x008c3cc0`).
             return_links={'ftpublicbeta/reg': 'AMUSA_GAME_BACK'},
+            # Beta1 (`SLUS_204.98`, KAGE SDK) decrypts its login reply with the typed password.
+            kage_prefixes=('ftpublicbeta/reg',),
         )
         add_routes(blueprint, [self.info_path], page_view(AM_INFO_PAGE))
         add_routes(blueprint, [self.rule_path], page_view(self.rule_page))

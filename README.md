@@ -160,6 +160,11 @@ After a race the game leaves SN@P for web pages: `http://gameweb...` for informa
 the lap-time upload, so run the web service, with HTTPS for uploads. Each account's best lap per course is kept;
 the rankings show the 10 fastest per course and 50 on the release's event board.
 
+Public beta 1 decrypts its login reply with the password typed in game, so the server keeps that password
+encrypted (with a key derived from `OPENSNAP_SERVER_SECRET`). It is stored by a login on beta 1's own signup page
+(the in-game registration); an account that has not logged in there once is refused, and changing the server
+secret makes beta 1 players log in there again.
+
 ### Monster Hunter
 
 ```bash

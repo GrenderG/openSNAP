@@ -88,6 +88,8 @@ class MariaDbConnection:
             "team VARCHAR(255) NOT NULL DEFAULT ''"
             ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
         )
+        # Added after the table first shipped; older stores get the column here.
+        self.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS kage_login_key TEXT NULL')
         self.execute(
             'CREATE TABLE IF NOT EXISTS session_handoffs ('
             'serial BIGINT AUTO_INCREMENT PRIMARY KEY, '

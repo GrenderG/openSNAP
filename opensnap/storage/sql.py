@@ -17,6 +17,8 @@ from opensnap.core.accounts import (
     build_account,
     normalize_password_record,
     normalize_seed,
+    open_kage_login_key,
+    seal_kage_login_key,
 )
 from opensnap.core.online import OnlinePlayer
 from opensnap.core.records import PlayerTotal, Record
@@ -65,29 +67,34 @@ def upgrade_password_records(connection: SqlConnection) -> None:
 
 
 class SqlAccountStore:
-    """Accounts in the shared store."""
+    """Accounts in the shared store.
 
-    def __init__(self, connection: SqlConnection) -> None:
+    KAGE login keys are stored encrypted with a key derived from the server
+    secret (see `seal_kage_login_key`).
+    """
+
+    def __init__(self, connection: SqlConnection, *, server_secret: str) -> None:
         self._connection = connection
+        self._server_secret = server_secret
 
     def get_by_name(self, username: str) -> Account | None:
-        return _account_from_row(
-            self._connection.query_one(
-                'SELECT user_id, username, password, seed, team FROM users WHERE username = ?',
-                (username,),
-            )
+        return self._account_from_row(
+            self._connection.query_one(f'SELECT {_ACCOUNT_COLUMNS} FROM users WHERE username = ?', (username,))
         )
 
     def get_by_id(self, user_id: int) -> Account | None:
-        return _account_from_row(
-            self._connection.query_one(
-                'SELECT user_id, username, password, seed, team FROM users WHERE user_id = ?',
-                (user_id,),
-            )
+        return self._account_from_row(
+            self._connection.query_one(f'SELECT {_ACCOUNT_COLUMNS} FROM users WHERE user_id = ?', (user_id,))
         )
 
     def set_team(self, user_id: int, team: str) -> None:
         self._connection.execute('UPDATE users SET team = ? WHERE user_id = ?', (team, user_id))
+
+    def set_kage_login_key(self, account: Account, key: bytes) -> None:
+        self._connection.execute(
+            'UPDATE users SET kage_login_key = ? WHERE user_id = ?',
+            (seal_kage_login_key(self._server_secret, account.username, key), account.user_id),
+        )
 
     def create_user(self, username: str, password: str) -> Account:
         seed = normalize_seed('')
@@ -101,6 +108,22 @@ class SqlAccountStore:
         except self._connection.integrity_error as exc:
             raise DuplicateAccountError(username) from exc
         return build_account(user_id=user_id, username=username, password_record=password_record, seed=seed, team='')
+
+    def _account_from_row(self, row: Row | None) -> Account | None:
+        if row is None:
+            return None
+        username = str(row['username'])
+        return build_account(
+            user_id=int(row['user_id']),
+            username=username,
+            password_record=str(row['password']),
+            seed=str(row['seed']),
+            team=str(row['team']),
+            kage_login_key=open_kage_login_key(self._server_secret, username, row['kage_login_key']),
+        )
+
+
+_ACCOUNT_COLUMNS = 'user_id, username, password, seed, team, kage_login_key'
 
 
 class SqlSessionHandoffStore:
@@ -296,18 +319,6 @@ def _record_from_row(row: Row) -> Record:
         score=int(row['score']),
         details=json.loads(str(row['details'])),
         recorded_at=str(row['recorded_at']),
-    )
-
-
-def _account_from_row(row: Row | None) -> Account | None:
-    if row is None:
-        return None
-    return build_account(
-        user_id=int(row['user_id']),
-        username=str(row['username']),
-        password_record=str(row['password']),
-        seed=str(row['seed']),
-        team=str(row['team']),
     )
 
 

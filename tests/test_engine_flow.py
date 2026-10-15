@@ -247,6 +247,10 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(get_u32(check_result.messages[0].payload, 4), BOOTSTRAP_LOGIN_FAIL_REASON_INVALID_PASSWORD)
 
     def test_login_client_with_kage_footer_uses_kage_bootstrap_variant(self) -> None:
+        engine_accounts = self._kage_engine_accounts()
+        account = engine_accounts.get_by_name('test')
+        assert account is not None
+        engine_accounts.set_kage_login_key(account, b'1111')
         config = replace(
             self._config,
             server=replace(
@@ -261,6 +265,7 @@ class EngineFlowTests(unittest.TestCase):
             ),
         )
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        self.addCleanup(engine.close)
         endpoint = Endpoint(host='127.0.0.1', port=50014)
 
         raw_login = b'test'
@@ -292,10 +297,8 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(challenge.command, commands.CMD_BOOTSTRAP_LOGIN_SUCCESS)
         self.assertTrue(challenge.type_flags & FLAG_RESPONSE)
 
-        account = engine._accounts.get_by_name('test')
-        assert account is not None
-        key_material = account.bootstrap_login_key or raw_login
-        clear = _decrypt_blowfish(key_material, challenge.payload)
+        # The client decrypts with the password typed in game, not the login.
+        clear = _decrypt_blowfish(b'1111', challenge.payload)
         self.assertEqual(get_c_string(clear, 0), raw_login.decode('utf-8'))
         self.assertNotEqual(get_u32(clear, 40), 0)
         self.assertEqual(get_u32(clear, 44), config.server.game.port)
@@ -303,6 +306,35 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(get_u32(clear, 52), 0)
         self.assertEqual(get_u32(clear, 56), 0)
         self.assertEqual(get_u32(clear, 60), 0)
+
+    def test_login_client_with_kage_footer_without_kage_login_key_is_refused(self) -> None:
+        engine = SnapProtocolEngine(config=self._config, plugin=AutoModellistaPlugin())
+        self.addCleanup(engine.close)
+        endpoint = Endpoint(host='127.0.0.1', port=50016)
+        login_request = SnapMessage(
+            endpoint=endpoint,
+            type_flags=FLAG_CHANNEL_BITS,
+            packet_number=0,
+            command=commands.CMD_LOGIN_CLIENT,
+            session_id=0,
+            sequence_number=0,
+            acknowledge_number=0,
+            payload=login_client_payload(b'test'),
+        )
+        from opensnap.protocol.codec import encode_messages
+
+        result = engine.handle_datagram(encode_messages([login_request], footer_bytes=FOOTER_BYTES_KAGE), endpoint)
+
+        self.assertFalse(result.errors)
+        self.assertEqual([message.command for message in result.messages], [commands.CMD_BOOTSTRAP_LOGIN_FAIL])
+        self.assertIsNone(engine._sessions.get_by_endpoint(endpoint))
+
+    def _kage_engine_accounts(self):
+        from opensnap.storage.factory import create_storage
+
+        storage = create_storage(self._config)
+        self.addCleanup(storage.close)
+        return storage.accounts
 
     def test_login_client_with_primary_footer_and_single_string_uses_primary_bootstrap_variant(self) -> None:
         config = self._config

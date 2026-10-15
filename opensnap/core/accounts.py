@@ -1,8 +1,14 @@
 """Account directory services."""
 
+import base64
 import hashlib
 import secrets
 from dataclasses import dataclass
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 PASSWORD_RECORD_PREFIX = 'v1'
 PASSWORD_RECORD_SEPARATOR = '$'
@@ -16,9 +22,11 @@ class Account:
     username: str
     password_verifier: str
     bootstrap_magic_key: bytes
-    bootstrap_login_key: bytes
     seed: str
     team: str
+    # The password as typed in a KAGE-SDK game, which decrypts its bootstrap
+    # login reply (`0x2d`) with it; empty until stored by a signup-page login.
+    kage_login_key: bytes = b''
 
     @property
     def session_material(self) -> str:
@@ -34,22 +42,21 @@ def build_account(
     password_record: str,
     seed: str,
     team: str,
+    kage_login_key: bytes = b'',
 ) -> Account:
     """Build account model from serialized storage fields."""
 
-    raw_password_record = password_record
     account_seed = normalize_seed(seed)
     encoded_record = normalize_password_record(password_record, account_seed)
     verifier, magic_key = parse_password_record(encoded_record, account_seed)
-    login_key = _derive_bootstrap_login_key(raw_password_record)
     return Account(
         user_id=user_id,
         username=username,
         password_verifier=verifier,
         bootstrap_magic_key=magic_key,
-        bootstrap_login_key=login_key,
         seed=account_seed,
         team=team,
+        kage_login_key=kage_login_key,
     )
 
 
@@ -130,13 +137,34 @@ def _is_hex(value: str, expected_length: int) -> bool:
     return True
 
 
-def _derive_bootstrap_login_key(password_record: str) -> bytes:
-    """Return the cleartext bootstrap login key when available.
+def seal_kage_login_key(server_secret: str, username: str, key: bytes) -> str:
+    """Encrypt a KAGE login key for storage (AES-GCM, bound to the username)."""
 
-    `SLUS_204.98` loads the Blowfish login-success key from runtime
-    `login_password`; encoded password records do not retain that cleartext.
+    nonce = secrets.token_bytes(12)
+    sealed = AESGCM(_kage_sealing_key(server_secret)).encrypt(nonce, key, username.encode('utf-8'))
+    return base64.b64encode(nonce + sealed).decode('ascii')
+
+
+def open_kage_login_key(server_secret: str, username: str, stored: str | None) -> bytes:
+    """Decrypt a stored KAGE login key; empty when unset or unreadable.
+
+    It is unreadable after `OPENSNAP_SERVER_SECRET` changes; the player then
+    stores it again with one login on the game's signup page.
     """
 
-    if is_encoded_password_record(password_record):
+    if not stored:
         return b''
-    return password_record.encode('utf-8')
+    try:
+        raw = base64.b64decode(stored, validate=True)
+        return AESGCM(_kage_sealing_key(server_secret)).decrypt(raw[:12], raw[12:], username.encode('utf-8'))
+    except (ValueError, InvalidTag):
+        return b''
+
+
+def _kage_sealing_key(server_secret: str) -> bytes:
+    return HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b'openSNAP KAGE login key',
+    ).derive(server_secret.encode('utf-8'))

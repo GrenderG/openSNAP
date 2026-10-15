@@ -41,7 +41,7 @@ class AutoModellistaBeta1PluginTests(unittest.TestCase):
                 sqlite_path=f'{self._temp_directory.name}/automodellista-beta1.sqlite',
             ),
         )
-        create_accounts(self._config, 'test')
+        create_accounts(self._config, 'test', kage=True)
         self._engine = SnapProtocolEngine(
             config=self._config,
             plugin=AutoModellistaBeta1Plugin(),

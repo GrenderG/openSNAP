@@ -29,7 +29,7 @@ class AutoModellistaRuleSerializationTests(unittest.TestCase):
         self.assertEqual(
             build_am_rule_csv_rows(),
             (
-                '00000a0000080f000100000000000000000000280000000000000000',
+                '00000a0000080f000100000000000000000000280000000700000000',
                 '00000a0000080f000100000000000000000000280000000000000000',
                 '00000a0000080f000100000000000000000000280000000000000000',
                 '00000a0000030f000100000000000000000000280000000000000100',
@@ -145,7 +145,7 @@ class AutoModellistaBeta1RuleSerializationTests(unittest.TestCase):
         self.assertEqual(
             build_ambeta1_rule_csv_rows(),
             (
-                '00000a0000080f00010000000000000000280000000000000000',
+                '00000a0000080f00010000000000000000280000000700000000',
                 '00000a0000080f00010000000000000000280000000000000000',
                 '00000a0000080f00010000000000000000280000000000000000',
             ),
@@ -178,6 +178,26 @@ class AutoModellistaBeta1RuleSerializationTests(unittest.TestCase):
         row = serialize_ambeta1_rule_row(template='normal')
         self.assertEqual(row[6], 0x0F)
 
+
+
+class AutoModellistaMyPerformanceTests(unittest.TestCase):
+    """Row 0 carries the SN@P line speed both builds pass to `kkCreateApplication`."""
+
+    def test_row0_carries_my_performance_as_big_endian_u32(self) -> None:
+        release_rows = [bytes.fromhex(row) for row in build_am_rule_csv_rows()]
+        beta1_rows = [bytes.fromhex(row) for row in build_ambeta1_rule_csv_rows()]
+
+        self.assertEqual(release_rows[0][20:24], (7).to_bytes(4, 'big'))
+        self.assertEqual(beta1_rows[0][18:22], (7).to_bytes(4, 'big'))
+        for row in release_rows[1:5]:
+            self.assertEqual(row[20:24], bytes(4))
+        for row in beta1_rows[1:]:
+            self.assertEqual(row[18:22], bytes(4))
+
+    def test_my_performance_outside_the_login_halfword_is_rejected(self) -> None:
+        for value in (0, 0x10000):
+            with self.assertRaises(ValueError):
+                serialize_ambeta1_rule_row(template='normal', field_overrides={'my_performance': value})
 
 if __name__ == '__main__':
     unittest.main()

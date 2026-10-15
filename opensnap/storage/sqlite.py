@@ -57,6 +57,10 @@ class SqliteConnection:
             "team TEXT NOT NULL DEFAULT ''"
             ')'
         )
+        # Added after the table first shipped; older stores get the column here.
+        columns = {str(row['name']) for row in self.query_all('PRAGMA table_info(users)')}
+        if 'kage_login_key' not in columns:
+            self.execute('ALTER TABLE users ADD COLUMN kage_login_key TEXT')
         self.execute(
             'CREATE TABLE IF NOT EXISTS session_handoffs ('
             'serial INTEGER PRIMARY KEY AUTOINCREMENT, '

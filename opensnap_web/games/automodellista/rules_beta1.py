@@ -8,12 +8,14 @@ from opensnap_web.games.automodellista.rules import (
     AM_RULE_DEFAULT_INDEX_STANDARD_NEEDED_PLAYERS,
     AM_RULE_EDIT_MASK_STOCK_EDITABLE,
     AM_RULE_FINISH_GRACE_SECONDS_STOCK,
+    AM_MY_PERFORMANCE,
     AM_RULE_LAP_SEED_STOCK,
     AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE,
     apply_byte_overrides,
     coerce_max_people_default_count,
     coerce_rule_byte,
     coerce_rule_nibble,
+    pack_my_performance,
     pack_players_packed,
     required_config_sequence,
     required_rule_profile_int,
@@ -61,6 +63,14 @@ AM_BETA1_RULE_ROW_FIELDS = {
         'offset': 8,
         'meaning': 'Rule behavior/editability mask (same seed used by stock rows).',
     },
+    'my_performance': {
+        'offset': 18,
+        'meaning': (
+            'Row 0 only: `MyPerformance` (u32 big-endian), read by `lbc_prelogin_00` '
+            '(0x002c722c..0x002c7280) over the 1000 preset when non-zero; Beta1 has no '
+            'ping measurement (see `AM_MY_PERFORMANCE`).'
+        ),
+    },
     'players_packed': {
         'offset': 17,
         'meaning': (
@@ -75,6 +85,8 @@ AM_BETA1_RULE_OFFSET_FINISH_GRACE_SECONDS = int(AM_BETA1_RULE_ROW_FIELDS['finish
 AM_BETA1_RULE_OFFSET_LAP_SEED = int(AM_BETA1_RULE_ROW_FIELDS['lap_seed']['offset'])
 AM_BETA1_RULE_OFFSET_EDIT_MASK = int(AM_BETA1_RULE_ROW_FIELDS['edit_mask']['offset'])
 AM_BETA1_RULE_OFFSET_PLAYERS_PACKED = int(AM_BETA1_RULE_ROW_FIELDS['players_packed']['offset'])
+AM_BETA1_RULE_OFFSET_MY_PERFORMANCE = int(AM_BETA1_RULE_ROW_FIELDS['my_performance']['offset'])
+AM_BETA1_RULE_FIELD_MY_PERFORMANCE = 'my_performance'
 
 AM_BETA1_RULE_SCALAR_FIELD_OFFSETS = {
     'course_mode_seed': AM_BETA1_RULE_OFFSET_COURSE_MODE_SEED,
@@ -95,6 +107,7 @@ AM_BETA1_RULE_KNOWN_OFFSETS = frozenset(
         AM_BETA1_RULE_OFFSET_LAP_SEED,
         AM_BETA1_RULE_OFFSET_EDIT_MASK,
         AM_BETA1_RULE_OFFSET_PLAYERS_PACKED,
+        *range(AM_BETA1_RULE_OFFSET_MY_PERFORMANCE, AM_BETA1_RULE_OFFSET_MY_PERFORMANCE + 4),
     )
 )
 AM_BETA1_RULE_UNKNOWN_OFFSETS = tuple(
@@ -281,6 +294,8 @@ AM_BETA1_GAME_RULE_CONFIG = {
             'label': 'Mountain',
             'template': AM_BETA1_RULE_TEMPLATE_NAME_NORMAL,
             'field_overrides': {
+                # Row 0 carries the line speed for every lobby type.
+                'my_performance': AM_MY_PERFORMANCE,
                 'max_people_default_count': AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE,
             },
             'byte_overrides': {},
@@ -324,6 +339,9 @@ def _apply_ambeta1_semantic_rule_fields(
                 value,
                 label=f'{row_label} {AM_BETA1_RULE_PACKED_FIELD_PLAYERS}',
             )
+            continue
+        if name == AM_BETA1_RULE_FIELD_MY_PERFORMANCE:
+            pack_my_performance(row, AM_BETA1_RULE_OFFSET_MY_PERFORMANCE, value, label=f'{row_label} {name}')
             continue
         if name == AM_BETA1_RULE_PACKED_FIELD_NEEDED_PLAYERS_DEFAULT:
             needed_players_default = coerce_rule_nibble(value, label=f'{row_label} {name}')

@@ -118,25 +118,28 @@ class SignupService:
     def __init__(self, accounts: AccountStore) -> None:
         self._accounts = accounts
 
-    def create_or_login(self, *, username: str, password: str) -> SignupResult:
+    def create_or_login(self, *, username: str, password: str, store_kage_login_key: bool = False) -> SignupResult:
+        """Create or log in; on KAGE-SDK signup pages also store the KAGE login key."""
+
         account = self._accounts.get_by_name(username)
+        created = False
         if account is None:
             try:
-                self._accounts.create_user(username, password)
+                account = self._accounts.create_user(username, password)
+                created = True
             except DuplicateAccountError:
                 # Another request may have created the same username concurrently.
                 account = self._accounts.get_by_name(username)
                 if account is None:
                     return SignupResult(False, username, False, 'Account creation failed. Please retry.')
-            else:
-                LOGGER.info('Created account via web signup for user %s.', username)
-                return SignupResult(True, username, True)
 
-        if not verify_password(account, password):
+        if not created and not verify_password(account, password):
             LOGGER.warning('Rejected web signup/login for user %s due to password mismatch.', username)
             return SignupResult(False, username, False, 'Password mismatch for existing user.')
-        LOGGER.info('Accepted web login for existing user %s.', username)
-        return SignupResult(True, username, False)
+        if store_kage_login_key:
+            self._accounts.set_kage_login_key(account, password.encode('utf-8'))
+        LOGGER.info('%s account via web signup for user %s.', 'Created' if created else 'Accepted', username)
+        return SignupResult(True, username, created)
 
 
 def is_valid_username(username: str) -> bool:
@@ -158,11 +161,13 @@ def add_signup_routes(
     *,
     root_aliases: bool = False,
     return_links: Mapping[str, str] | None = None,
+    kage_prefixes: tuple[str, ...] = (),
 ) -> None:
     """Serve the signup index and create-id pages under each prefix.
 
     `return_links` maps a prefix to its game's browser exit link when that
-    game lacks `DEFAULT_RETURN_LINK` (see the module docstring).
+    game lacks `DEFAULT_RETURN_LINK` (see the module docstring). Logins on
+    `kage_prefixes` (KAGE-SDK games) also store the KAGE login key.
     """
 
     # The form posts to the relative `create_id.html`, so every directory that
@@ -180,18 +185,24 @@ def add_signup_routes(
         password = (request.values.get('password') or '').strip()
         prefix = request.path.rsplit('/', 1)[0].strip('/')
         return_link = (return_links or {}).get(prefix, DEFAULT_RETURN_LINK)
-        return _signup_response(service, username.strip(), password, return_link)
+        return _signup_response(service, username.strip(), password, return_link, prefix in kage_prefixes)
 
     add_routes(blueprint, [f'{directory}create_id.html' for directory in directories], create_id, methods=('GET', 'POST'))
     add_routes(blueprint, [f'{directory}create_id_<username>.html' for directory in directories], create_id)
 
 
-def _signup_response(service: SignupService, username: str, password: str, return_link: str) -> Response:
+def _signup_response(
+    service: SignupService,
+    username: str,
+    password: str,
+    return_link: str,
+    store_kage_login_key: bool,
+) -> Response:
     if not is_valid_username(username):
         return _error_page('Invalid username.')
     if not is_valid_password(password):
         return _error_page('Invalid password.')
-    result = service.create_or_login(username=username, password=password)
+    result = service.create_or_login(username=username, password=password, store_kage_login_key=store_kage_login_key)
     if not result.ok:
         return _error_page(result.error_message)
     return html_response(

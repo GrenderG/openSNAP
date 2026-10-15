@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from opensnap.config import default_app_config
+from opensnap.storage.factory import create_storage
 from tests.support import create_accounts
 
 try:
@@ -48,6 +49,18 @@ class WebRouteTests(unittest.TestCase):
         self.assertIn('<!--AM-USA-COMP-SIGNUP-->', text)
         self.assertNotIn('<!--COMP-SIGNUP-->', text)
         self.assertIn('<!--INPUT-IDS-->player1', text)
+
+    def test_only_kage_signup_prefix_stores_the_kage_login_key(self) -> None:
+        self.assertEqual(self._client.get('/ftpublicbeta/reg/create_id.html?username=kage_1&password=pw12').status_code, 200)
+        self.assertEqual(self._client.get('/amweb/create_id.html?username=plain_1&password=pw12').status_code, 200)
+        # A later login on the KAGE page stores the key for an existing account too.
+        self.assertEqual(self._client.get('/ftpublicbeta/reg/create_id.html?username=test&password=1111').status_code, 200)
+
+        storage = create_storage(default_app_config())
+        self.addCleanup(storage.close)
+        self.assertEqual(storage.accounts.get_by_name('kage_1').kage_login_key, b'pw12')
+        self.assertEqual(storage.accounts.get_by_name('test').kage_login_key, b'1111')
+        self.assertEqual(storage.accounts.get_by_name('plain_1').kage_login_key, b'')
 
     def test_query_signup_route_returns_expected_payload(self) -> None:
         response = self._client.get('/amweb/create_id.html?username=alpha_9&password=abc123')
@@ -350,7 +363,7 @@ class WebRouteTests(unittest.TestCase):
         client = self._outbreak_client()
         connection = SqliteConnection(f'{self._temp_directory.name}/web.sqlite')
         self.addCleanup(connection.close)
-        accounts = SqlAccountStore(connection)
+        accounts = SqlAccountStore(connection, server_secret='test secret')
         records = SqlRecordStore(connection)
         jill = accounts.create_user('jill', 'secret')
         carlos = accounts.create_user('carlos', 'secret')
@@ -418,7 +431,7 @@ class WebRouteTests(unittest.TestCase):
         client = self._outbreak_client('outbreak2')
         connection = SqliteConnection(f'{self._temp_directory.name}/web.sqlite')
         self.addCleanup(connection.close)
-        accounts = SqlAccountStore(connection)
+        accounts = SqlAccountStore(connection, server_secret='test secret')
         records = SqlRecordStore(connection)
         jill = accounts.create_user('jill', 'secret')
         carlos = accounts.create_user('carlos', 'secret')

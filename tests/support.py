@@ -34,12 +34,17 @@ def serving(config: AppConfig, game: str) -> AppConfig:
     )
 
 
-def create_accounts(config: AppConfig, *usernames: str, password: str = '1111') -> None:
-    """Create accounts in the configured shared store, as the signup page does."""
+def create_accounts(config: AppConfig, *usernames: str, password: str = '1111', kage: bool = False) -> None:
+    """Create accounts in the configured shared store, as the signup page does.
+
+    `kage` also stores the KAGE login key, as a KAGE-SDK game's signup page does.
+    """
 
     storage = create_storage(config)
     try:
         for username in usernames:
-            storage.accounts.create_user(username, password)
+            account = storage.accounts.create_user(username, password)
+            if kage:
+                storage.accounts.set_kage_login_key(account, password.encode('utf-8'))
     finally:
         storage.close()

@@ -80,19 +80,32 @@ def handle_login_client(context: HandlerContext, message: SnapMessage) -> list[S
             )
         ]
 
+    kage_variant = _is_kage_bootstrap_variant(message)
+    if kage_variant and not account.kage_login_key:
+        # KAGE-SDK `kkBootStrapLoginSuccess` decrypts the `0x2d` payload with
+        # the password the player typed in game (`kkLoginClient` keeps it at
+        # `app+1148`); only the stored KAGE login key can encrypt it.
+        LOGGER.warning(
+            (
+                'Rejecting login-client from %s:%d: account %r has no KAGE login key; '
+                "it is stored by one login on the game's signup page."
+            ),
+            message.endpoint.host,
+            message.endpoint.port,
+            login,
+        )
+        return [
+            context.reply(
+                message,
+                type_flags=FLAG_CHANNEL_BITS,
+                command=commands.CMD_BOOTSTRAP_LOGIN_FAIL,
+            )
+        ]
+
     handoff = context.handoffs.issue(message.endpoint, account, game_identifier=game_identifier)
     session = context.sessions.adopt(handoff)
 
-    if _is_kage_bootstrap_variant(message):
-        kage_key = _resolve_kage_bootstrap_key(raw_login=login, account=account)
-        if not kage_key:
-            return [
-                context.reply(
-                    message,
-                    type_flags=FLAG_CHANNEL_BITS,
-                    command=commands.CMD_BOOTSTRAP_LOGIN_FAIL,
-                )
-            ]
+    if kage_variant:
         advertised_game_host = _resolve_game_target_host(
             context=context,
             game_identifier=game_identifier,
@@ -103,7 +116,7 @@ def handle_login_client(context: HandlerContext, message: SnapMessage) -> list[S
             login_field=login,
             server_host=advertised_game_host,
             server_port=game_target.port,
-            key_material=kage_key,
+            key_material=account.kage_login_key,
         )
         return [_login_success(context, message, session.session_id, success_payload)]
 
@@ -125,37 +138,6 @@ def handle_login_client(context: HandlerContext, message: SnapMessage) -> list[S
             session_id=session.session_id,
         )
     ]
-
-
-def _resolve_kage_bootstrap_key(*, raw_login: str, account) -> bytes:
-    """Resolve key material for `SLUS_204.98` bootstrap success payloads.
-
-    `kkLoginClient` stores runtime `login_password` at `app+0x47c`, and
-    `kkBootStrapLoginSuccess` decrypts `0x2d` with that exact byte string.
-    """
-
-    if account.bootstrap_login_key:
-        return account.bootstrap_login_key
-
-    login_fallback = raw_login.encode('utf-8')
-    if login_fallback:
-        LOGGER.debug(
-            (
-                'KAGE bootstrap key for account %r is unavailable as cleartext; '
-                'falling back to login-field key material.'
-            ),
-            account.username,
-        )
-        return login_fallback
-
-    LOGGER.error(
-        (
-            'KAGE bootstrap key for account %r is unavailable: both clear login '
-            'key and login-field key material are empty.'
-        ),
-        account.username,
-    )
-    return b''
 
 
 def handle_bootstrap_check(context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:

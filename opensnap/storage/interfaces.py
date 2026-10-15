@@ -33,6 +33,9 @@ class AccountStore(Protocol):
     def set_team(self, user_id: int, team: str) -> None:
         """Set user team."""
 
+    def set_kage_login_key(self, account: Account, key: bytes) -> None:
+        """Store the password a KAGE-SDK game decrypts its bootstrap login reply with."""
+
     def create_user(self, username: str, password: str) -> Account:
         """Create an account; raises `DuplicateAccountError` if the name exists."""
 

@@ -32,7 +32,7 @@ def create_storage(config: AppConfig) -> StorageBundle:
     connection = open_connection(config)
     upgrade_password_records(connection)
     return StorageBundle(
-        accounts=SqlAccountStore(connection),
+        accounts=SqlAccountStore(connection, server_secret=config.server.server_secret),
         handoffs=SqlSessionHandoffStore(connection),
         records=SqlRecordStore(connection),
         online_players=SqlOnlinePlayerStore(connection),

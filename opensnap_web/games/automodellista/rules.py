@@ -4,6 +4,7 @@ The row helpers are shared with the Beta1 serializer (`rules_beta1`).
 """
 
 from collections.abc import Mapping, Sequence
+import struct
 
 # AM-USA-GAME-RULE parser contract recovered from `browser.bin` mode-9 path.
 #
@@ -84,6 +85,12 @@ AM_RULE_ROW_FIELDS = {
         'format': 'u8(high_nibble=needed_players_default,low_nibble=max_people_default)',
         'meaning': 'Packed menu defaults used by rule-init logic.',
     },
+    'my_performance': {
+        'offset': 20,
+        'size': 4,
+        'format': 'u32be',
+        'meaning': 'Row 0 only: fallback `MyPerformance` (see `AM_MY_PERFORMANCE`).',
+    },
     'event_flag': {
         'offset': 26,
         'size': 1,
@@ -98,6 +105,24 @@ AM_RULE_OFFSET_LAP_SEED = int(AM_RULE_ROW_FIELDS['lap_seed']['offset'])
 AM_RULE_OFFSET_EDIT_MASK = int(AM_RULE_ROW_FIELDS['edit_mask']['offset'])
 AM_RULE_OFFSET_PLAYERS_PACKED = int(AM_RULE_ROW_FIELDS['players_packed']['offset'])
 AM_RULE_OFFSET_EVENT_FLAG = int(AM_RULE_ROW_FIELDS['event_flag']['offset'])
+AM_RULE_OFFSET_MY_PERFORMANCE = int(AM_RULE_ROW_FIELDS['my_performance']['offset'])
+AM_RULE_FIELD_MY_PERFORMANCE = 'my_performance'
+
+# `MyPerformance` is the line speed (bytes/ms) passed to `kkCreateApplication`
+# as the SN@P bandwidth (`cpnLoginInitialize`, `SLUS_206.42` 0x00278930). It
+# sets the reliable resend interval, `(len + bw + 923) / bw + 34` ms, of which
+# the SDK allows 5 before a fatal error (`kkSendOperation` 0x002ea900), and the
+# send pacing, `min(17, (len + bw + 31) / bw)` ms. Without it the game keeps the
+# LAN preset 1000 (~36 ms per try, ~180 ms in all), so any player above about
+# 150 ms round trip loses the connection at the first reliable packet. 7 is a
+# 56k modem, the slowest line the game supports: ~175-290 ms per try, ~1.2 s in
+# all, and at most 14 ms pacing (71 packets/s against the 16-24 races send), so
+# a slow or jittery link costs a late resend instead of the connection. (The
+# release's own default when its ping table has no value is 20,
+# `check_performance` 0x002842b0, ~0.5 s in all.) Release reads
+# it from row 0 `+0x14..+0x17` when the performance row has no ping table
+# (0x00284824); Beta1 always reads it from row 0 (`rules_beta1`).
+AM_MY_PERFORMANCE = 7
 
 # Unresolved offsets are intentionally tracked to prevent accidental "silent" reuse.
 # These bytes are carried through untouched unless an explicit override is requested.
@@ -109,6 +134,7 @@ AM_RULE_KNOWN_OFFSETS = frozenset(
         AM_RULE_OFFSET_EDIT_MASK,
         AM_RULE_OFFSET_PLAYERS_PACKED,
         AM_RULE_OFFSET_EVENT_FLAG,
+        *range(AM_RULE_OFFSET_MY_PERFORMANCE, AM_RULE_OFFSET_MY_PERFORMANCE + 4),
     )
 )
 AM_RULE_UNKNOWN_OFFSETS = tuple(
@@ -414,6 +440,8 @@ AM_GAME_RULE_CONFIG = {
             'label': 'Mountain',
             'template': AM_RULE_TEMPLATE_NAME_NORMAL,
             'field_overrides': {
+                # Row 0 carries the line speed for every lobby type.
+                'my_performance': AM_MY_PERFORMANCE,
                 # Override byte +19 low nibble to `8` so release `set_netrule_normal`
                 # enters its editable `2..8` branch. The displayed default still
                 # comes from the binary-side selection seed, not directly from this
@@ -745,6 +773,9 @@ def _apply_semantic_rule_fields(
         if name == AM_RULE_PACKED_FIELD_MAX_PEOPLE_DEFAULT_COUNT:
             max_people_default = coerce_max_people_default_count(value, label=f'{row_label} {name}')
             continue
+        if name == AM_RULE_FIELD_MY_PERFORMANCE:
+            pack_my_performance(row, AM_RULE_OFFSET_MY_PERFORMANCE, value, label=f'{row_label} {name}')
+            continue
         if name == 'event_flag' and not allow_event_flag:
             raise ValueError(f'{row_label} does not support event_flag')
         if name not in AM_RULE_SCALAR_FIELD_OFFSETS:
@@ -763,6 +794,14 @@ def _apply_semantic_rule_fields(
             ),
             label=row_label,
         )
+
+
+def pack_my_performance(row: bytearray, offset: int, value: int, *, label: str) -> None:
+    """Write `MyPerformance` as the big-endian u32 the game reads."""
+
+    if not isinstance(value, int) or not 1 <= value <= 0xFFFF:
+        raise ValueError(f'{label} must be 1..65535 (`cpnLoginInitialize` passes the low halfword), got {value!r}')
+    struct.pack_into('>I', row, offset, value)
 
 
 def apply_byte_overrides(
