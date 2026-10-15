@@ -14,6 +14,7 @@ from opensnap.config import GameServerTargetConfig, StorageConfig, default_app_c
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.core.sessions import ReliableReceipt
 from opensnap.plugins.automodellista import AutoModellistaPlugin
+from opensnap.plugins.automodellista_beta1 import AutoModellistaBeta1Plugin
 from opensnap.protocol import commands
 from opensnap.protocol.codec import decode_datagram
 from opensnap.protocol.constants import (
@@ -1009,6 +1010,31 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(join_result.messages), 2)
         self.assertEqual(engine.tick(), [])
 
+    def test_beta1_host_naming_the_joiner_ends_join_callback_resends(self) -> None:
+        engine = SnapProtocolEngine(config=self._config, plugin=AutoModellistaBeta1Plugin())
+        endpoint_one = Endpoint(host='127.0.0.1', port=50122)
+        endpoint_two = Endpoint(host='127.0.0.2', port=50123)
+        host_session = _create_session_via_login(engine, endpoint_one, 'test')
+        joiner_session = _create_session_via_login(engine, endpoint_two, 'test')
+        _join_lobby(engine, endpoint_one, host_session, lobby_id=1, sequence=3)
+        _join_lobby(engine, endpoint_two, joiner_session, lobby_id=1, sequence=3)
+        room_id = _create_room(engine, endpoint_one, host_session, sequence=4, room_name='beta1-join')
+        _join_room(engine, endpoint_two, joiner_session, room_id=room_id, sequence=4)
+
+        start = SnapMessage(
+            endpoint=endpoint_one,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE,
+            packet_number=0,
+            command=commands.CMD_SEND_TARGET,
+            session_id=host_session,
+            sequence_number=5,
+            acknowledge_number=0,
+            payload=struct.pack('>LLH', 1, joiner_session, 0x0201),
+        )
+        self.assertFalse(engine.handle_datagram(_encode(start), endpoint_one).errors)
+
+        self.assertEqual([message for _ in range(4) for message in engine.tick()], [])
+
     def test_room_leave_notifies_remaining_members(self) -> None:
         config = self._config
         engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
@@ -1504,6 +1530,33 @@ class EngineFlowTests(unittest.TestCase):
             FLAG_ROOM | FLAG_RELIABLE,
         )
         self.assertEqual(relay.type_flags & FLAG_RESPONSE, 0)
+
+    def test_beta1_relay_drops_the_ack_the_sender_carried_for_the_server(self) -> None:
+        engine = SnapProtocolEngine(config=self._config, plugin=AutoModellistaBeta1Plugin())
+        endpoint_one = Endpoint(host='127.0.0.1', port=50098)
+        endpoint_two = Endpoint(host='127.0.0.2', port=50099)
+        sender_session = _create_session_via_login(engine, endpoint_one, 'test')
+        receiver_session = _create_session_via_login(engine, endpoint_two, 'test')
+        _join_lobby(engine, endpoint_one, sender_session, lobby_id=1, sequence=3)
+        _join_lobby(engine, endpoint_two, receiver_session, lobby_id=1, sequence=3)
+        room_id = _create_room(engine, endpoint_one, sender_session, sequence=4, room_name='room-ack')
+        _join_room(engine, endpoint_two, receiver_session, room_id=room_id, sequence=4)
+
+        game_request = SnapMessage(
+            endpoint=endpoint_one,
+            type_flags=FLAG_ROOM | FLAG_RELIABLE | FLAG_RESPONSE,
+            packet_number=0,
+            command=commands.CMD_SEND,
+            session_id=sender_session,
+            sequence_number=5,
+            acknowledge_number=7,
+            payload=struct.pack('>H', 0x0658) + b'\x00\x00\x41\x91',
+        )
+        relay = engine.handle_datagram(_encode(game_request), endpoint_one).messages[1]
+
+        self.assertEqual(relay.endpoint, endpoint_two)
+        self.assertEqual(relay.type_flags, FLAG_ROOM | FLAG_RELIABLE)
+        self.assertEqual(relay.acknowledge_number, 0)
 
     def test_end_of_game_reports_emit_room_transition_8009_once_all_members_finish(self) -> None:
         config = self._config

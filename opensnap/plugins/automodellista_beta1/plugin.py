@@ -4,6 +4,7 @@ import logging
 import struct
 
 from opensnap.core.context import HandlerContext
+from opensnap.core.sessions import Session
 from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.plugins.automodellista.plugin import (
     _is_allowed_lobby_id,
@@ -105,6 +106,31 @@ class AutoModellistaBeta1Plugin(AutoModellistaPlugin):
             room_id=room_id,
             excluding_endpoint=message.endpoint,
         )
+
+    def _handle_room_game_send(
+        self,
+        *,
+        context: HandlerContext,
+        session: Session,
+        request: SnapMessage,
+        type_flags: int | None = None,
+    ) -> list[SnapMessage]:
+        # Relay a room game packet without the sender's `0x4000`, which only
+        # says the sender's packet carries an ACK for the server
+        # (`kkSetACKToSendData`). Kept, each relay re-ACKs the recipient's last
+        # packet; `kkSetRevAck` (0x002ebaf4) matches no packet in flight, stops
+        # resending them all, and a lost ACK then ends in error 601.
+        flags = (request.type_flags if type_flags is None else type_flags) & ~FLAG_RESPONSE
+        return super()._handle_room_game_send(context=context, session=session, request=request, type_flags=flags)
+
+    def _clear_pending_room_join_for_send_target(self, payload: bytes) -> None:
+        # Beta1 sends no `0x8008` / `0x8102`. Its host names each joiner at `+4`
+        # of a send-target as soon as the join callback gave it the session
+        # (`lbc_in_room_04` 0x002cb620 -> `cpnkkSendGamePacket` 0x0035e4b8..
+        # 0x0035e4e8, one per occupied slot), so the join needs no resend; each
+        # resend's stray ACK would also stop `kkSetRevAck` resending (above).
+        if len(payload) >= 8:
+            self._pending_room_joins.pop(get_u32(payload, 4), None)
 
     def _handle_query_attribute(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         channel_type = message.type_flags & FLAG_CHANNEL_BITS
