@@ -50,7 +50,12 @@ class GamePlugin:
     # common 30 s router UDP timeout.
     keepalive_interval_seconds: float | None = 20.0
     # Seconds a client may stay silent while it owes an ACK before the
-    # transport ends its session.
+    # transport ends its session. The client itself gives up after ~5000 ms
+    # of silence (`kkReceiveData` refreshes its last-receive clock on every
+    # packet and `kkDispatchOperationByPreriod` times out after `0x1388` ms:
+    # `SLUS_204.98` `0x002e887c`, `0x002e8700..0x002e8778`; `SLUS_206.42`
+    # `0x002eed94`, `0x002eeb14..0x002eebd8`); the server allows a broader
+    # 60 s so a client can recover from a network hiccup first.
     reliable_timeout_seconds: float = 60.0
 
     def register_handlers(self, router: CommandRouter, context: HandlerContext) -> None:

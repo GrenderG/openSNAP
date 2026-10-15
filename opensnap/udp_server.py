@@ -130,14 +130,6 @@ class SnapUdpServer:
     # a missing oldest packet cannot be buried under more than the peer can
     # buffer behind that gap.
     _MAX_INFLIGHT_RELIABLE_PER_SESSION = 0x10
-    # `kkReceiveData` refreshes the last-receive clock on every inbound packet,
-    # and `kkDispatchOperationByPreriod` escalates to timeout after roughly
-    # `0x1388` (`5000 ms`) of silence in both builds:
-    # - `SLUS_204.98` `0x002e887c`, `0x002e8700..0x002e8778`
-    # - `SLUS_206.42` `0x002eed94`, `0x002eeb14..0x002eebd8`
-    # openSNAP intentionally uses a broader `60 s` server-side grace so clients
-    # have more room to recover from temporary network hiccups before the
-    # session is torn down.
 
     def __init__(
         self,

@@ -337,9 +337,9 @@ class SnapProtocolEngine:
 
     @property
     def reliable_timeout_seconds(self) -> float:
-        """Seconds a client may stay silent while it owes an ACK (the plugin's, else 60)."""
+        """Seconds a client may stay silent while it owes an ACK (the plugin's, else the default)."""
 
-        return 60.0 if self._plugin is None else self._plugin.reliable_timeout_seconds
+        return (self._plugin or GamePlugin).reliable_timeout_seconds
 
     def _keep_idle_sessions_alive(self) -> list[SnapMessage]:
         """Send a reliable empty packet to sessions silent past the plugin's keepalive interval.
