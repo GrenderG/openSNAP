@@ -54,6 +54,8 @@ class Session:
     last_inbound_at: float = field(default_factory=time.monotonic)
     # When the last keepalive was sent (see `GamePlugin.keepalive_interval_seconds`).
     keepalive_sent_at: float = 0.0
+    # Line speed the client reported at its KICS login (bytes/ms).
+    line_speed: int = 0
 
 
 @dataclass(frozen=True, slots=True)

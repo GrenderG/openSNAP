@@ -112,6 +112,7 @@ def handle_login_to_kics(context: HandlerContext, message: SnapMessage) -> list[
 
     parsed = parse_kics_login_payload(message.payload)
     context.accounts.set_team(session.user_id, parsed.team)
+    session.line_speed = parsed.line_speed
     # `CMD_RESULT_LOGIN_TO_KICS` words, identical in `SLUS_206.42`
     # (`kkDispatchingOperation` `0x002ede78..0x002ee004`) and `SLUS_208.96`
     # (`0x00202cf8..0x00202e0c`):
@@ -178,7 +179,11 @@ class KicsLoginPayload:
     client_ip: str
     mtu_hint: int
     client_flags: int
-    version_code: int
+    # `kkLoginClient` fills the struct `kkLoginToKICS` sends: the client's
+    # local UDP port (`+12`, `SLUS_204.98` 0x002e8c28) and its line speed in
+    # bytes/ms, the SDK bandwidth `app+64` (`+14`, 0x002e8c44).
+    local_port: int
+    line_speed: int
     login: str
     region_code: int
     marker_bb: int
@@ -194,7 +199,8 @@ def parse_kics_login_payload(payload: bytes) -> KicsLoginPayload:
         client_ip=_read_ipv4(payload, 0),
         mtu_hint=_read_u32(payload, 4),
         client_flags=_read_u32(payload, 8),
-        version_code=_read_u32(payload, 12),
+        local_port=_read_u32(payload, 12) >> 16,
+        line_speed=_read_u32(payload, 12) & 0xFFFF,
         login=get_c_string(payload, KICS_LOGIN_OFFSET).rstrip(KICS_LOGIN_PADDING),
         region_code=_read_u32(payload, 0x20),
         marker_bb=_read_u32(payload, 0x24),

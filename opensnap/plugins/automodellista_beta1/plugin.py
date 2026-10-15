@@ -55,6 +55,14 @@ class AutoModellistaBeta1Plugin(AutoModellistaPlugin):
     # the room's result transition or relays on the results and car save
     # screens, which the player leaves at their own pace.
     reliable_timeout_seconds = 300.0
+    # Beta1 merges every datagram waiting at one poll into a single buffer and
+    # drops what follows a leading bare ACK (`CopyDataToBuf` 0x002ed400,
+    # `kkReceiveExtentCheck` 0x002ec080), and a non-matching ACK stops it
+    # resending earlier packets (`kkSetRevAck` 0x002ebaf4; `kkSendOperation`
+    # resends state 4 only, 0x002e6b28): one swallowed ACK then fills its
+    # 16-slot send window and the game fails with error 601. The SDK's own
+    # sender never puts two datagrams in one frame.
+    framed_sender = True
 
     def register_handlers(self, router, context: HandlerContext) -> None:
         super().register_handlers(router, context)

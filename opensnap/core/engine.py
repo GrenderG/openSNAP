@@ -341,6 +341,12 @@ class SnapProtocolEngine:
 
         return (self._plugin or GamePlugin).reliable_timeout_seconds
 
+    @property
+    def framed_sender(self) -> bool:
+        """Whether the transport sends to this game's clients like the KAGE-generation SDK."""
+
+        return (self._plugin or GamePlugin).framed_sender
+
     def _keep_idle_sessions_alive(self) -> list[SnapMessage]:
         """Send a reliable empty packet to sessions silent past the plugin's keepalive interval.
 

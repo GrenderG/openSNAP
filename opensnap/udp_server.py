@@ -1,7 +1,7 @@
 """Shared UDP transport server for openSNAP services."""
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 import logging
 import socket
 import time
@@ -32,6 +32,94 @@ class _ReliablePending:
     last_sent_at: float
     retransmit_attempts: int = 0
     first_sent_at: float = 0.0
+    # Framed sessions only (see `_FramedLink`): tracked from when it is queued,
+    # as `kkSetMessage` takes a window slot then (`SLUS_204.98` 0x002eb6b8); the
+    # message, resent through the link, its SDK resend wait, and whether it
+    # waits in the link.
+    message: SnapMessage | None = None
+    framed_wait: float = 0.0
+    awaiting_send: bool = False
+
+
+# Line speed the KAGE-generation SDK assumes when none is set (bytes/ms,
+# `DeviceModuleInitialize_blocking` `SLUS_204.98` 0x0035dd18).
+_DEFAULT_LINE_SPEED = 1000
+
+
+@dataclass(slots=True)
+class _FramedLink:
+    """One client's outbound queue, sent the way the KAGE-generation SDK sends (`SLUS_204.98`).
+
+    Each 60 Hz pass sends at most one datagram (`kkReceiveData` 0x002e8880..
+    0x002e88e8, one `kkSendToTargetServer`): at once when it carries an ACK,
+    otherwise once the previous datagram's pacing has passed, max(17, (len +
+    bw + 31) / bw) ms (0x002e6c68..0x002e6c9c). An ACK rides on the first
+    queued message that has none, else goes alone (`kkSetAckNumber`
+    0x002eb5d8, `kkSetACKToSendData`). A reliable datagram is resent (len + bw
+    + 923) / bw + adj ms after it went out, adj being the average the client
+    keeps of its round trips (`kkSendToTargetServer` 0x002e6cec..0x002e6d18,
+    `ReCalcRealSpeed` 0x002eb9b8).
+
+    Used for games whose plugin sets `framed_sender`: a client that can only
+    take this rhythm (see `AutoModellistaBeta1Plugin`) jams its send window when
+    the server sends two datagrams in one frame or a bare ACK ahead of data.
+    """
+
+    endpoint: Endpoint
+    line_speed: int
+    # [message, ACK it carries or None], in send order.
+    queue: deque[list] = field(default_factory=deque)
+    last_send_ms: int = 0
+    pace_ms: int = 0
+    # `ReCalcRealSpeed` ring of 32 samples, each starting at 34 ms (`kkBootStrapLoginSuccess` 0x002e7c18..0x002e7c50).
+    adjust_ring: list[int] = field(default_factory=lambda: [34] * 32)
+    adjust_index: int = 0
+
+    def add(self, message: SnapMessage) -> None:
+        ack = message.acknowledge_number if message.type_flags & FLAG_RESPONSE else None
+        self.queue.append([message, ack])
+
+    def add_ack(self, ack_message: SnapMessage) -> None:
+        for entry in self.queue:
+            if entry[1] is None:
+                entry[1] = ack_message.acknowledge_number
+                return
+        self.add(ack_message)
+
+    def pop_due(self, now_ms: int) -> SnapMessage | None:
+        if not self.queue:
+            return None
+        message, ack = self.queue[0]
+        if ack is None and now_ms <= self.last_send_ms + self.pace_ms:
+            return None
+        self.queue.popleft()
+        if ack is not None:
+            message = replace(message, type_flags=message.type_flags | FLAG_RESPONSE, acknowledge_number=ack)
+        self.last_send_ms = now_ms
+        self.pace_ms = max(17, (_message_length(message) + self.line_speed + 31) // self.line_speed)
+        return message
+
+    def resend_wait_seconds(self, message: SnapMessage) -> float:
+        adjust = sum(self.adjust_ring) >> 5
+        return ((_message_length(message) + self.line_speed + 923) // self.line_speed + adjust) / 1000
+
+    def sample(self, pending: _ReliablePending, ack_length: int, now: float) -> None:
+        """Move one ring slot by 1 ms per first-try ACK, as `ReCalcRealSpeed` does."""
+
+        if pending.retransmit_attempts:
+            return
+        elapsed = int((now - pending.last_sent_at) * 1000) + (896 - ack_length) // self.line_speed
+        if pending.framed_wait * 1000 < elapsed:
+            self.adjust_ring[self.adjust_index] += 1
+        elif elapsed >= 18:
+            self.adjust_ring[self.adjust_index] -= 1
+        else:
+            return
+        self.adjust_index = (self.adjust_index + 1) & 31
+
+
+def _message_length(message: SnapMessage) -> int:
+    return 16 + len(message.payload)
 
 
 class SnapUdpServer:
@@ -85,6 +173,9 @@ class SnapUdpServer:
     - If the session is already gone by the time retransmit logic runs, the
       server immediately clears the stale pending state instead of retrying
       forever.
+    - Sessions of a game whose plugin sets `framed_sender` queue their messages
+      on a `_FramedLink` instead of sending at once; it sends them, at most one
+      datagram per 60 Hz frame, and their reliable tracking stays here.
 
     The main loop therefore has four phases:
 
@@ -149,6 +240,8 @@ class SnapUdpServer:
         self._footer_bytes_by_endpoint: dict[tuple[str, int], bytes] = {}
         self._last_inbound_at_by_endpoint: dict[tuple[str, int], float] = {}
         self._rtt_estimate_by_endpoint: dict[tuple[str, int], float] = {}
+        self._framed_links: dict[int, _FramedLink] = {}
+        self._next_frame_at = 0.0
 
     def run(self) -> None:
         """Run UDP loop until stopped."""
@@ -235,6 +328,7 @@ class SnapUdpServer:
                         next_tick = now + self._tick_interval_seconds
 
                     self._retransmit_due(udp_socket)
+                    self._pump_framed_links(udp_socket)
         finally:
             self._engine.close()
 
@@ -255,6 +349,8 @@ class SnapUdpServer:
         """Return how long the recv loop may sleep before the next due task."""
 
         tick_delay = max(0.0, next_tick - now)
+        if any(link.queue for link in self._framed_links.values()):
+            tick_delay = min(tick_delay, max(0.0, self._next_frame_at - now))
         retransmit_delay = self._next_retransmit_delay_seconds(now)
         if retransmit_delay is None:
             return min(tick_delay, self._IDLE_SOCKET_POLL_SECONDS)
@@ -265,6 +361,8 @@ class SnapUdpServer:
 
         next_delay: float | None = None
         for pending in self._reliable_pending.values():
+            if pending.awaiting_send:
+                continue
             delay = max(0.0, self._retransmit_wait(pending) - (now - pending.last_sent_at))
             if next_delay is None or delay < next_delay:
                 next_delay = delay
@@ -273,6 +371,8 @@ class SnapUdpServer:
     def _retransmit_wait(self, pending: _ReliablePending) -> float:
         """Return how long one pending reliable waits after its last send."""
 
+        if pending.message is not None:
+            return pending.framed_wait
         return self._rtt_estimate(pending.endpoint) + (len(pending.datagram) + 131) // 100 / 1000 + self._backoff(pending)
 
     def _backoff(self, pending: _ReliablePending) -> float:
@@ -359,7 +459,7 @@ class SnapUdpServer:
             # not the session id: find the session by endpoint then.
             session = self._engine.resolve_session(endpoint, message.session_id)
             session_id = message.session_id if session is None else session.session_id
-            self._clear_reliable_pending(endpoint, session_id, message.acknowledge_number)
+            self._clear_reliable_pending(endpoint, session_id, message.acknowledge_number, len(payload) - 4)
 
     def _track_reliable(
         self,
@@ -372,13 +472,7 @@ class SnapUdpServer:
         if (message.type_flags & FLAG_RELIABLE) == 0:
             return
 
-        key = (
-            message.endpoint.host,
-            message.endpoint.port,
-            message.session_id,
-            message.sequence_number,
-        )
-        self._reliable_pending[key] = _ReliablePending(
+        self._reliable_pending[self._pending_key(message)] = _ReliablePending(
             endpoint=message.endpoint,
             session_id=message.session_id,
             sequence_number=message.sequence_number,
@@ -389,7 +483,13 @@ class SnapUdpServer:
             first_sent_at=send_time,
         )
 
-    def _clear_reliable_pending(self, endpoint: Endpoint, session_id: int, acknowledge_number: int) -> None:
+    def _clear_reliable_pending(
+        self,
+        endpoint: Endpoint,
+        session_id: int,
+        acknowledge_number: int,
+        ack_length: int = 16,
+    ) -> None:
         """Clear one exactly acknowledged reliable packet for one peer/session."""
 
         keys_to_remove = [
@@ -403,7 +503,12 @@ class SnapUdpServer:
         now = time.monotonic()
         for key in keys_to_remove:
             pending = self._reliable_pending.pop(key, None)
-            if pending is not None:
+            if pending is None:
+                continue
+            link = self._framed_links.get(session_id)
+            if pending.message is not None and link is not None:
+                link.sample(pending, ack_length, now)
+            else:
                 self._sample_rtt(pending, now)
 
     def _retransmit_due(self, udp_socket: socket.socket) -> None:
@@ -423,7 +528,12 @@ class SnapUdpServer:
             if not self._is_keepalive(pending) and self._peer_is_inactive(pending, now):
                 self._timeout_session(udp_socket, pending)
                 continue
-            if (now - pending.last_sent_at) < self._retransmit_wait(pending):
+            if pending.awaiting_send or (now - pending.last_sent_at) < self._retransmit_wait(pending):
+                continue
+            link = self._framed_links.get(pending.session_id)
+            if pending.message is not None and link is not None:
+                link.add(pending.message)
+                pending.awaiting_send = True
                 continue
 
             self._logger.debug(
@@ -521,6 +631,7 @@ class SnapUdpServer:
             self._reliable_pending.pop(key, None)
         for key in [key for key in self._deferred_reliable if key[2] == session_id]:
             self._deferred_reliable.pop(key, None)
+        self._framed_links.pop(session_id, None)
 
     def _move_session_transport(self, old: Endpoint, new: Endpoint, session_id: int) -> None:
         """Re-address what one session still has pending or deferred to its client's new port.
@@ -540,6 +651,11 @@ class SnapUdpServer:
             for message in deferred:
                 message.endpoint = new
             self._deferred_reliable[(new.host, new.port, session_id)] = deferred
+        link = self._framed_links.get(session_id)
+        if link is not None:
+            link.endpoint = new
+            for entry in link.queue:
+                entry[0].endpoint = new
         rtt_estimate = self._rtt_estimate_by_endpoint.get((old.host, old.port))
         self._clear_session_runtime(old)
         if rtt_estimate is not None:
@@ -553,6 +669,7 @@ class SnapUdpServer:
         """Remove deferred reliable packets for one endpoint/session."""
 
         self._deferred_reliable.pop((endpoint.host, endpoint.port, session_id), None)
+        self._framed_links.pop(session_id, None)
 
     def _clear_session_runtime(self, endpoint: Endpoint) -> None:
         """Drop cached transport-side state for one endpoint."""
@@ -628,13 +745,23 @@ class SnapUdpServer:
         message: SnapMessage,
         send_time: float,
     ) -> None:
-        """Encode, track, and send one outbound SNAP message."""
+        """Encode, track, and send one outbound SNAP message, or queue it on its session's framed link."""
 
+        link = self._framed_link(message)
+        if link is not None:
+            if message.type_flags & FLAG_RELIABLE:
+                self._track_reliable(message, b'', send_time)
+                pending = self._reliable_pending[self._pending_key(message)]
+                pending.message = message
+                pending.awaiting_send = True
+                link.add(message)
+            elif message.command == commands.CMD_ACK and not message.payload:
+                link.add_ack(message)
+            else:
+                link.add(message)
+            return
         endpoint = message.endpoint
-        datagram = self._engine.encode_messages(
-            [message],
-            footer_bytes=self._footer_bytes_by_endpoint.get((endpoint.host, endpoint.port), FOOTER_BYTES),
-        )
+        datagram = self._encode(message)
         self._track_reliable(message, datagram, send_time)
         self._send_new_datagram(
             udp_socket,
@@ -642,6 +769,59 @@ class SnapUdpServer:
             command=message.command,
             datagram=datagram,
         )
+
+    def _encode(self, message: SnapMessage) -> bytes:
+        endpoint = message.endpoint
+        return self._engine.encode_messages(
+            [message],
+            footer_bytes=self._footer_bytes_by_endpoint.get((endpoint.host, endpoint.port), FOOTER_BYTES),
+        )
+
+    def _framed_link(self, message: SnapMessage) -> _FramedLink | None:
+        """Return the framed link of the message's session when its game sends that way."""
+
+        if not self._engine.framed_sender:
+            return None
+        link = self._framed_links.get(message.session_id)
+        if link is None:
+            session = self._engine.resolve_session(message.endpoint, message.session_id)
+            if session is None or session.session_id != message.session_id:
+                return None
+            link = _FramedLink(endpoint=message.endpoint, line_speed=session.line_speed or _DEFAULT_LINE_SPEED)
+            self._framed_links[message.session_id] = link
+        return link
+
+    def _pump_framed_links(self, udp_socket: socket.socket) -> None:
+        """Send at most one datagram per framed link on each 60 Hz frame."""
+
+        now = time.monotonic()
+        if not self._framed_links or now < self._next_frame_at:
+            return
+        self._next_frame_at = now + 1 / 60
+        now_ms = int(now * 1000)
+        for session_id, link in list(self._framed_links.items()):
+            session = self._engine.resolve_session(link.endpoint, session_id)
+            if session is None or session.session_id != session_id:
+                del self._framed_links[session_id]
+                continue
+            message = link.pop_due(now_ms)
+            if message is None:
+                continue
+            datagram = self._encode(message)
+            pending = self._reliable_pending.get(self._pending_key(message))
+            if pending is not None:
+                if pending.datagram:  # sent before: this is a resend queued by the retransmit pass
+                    pending.retransmit_attempts += 1
+                pending.message = message
+                pending.datagram = datagram
+                pending.last_sent_at = now
+                pending.framed_wait = link.resend_wait_seconds(message)
+                pending.awaiting_send = False
+            self._send_new_datagram(udp_socket, endpoint=message.endpoint, command=message.command, datagram=datagram)
+
+    @staticmethod
+    def _pending_key(message: SnapMessage) -> tuple[str, int, int, int]:
+        return (message.endpoint.host, message.endpoint.port, message.session_id, message.sequence_number)
 
     def _send_socket_datagram(
         self,

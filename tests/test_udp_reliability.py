@@ -45,6 +45,7 @@ class UdpReliabilityTests(unittest.TestCase):
         )
         engine.handle_transport_timeout.return_value = []
         engine.reliable_timeout_seconds = 60.0
+        engine.framed_sender = False
         # The session lives at the endpoint it is looked up from.
         engine.resolve_session.side_effect = lambda endpoint, session_id: Mock(
             room_id=1, endpoint=endpoint, session_id=session_id,
@@ -614,6 +615,63 @@ class UdpReliabilityTests(unittest.TestCase):
         with patch('opensnap.udp_server.time.monotonic', return_value=500.1):
             server._retransmit_due(_FakeSocket())  # type: ignore[arg-type]
         server._engine.handle_transport_timeout.assert_called_once_with(endpoint, session_id)
+
+    def _framed_server(self, endpoint: Endpoint, session_id: int) -> SnapUdpServer:
+        # AM Beta1: the client reported line speed 7 at its KICS login.
+        server = self._server()
+        server._engine.framed_sender = True
+        server._engine.resolve_session.side_effect = lambda found_at, header_id: Mock(
+            session_id=session_id, endpoint=endpoint, line_speed=7,
+        )
+        return server
+
+    def _pump_at(self, server: SnapUdpServer, at: float) -> list[bytes]:
+        fake_socket = _FakeSocket()
+        server._next_frame_at = 0.0
+        with patch('opensnap.udp_server.time.monotonic', return_value=at):
+            server._pump_framed_links(fake_socket)  # type: ignore[arg-type]
+        return [payload for payload, _ in fake_socket.sent]
+
+    def test_framed_client_gets_one_datagram_per_frame_after_the_sdk_pacing(self) -> None:
+        # Beta1 merges datagrams waiting at one poll and drops what follows a
+        # leading bare ACK; the SDK's own sender never sends two in one frame.
+        endpoint = Endpoint(host='170.253.44.213', port=1026)
+        session_id = 0x61384AE8
+        server = self._framed_server(endpoint, session_id)
+        relays = [
+            self._reliable_message(endpoint=endpoint, session_id=session_id, sequence_number=sequence)
+            for sequence in (134, 135)
+        ]
+        server._send_messages(_FakeSocket(), relays)  # type: ignore[arg-type]
+
+        first = self._pump_at(server, 100.0)
+        self.assertEqual([decode_datagram(d, endpoint)[0].sequence_number for d in first], [134])
+        # max(17, (80 + 7 + 31) // 7) = 17 ms after the first send.
+        self.assertEqual(self._pump_at(server, 100.017), [])
+        second = self._pump_at(server, 100.018)
+        self.assertEqual([decode_datagram(d, endpoint)[0].sequence_number for d in second], [135])
+
+    def test_framed_client_gets_its_ack_on_the_next_queued_datagram(self) -> None:
+        endpoint = Endpoint(host='170.253.44.213', port=1026)
+        session_id = 0x61384AE8
+        server = self._framed_server(endpoint, session_id)
+        relay = self._reliable_message(endpoint=endpoint, session_id=session_id, sequence_number=134)
+        ack = SnapMessage(
+            endpoint=endpoint,
+            type_flags=FLAG_ROOM | FLAG_RESPONSE,
+            packet_number=0,
+            command=commands.CMD_ACK,
+            session_id=session_id,
+            sequence_number=0,
+            acknowledge_number=137,
+        )
+        server._send_messages(_FakeSocket(), [relay, ack])  # type: ignore[arg-type]
+
+        (datagram,) = self._pump_at(server, 100.0)
+        (sent,) = decode_datagram(datagram, endpoint)
+        self.assertEqual((sent.command, sent.sequence_number, sent.acknowledge_number), (commands.CMD_SEND, 134, 137))
+        self.assertTrue(sent.type_flags & FLAG_RESPONSE)
+        self.assertEqual(self._pump_at(server, 101.0), [])
 
     def test_ack_with_the_clients_pre_login_word_clears_the_answer(self) -> None:
         # snap00.pcap: the bootstrap's login failure (0x2e) was ACKed at once with

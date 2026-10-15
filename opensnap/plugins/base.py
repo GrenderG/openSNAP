@@ -57,6 +57,10 @@ class GamePlugin:
     # `0x002eed94`, `0x002eeb14..0x002eebd8`); the server allows a broader
     # 60 s so a client can recover from a network hiccup first.
     reliable_timeout_seconds: float = 60.0
+    # Send to the client the way the KAGE-generation SDK sends (see
+    # `SnapUdpServer._FramedLink`): at most one datagram per 60 Hz frame, paced
+    # by the client's line speed, ACKs folded into the next queued datagram.
+    framed_sender: bool = False
 
     def register_handlers(self, router: CommandRouter, context: HandlerContext) -> None:
         """Register game-specific command handlers."""
