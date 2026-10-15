@@ -8,7 +8,6 @@ from opensnap_web.games.automodellista.rules import (
     AM_RULE_DEFAULT_INDEX_STANDARD_NEEDED_PLAYERS,
     AM_RULE_EDIT_MASK_STOCK_EDITABLE,
     AM_RULE_FINISH_GRACE_SECONDS_STOCK,
-    AM_MY_PERFORMANCE,
     AM_RULE_LAP_SEED_STOCK,
     AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE,
     apply_byte_overrides,
@@ -68,7 +67,7 @@ AM_BETA1_RULE_ROW_FIELDS = {
         'meaning': (
             'Row 0 only: `MyPerformance` (u32 big-endian), read by `lbc_prelogin_00` '
             '(0x002c722c..0x002c7280) over the 1000 preset when non-zero; Beta1 has no '
-            'ping measurement (see `AM_MY_PERFORMANCE`).'
+            'ping measurement (see `AM_BETA1_LINE_SPEED`).'
         ),
     },
     'players_packed': {
@@ -283,6 +282,32 @@ AM_BETA1_RULE_ROW_TEMPLATES = {
     AM_BETA1_RULE_TEMPLATE_NAME_NORMAL: AM_BETA1_RULE_TEMPLATE_NORMAL,
 }
 
+# Beta1's line speed (`MyPerformance`, bytes/ms), the SN@P bandwidth `bw`
+# its client reports back at the KICS login (+14), so the server's framed
+# sender uses it too. It sets, per reliable packet of `len` bytes:
+# - the resend timer, `(len + bw + 923) / bw + 34` ms (`kkSendToTargetServer`
+#   0x002e6cec..0x002e6d18; the 34 ms average drifts up by about 1/32 ms per
+#   late ACK, `ReCalcRealSpeed` 0x002eb9b8), 5 tries before a fatal error;
+# - the pacing between datagrams, `max(17, (len + bw + 31) / bw)` ms
+#   (0x002e6c68..0x002e6c9c); a datagram carrying an ACK is not paced.
+#
+# Beta1 must never resend before the first ACK can arrive: a duplicate ACK
+# matches no packet in flight, and `kkSetRevAck` (0x002ebaf4, Beta1 only) then
+# stops resending every sent, unacknowledged packet; one lost ACK after that
+# fills the 16-packet window and the game fails with ERROR 601. So the resend
+# timer must exceed the worst round trip. For a 48-byte race update:
+#
+#   bw   resend timer   pacing   reaches
+#   7    173 ms         17 ms    ~170 ms round trips (release value: 601 at 220 ms)
+#   4    277 ms         20 ms    ~270 ms
+#   3    358 ms         27 ms    ~350 ms: one packet per 2 frames (~30/s)
+#   2    520 ms         40 ms    one packet per 3 frames (20/s), below race rates
+#
+# 3 covers players worldwide while still sending ~30 packets/s; the cost is
+# a longer wait before a lost packet is resent. Beta1 reads it once, before
+# its first connection, so it cannot follow a measured round trip.
+AM_BETA1_LINE_SPEED = 3
+
 AM_BETA1_RULE_PROFILE_INDEX_MOUNTAIN = 0
 AM_BETA1_RULE_PROFILE_INDEX_CITY = 1
 AM_BETA1_RULE_PROFILE_INDEX_CIRCUIT = 2
@@ -295,7 +320,7 @@ AM_BETA1_GAME_RULE_CONFIG = {
             'template': AM_BETA1_RULE_TEMPLATE_NAME_NORMAL,
             'field_overrides': {
                 # Row 0 carries the line speed for every lobby type.
-                'my_performance': AM_MY_PERFORMANCE,
+                'my_performance': AM_BETA1_LINE_SPEED,
                 'max_people_default_count': AM_RULE_STANDARD_MAX_PEOPLE_EDITABLE_OVERRIDE,
             },
             'byte_overrides': {},

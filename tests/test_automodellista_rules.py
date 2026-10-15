@@ -145,7 +145,7 @@ class AutoModellistaBeta1RuleSerializationTests(unittest.TestCase):
         self.assertEqual(
             build_ambeta1_rule_csv_rows(),
             (
-                '00000a0000080f00010000000000000000280000000700000000',
+                '00000a0000080f00010000000000000000280000000300000000',
                 '00000a0000080f00010000000000000000280000000000000000',
                 '00000a0000080f00010000000000000000280000000000000000',
             ),
@@ -188,7 +188,7 @@ class AutoModellistaMyPerformanceTests(unittest.TestCase):
         beta1_rows = [bytes.fromhex(row) for row in build_ambeta1_rule_csv_rows()]
 
         self.assertEqual(release_rows[0][20:24], (7).to_bytes(4, 'big'))
-        self.assertEqual(beta1_rows[0][18:22], (7).to_bytes(4, 'big'))
+        self.assertEqual(beta1_rows[0][18:22], (3).to_bytes(4, 'big'))
         for row in release_rows[1:5]:
             self.assertEqual(row[20:24], bytes(4))
         for row in beta1_rows[1:]:
