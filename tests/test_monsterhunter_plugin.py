@@ -551,6 +551,21 @@ class MonsterHunterFlowTests(unittest.TestCase):
                     for index in range(struct.unpack_from('>L', rooms[0].payload, 8)[0])]
         self.assertEqual(room_ids, [town_id])
 
+    def test_hunter_lost_during_a_quest_is_announced_on_each_return(self) -> None:
+        # A guest timed out mid-quest got no `CMD_LEAVE` (the members run
+        # `game.bin`); the host kept it and showed a clone when it logged in again.
+        town_id = self._town_with_residents()
+        host, guest, _ = self.players
+        self._depart(host, guest, town_id)
+        session = self.engine._sessions.get(guest[1])  # noqa: SLF001
+        timeout = self.engine._plugin.on_session_timeout(self.engine._context, session)  # noqa: SLF001
+        self.assertNotIn(commands.CMD_LEAVE, [message.command for message in timeout])
+
+        back = self._stat(host, TOWN_RULES)
+
+        notices = [message for message in back if message.command == commands.CMD_LEAVE]
+        self.assertEqual([(notice.endpoint, notice.payload) for notice in notices], [(host[0], struct.pack('>L', guest[1]))])
+
     def test_quest_return_without_its_town_listing_never_makes_an_unnamed_town(self) -> None:
         # `11 10 2026 1538.pcapng`: a hunter that had lost its Town listing came
         # back from a quest and its STAT turned the nameless quest room into a

@@ -151,6 +151,8 @@ class MonsterHunterPlugin(GamePlugin):
         self.name = profile.identifier
         self._players: dict[int, _Player] = {}
         self._directory: Directory | None = None
+        # Quest room -> hunters that left it while its members ran `game.bin`.
+        self._quest_departures: dict[int, set[int]] = {}
 
     def register_handlers(self, router: CommandRouter, context: HandlerContext) -> None:
         """Register plugin handlers."""
@@ -759,7 +761,9 @@ class MonsterHunterPlugin(GamePlugin):
                 context.rooms.set_rules(room.room_id, rules)
             elif (origin := self._origin_town(context, session, rules)) is not None:
                 self._return_to_origin(context, session, room, origin)
-                arrivals = self._arrival_callbacks(context, origin, session)
+                arrivals = self._arrival_callbacks(context, origin, session) + self._quest_departure_callbacks(
+                    context, room, origin, session
+                )
             else:
                 # The STAT asks to go back to a Town, never to turn the
                 # nameless quest room into one (an unnamed Town row).
@@ -773,6 +777,28 @@ class MonsterHunterPlugin(GamePlugin):
         return [
             self._result(context, message, session, GameTags.JOIN_OK, RESULT_WRAPPER_STATUS_OK, FLAG_ROOM)
         ] + arrivals
+
+    def _quest_departure_callbacks(
+        self,
+        context: HandlerContext,
+        quest_room: GameRoom,
+        origin: GameRoom,
+        session: Session,
+    ) -> list[SnapMessage]:
+        """Tell a hunter back from a quest which members left it during the quest."""
+
+        departed = self._quest_departures.get(quest_room.room_id, set())
+        if context.rooms.get(quest_room.room_id) is None:
+            self._quest_departures.pop(quest_room.room_id, None)
+        return [
+            message
+            for leaving_session_id in sorted(departed - origin.members)
+            for message in build_room_leave_callbacks(
+                context=context,
+                leaving_session_id=leaving_session_id,
+                recipients=[session],
+            )
+        ]
 
     def _return_to_origin(
         self,
@@ -810,8 +836,15 @@ class MonsterHunterPlugin(GamePlugin):
         if room is not None:
             if not (keep_town_listing and room.rules & TOWN_RULES_FLAG):
                 context.rooms.leave(room.room_id, session.session_id)
-            if notify:
+            if notify and _quest_started(room):
+                # The members cannot take `CMD_LEAVE` in `game.bin`; each gets it
+                # on its return to its Town instead, or keeps the hunter and
+                # shows a clone once it logs in again.
+                self._quest_departures.setdefault(room.room_id, set()).add(session.session_id)
+            elif notify:
                 messages += self._leave_callbacks(context, room, session.session_id)
+            if context.rooms.get(room.room_id) is None:
+                self._quest_departures.pop(room.room_id, None)
 
         if not keep_town_listing:
             for town in self._listing_towns(context, session):
