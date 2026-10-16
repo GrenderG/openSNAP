@@ -6,7 +6,7 @@ overlay (`lobby.bin`, load address `0x005be900`) and are cited inline.
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import logging
 import struct
 
@@ -101,21 +101,6 @@ STAT_ATTRIBUTE = b'STAT'
 PROFILE_DEPARTING_STATE = (3, 5)
 DEPARTURE_PREPARATION_SELECTOR = 3
 DEPARTURE_PREPARATION_SIZE = 16
-# Departure send-targets from the host to each member (`lobby.bin` 0x006106c0):
-# `u32 1, u32 member, 00 00 selector 00 00 00 00 00`, then the selector's data.
-# - 5: the member's own party slot and the party size, host included
-#   (`0x006115f8`; the host is slot 0).
-# - 6: one slot's record: slot, 0, the slot member's session id as 8 hex
-#   digits written '0' + n (`0x00610420`) and zero-padded to 16, then its
-#   16-byte name (`0x006116d0`).
-# - 8: commits the party (`0x00619de8`).
-SEND_TARGET_SINGLE = 1  # u32 target count, then that many session ids.
-PARTY_SELECTOR_OFFSET = 10
-PARTY_SLOT_OFFSET = 16
-PARTY_SIZE_OFFSET = 17
-PARTY_SLOT_SELECTOR = 5
-PARTY_RECORD_SELECTOR = 6
-PARTY_COMMIT_SELECTOR = 8
 
 # Town categories are rules bits 24-26 (`0x006173a0`).
 TOWN_CATEGORY_SHIFT = 24
@@ -147,14 +132,6 @@ class _Player:
     room_alias: tuple[int, int] | None = None
     # Quest host between its departure preparation and its next room change.
     preparing_departure: bool = False
-    # Quest host, current departure (see `_missing_party_records`): the session
-    # in each party slot, and the slots each member is still owed a record for.
-    party_slots: dict[int, int] = field(default_factory=dict)
-    party_records_owed: dict[int, set[int]] = field(default_factory=dict)
-
-    def reset_party(self) -> None:
-        self.party_slots.clear()
-        self.party_records_owed.clear()
 
 
 class MonsterHunterPlugin(GamePlugin):
@@ -684,7 +661,9 @@ class MonsterHunterPlugin(GamePlugin):
         if session is None:
             return []
 
-        response = [
+        # MH bundles share one reliable sequence. ACKing a decoded child as 0
+        # can free an unsent client message (NA 0x00209924..0x002099e0).
+        response = [] if message.embedded_in_multi and message.type_flags & FLAG_RELIABLE else [
             context.reply(
                 message,
                 type_flags=FLAG_ROOM | FLAG_RESPONSE,
@@ -700,11 +679,10 @@ class MonsterHunterPlugin(GamePlugin):
             and target is not None
             and target.session_id == session.session_id
             and len(message.payload) == DEPARTURE_PREPARATION_SIZE
-            and get_u32(message.payload, 0) == SEND_TARGET_SINGLE
-            and message.payload[PARTY_SELECTOR_OFFSET] == DEPARTURE_PREPARATION_SELECTOR
+            and get_u32(message.payload, 0) == 1
+            and message.payload[10] == DEPARTURE_PREPARATION_SELECTOR
         ):
             player.preparing_departure = True
-            player.reset_party()
         if target is None:
             _LOGGER.warning(
                 'Skipping send-target relay from session 0x%08x: invalid payload or unknown target.',
@@ -712,80 +690,18 @@ class MonsterHunterPlugin(GamePlugin):
             )
             return response
 
-        # Relay the packet; during a quest departure, any party record the host
-        # failed to send this member goes first (see `_missing_party_records`).
-        payloads = [relay_payload]
-        if player is not None and player.preparing_departure and get_u32(message.payload, 0) == SEND_TARGET_SINGLE:
-            payloads = self._missing_party_records(context, player, target, relay_payload) + payloads
-        response += [
+        response.append(
             context.direct(
                 endpoint=target.endpoint,
                 session_id=target.session_id,
                 type_flags=send_target_relay_flags(message.type_flags),
                 command=commands.CMD_SEND_TARGET,
-                payload=payload,
+                payload=relay_payload,
                 acknowledge_number=ack_for_session(target),
                 source_session_id=session.session_id,
             )
-            for payload in payloads
-        ]
+        )
         return response
-
-    # TODO: works around a suspected client bug; more investigation may be
-    #  needed. The quest host sends each member a record for every party slot
-    #  (`lobby.bin` 0x006116d0, NA) but ignores whether each send worked
-    #  (0x006106c0 -> `0x00207170`), and its SDK can drop one silently when
-    #  short of buffers. A member builds its quest party from these records only
-    #  on the commit (0x00619de8, copied at 0x0061cbe0), and a slot it got no
-    #  record for keeps stale data (no code clears table 0x0074f2dc), shown as
-    #  a clone of another hunter or of the member itself. A record holds only the
-    #  slot member's session id and name, both known to the server, so before
-    #  relaying the commit the server builds any record the member is missing.
-    @staticmethod
-    def _missing_party_records(context: HandlerContext, host: _Player, member: Session, payload: bytes) -> list[bytes]:
-        """Return the party records `member` never got, to relay just before its commit."""
-
-        # The selector is the byte at `PARTY_SELECTOR_OFFSET`: a payload too short
-        # to hold it is no departure packet and needs nothing added.
-        if len(payload) <= PARTY_SELECTOR_OFFSET:
-            return []
-        selector = payload[PARTY_SELECTOR_OFFSET]
-
-        # The member's slot and the party size: it is owed a record for every slot.
-        if selector == PARTY_SLOT_SELECTOR and len(payload) > PARTY_SIZE_OFFSET:
-            host.party_slots[0] = host.session_id
-            host.party_slots[payload[PARTY_SLOT_OFFSET]] = member.session_id
-            host.party_records_owed[member.session_id] = set(range(payload[PARTY_SIZE_OFFSET]))
-            return []
-
-        # A party record: that slot is no longer owed to this member.
-        if selector == PARTY_RECORD_SELECTOR and len(payload) > PARTY_SLOT_OFFSET:
-            host.party_records_owed.get(member.session_id, set()).discard(payload[PARTY_SLOT_OFFSET])
-            return []
-
-        # The commit: build every record still owed, from the slot member's session.
-        if selector == PARTY_COMMIT_SELECTOR:
-            host_session = context.sessions.get(host.session_id)
-            host_name = host_session.username if host_session is not None else '?'
-            records = []
-            for slot in sorted(host.party_records_owed.pop(member.session_id, set())):
-                session = context.sessions.get(host.party_slots.get(slot, 0))
-                if session is None:
-                    continue
-                _LOGGER.warning(
-                    'Forging party record of slot %d (%s, session 0x%08x) for %s (session 0x%08x): '
-                    'host %s (session 0x%08x) never sent it.',
-                    slot,
-                    session.username,
-                    session.session_id,
-                    member.username,
-                    member.session_id,
-                    host_name,
-                    host.session_id,
-                )
-                records.append(_party_record(slot, session))
-            return records
-        return []
 
     def _handle_change_user_status(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         session = resolve_session(context, message, _LOGGER)
@@ -940,7 +856,6 @@ class MonsterHunterPlugin(GamePlugin):
         if player is not None:
             player.room_alias = None
             player.preparing_departure = False
-            player.reset_party()
         return messages
 
     def _leave_callbacks(self, context: HandlerContext, room: GameRoom, leaving_session_id: int) -> list[SnapMessage]:
@@ -1215,18 +1130,6 @@ class MonsterHunterPlugin(GamePlugin):
             acknowledge_number=ack_for_request(message, session),
         )
 
-
-
-def _party_record(slot: int, session: Session) -> bytes:
-    """A departure party record as relayed: target zeroed, then slot, id text and name (see `PARTY_RECORD_SELECTOR`)."""
-
-    id_text = bytes(0x30 + (session.session_id >> shift & 0xF) for shift in range(28, -4, -4))
-    return (
-        struct.pack('>2L', SEND_TARGET_SINGLE, 0)
-        + bytes((0, 0, PARTY_RECORD_SELECTOR, 0, 0, 0, 0, 0, slot, 0))
-        + id_text.ljust(16, b'\0')
-        + pack_fixed(session.username, 16)
-    )
 
 
 def _member_record(session: Session, profile: bytes) -> bytes:

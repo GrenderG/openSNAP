@@ -821,7 +821,10 @@ class AutoModellistaPlugin(GamePlugin):
         if session is None:
             return []
 
-        response = [
+        # A bundle's reliable children share its one sequence (`kkSetMessage`
+        # Beta1 0x002eb7a8..0x002eb850): ACKing a child as 0 sends a stray ACK,
+        # which Beta1's `kkSetRevAck` (0x002ebaf4) takes as a reason to stop resending.
+        response = [] if message.embedded_in_multi and message.type_flags & FLAG_RELIABLE else [
             context.reply(
                 message,
                 type_flags=FLAG_ROOM | FLAG_RESPONSE,

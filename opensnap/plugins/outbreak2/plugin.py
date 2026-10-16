@@ -600,7 +600,9 @@ class Outbreak2Plugin(GamePlugin):
         session = resolve_session(context, message, _LOGGER)
         if session is None:
             return []
-        response = [
+        # A bundle's reliable children share its one sequence: ACKing a child as
+        # 0 can free an unsent client message (as in File#1, `0x001e7968..0x001e7a20`).
+        response = [] if message.embedded_in_multi and message.type_flags & FLAG_RELIABLE else [
             context.reply(message, type_flags=FLAG_ROOM | FLAG_RESPONSE, command=commands.CMD_ACK,
                           session_id=session.session_id)
         ]
