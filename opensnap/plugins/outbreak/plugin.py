@@ -18,7 +18,7 @@ broadcasts (`kkSendGamePacket` `0x001e5008`, flags `0x8000` or 0 from
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 import struct
 
@@ -111,6 +111,11 @@ class _Player:
     profile: bytes = bytes(PROFILE_SIZE)
     # Between status `1` and status `0xf7e00001` (see the module docstring).
     in_scenario: bool = False
+    # Room members who left while this player was in a scenario: their leave
+    # callbacks (slot 6) are delivered once the player is back in the lobby,
+    # since the roster only drops a member on that callback (`0x005831a0`
+    # clears the 280-byte record whose sid matches, `0x00583384..0x005833a4`).
+    pending_leaves: list[int] = field(default_factory=list)
 
 
 class OutbreakPlugin(GamePlugin):
@@ -425,9 +430,19 @@ class OutbreakPlugin(GamePlugin):
             return []
         player = self._players.get(session.session_id)
         status = get_u32(message.payload, 0)
+        deferred: list[SnapMessage] = []
         if player is not None and status in (STATUS_IN_SCENARIO, STATUS_IN_LOBBY):
             player.in_scenario = status == STATUS_IN_SCENARIO
-        return [self._result(context, message, session, RESULT_OK, FLAG_ROOM)]
+            if not player.in_scenario:
+                deferred = [
+                    message_
+                    for left in player.pending_leaves
+                    for message_ in build_room_leave_callbacks(
+                        context=context, leaving_session_id=left, recipients=[session]
+                    )
+                ]
+                player.pending_leaves.clear()
+        return [self._result(context, message, session, RESULT_OK, FLAG_ROOM)] + deferred
 
     def _handle_search_users(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         """Answer the Friend search: `name16, u32 online, u32 Area, u32 room, u32 length, profile`.
@@ -572,10 +587,14 @@ class OutbreakPlugin(GamePlugin):
         context.rooms.leave(room.room_id, session.session_id)
         if not notify:
             return []
+        recipients = []
+        for member in context.sessions.list_room_members(room.room_id):
+            if self._reachable(member):
+                recipients.append(member)
+            elif member.session_id in self._players:
+                self._players[member.session_id].pending_leaves.append(session.session_id)
         return build_room_leave_callbacks(
-            context=context,
-            leaving_session_id=session.session_id,
-            recipients=[member for member in context.sessions.list_room_members(room.room_id) if self._reachable(member)],
+            context=context, leaving_session_id=session.session_id, recipients=recipients
         )
 
     def _room_callbacks(

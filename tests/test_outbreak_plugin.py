@@ -307,8 +307,13 @@ class OutbreakLobbyTests(unittest.TestCase):
         quiet += self._send(watcher, commands.CMD_CREATE_GAME_ROOM, _create_payload(), LOBBY_FLAGS)
         self.assertFalse([message for message in quiet if message.session_id == host[1]])
 
-        # Back in the lobby, the host gets lobby callbacks again.
-        self._send(host, commands.CMD_CHANGE_USER_STATUS, struct.pack('>L', STATUS_IN_LOBBY))
+        # Back in the lobby, the host gets the held-back leave once, then lobby
+        # callbacks again.
+        back = self._send(host, commands.CMD_CHANGE_USER_STATUS, struct.pack('>L', STATUS_IN_LOBBY))
+        self.assertEqual([message.payload for message in self._to(back, host, commands.CMD_LEAVE)],
+                         [struct.pack('>L', guest[1])])
+        again = self._send(host, commands.CMD_CHANGE_USER_STATUS, struct.pack('>L', STATUS_IN_LOBBY))
+        self.assertFalse(self._to(again, host, commands.CMD_LEAVE))
         created = self._send(guest, commands.CMD_CREATE_GAME_ROOM, _create_payload(), LOBBY_FLAGS)
         self.assertTrue(self._to(created, host, commands.CMD_CREATE_GAME_ROOM))
 
