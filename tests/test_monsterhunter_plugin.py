@@ -16,7 +16,9 @@ from unittest.mock import patch
 from opensnap.config import StorageConfig, default_app_config
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.core.sessions import Session
+from opensnap.plugins.common import build_send_target_payload
 from opensnap.plugins.monsterhunter import MonsterHunterPlugin
+from opensnap.plugins.monsterhunter.plugin import _party_record
 from opensnap.plugins.monsterhunter.directory import Directory, read_directory
 import opensnap.plugins.monsterhunter.plugin as plugin_module
 from opensnap.plugins.monsterhunter.profile import MONSTER_HUNTER_NA, MONSTER_HUNTER_NA_BETA
@@ -550,6 +552,83 @@ class MonsterHunterFlowTests(unittest.TestCase):
         room_ids = [struct.unpack_from('>L', rooms[0].payload, 12 + index * 36 + 32)[0]
                     for index in range(struct.unpack_from('>L', rooms[0].payload, 8)[0])]
         self.assertEqual(room_ids, [town_id])
+
+    def test_party_records_the_member_missed_are_built_before_its_commit(self) -> None:
+        # The host's SDK silently failed one record (slot 1 to the second
+        # member), which then kept the previous party's hunter: a clone.
+        town_id = self._town_with_residents()
+        host, guest, waiting = self.players
+        self._join(waiting, town_id)
+
+        def send(target, selector: int, data: bytes = b'') -> list[SnapMessage]:
+            payload = struct.pack('>2L', 1, target[1]) + bytes((0, 0, selector, 0, 0, 0, 0, 0)) + data
+            return self._send(host, commands.CMD_SEND_TARGET, payload)
+
+        def relayed(messages: list[SnapMessage]) -> list[bytes]:
+            return [message.payload for message in messages if message.command == commands.CMD_SEND_TARGET]
+
+        send(host, 3)
+        send(guest, 5, bytes((1, 3)))
+        send(waiting, 5, bytes((2, 3)))
+        sent = {}
+        for target, slots in ((guest, (0, 1, 2)), (waiting, (0, 2))):
+            for slot in slots:
+                sent[slot] = relayed(send(target, 6, bytes((slot, 0)) + bytes(32)))[0]
+
+        commit = relayed(send(waiting, 8))
+        built = commit[0]
+        self.assertEqual([payload[10] for payload in commit], [6, 8])
+        self.assertEqual(built[:18], sent[1][:18])
+        sid_text = ''.join('0123456789:;<=>?'[guest[1] >> shift & 0xF] for shift in range(28, -4, -4))
+        self.assertEqual(built[18:], sid_text.encode().ljust(16, b'\0') + self.engine._sessions.get(guest[1]).username.encode().ljust(16, b'\0'))  # noqa: SLF001
+        self.assertEqual(relayed(send(guest, 8)), [struct.pack('>2L', 1, 0) + bytes((0, 0, 8, 0, 0, 0, 0, 0))])
+
+        # The host's room leave ends the departure: a later commit gets nothing added.
+        self._send(host, commands.CMD_LEAVE)
+        self.assertEqual([payload[10] for payload in relayed(send(waiting, 8))], [8])
+
+    def test_two_hunter_party_record_is_built_too(self) -> None:
+        # No other member could have a copy of the slot.
+        town_id = self._town_with_residents()
+        host, guest, _ = self.players
+        prefix = lambda target, selector: struct.pack('>2L', 1, target[1]) + bytes((0, 0, selector, 0, 0, 0, 0, 0))
+        self._send(host, commands.CMD_SEND_TARGET, prefix(host, 3))
+        self._send(host, commands.CMD_SEND_TARGET, prefix(guest, 5) + bytes((1, 2)))
+        self._send(host, commands.CMD_SEND_TARGET, prefix(guest, 6) + bytes((0, 0)) + bytes(32))
+
+        commit = [message.payload for message in self._send(host, commands.CMD_SEND_TARGET, prefix(guest, 8))
+                  if message.command == commands.CMD_SEND_TARGET]
+
+        self.assertEqual([(payload[10], payload[16]) for payload in commit[:1]], [(6, 1)])
+        self.assertEqual(commit[1][10], 8)
+
+    def test_cancelled_departure_leaves_nothing_for_the_next_one(self) -> None:
+        town_id = self._town_with_residents()
+        host, guest, waiting = self.players
+        self._join(waiting, town_id)
+        prefix = lambda target, selector: struct.pack('>2L', 1, target[1]) + bytes((0, 0, selector, 0, 0, 0, 0, 0))
+        # A departure set up but never committed, where the guest got slot 1.
+        self._send(host, commands.CMD_SEND_TARGET, prefix(host, 3))
+        self._send(host, commands.CMD_SEND_TARGET, prefix(guest, 5) + bytes((1, 3)))
+        self._send(host, commands.CMD_SEND_TARGET, prefix(waiting, 5) + bytes((2, 3)))
+        self._send(host, commands.CMD_SEND_TARGET, prefix(guest, 6) + bytes((1, 0)) + bytes(32))
+        # A new two-hunter departure in which the guest misses slot 1.
+        self._send(host, commands.CMD_SEND_TARGET, prefix(host, 3))
+        self._send(host, commands.CMD_SEND_TARGET, prefix(guest, 5) + bytes((1, 2)))
+        self._send(host, commands.CMD_SEND_TARGET, prefix(guest, 6) + bytes((0, 0)) + bytes(32))
+
+        commit = [message.payload for message in self._send(host, commands.CMD_SEND_TARGET, prefix(guest, 8))
+                  if message.command == commands.CMD_SEND_TARGET]
+
+        self.assertEqual([(payload[10], payload[16:17]) for payload in commit], [(6, b'\x01'), (8, b'')])
+
+    def test_built_party_record_matches_the_hosts(self) -> None:
+        # Captured relay of the host's slot-1 record for adam (session 0x5d10c48d).
+        captured = bytes.fromhex(
+            '00000001000000000000060000000000' '0100' '353d31303c34383d0000000000000000' '6164616d000000000000000000000000'
+        )
+        session = Session(session_id=0x5D10C48D, endpoint=Endpoint(host='10.0.0.9', port=2000), user_id=1, username='adam')
+        self.assertEqual(_party_record(1, session), captured)
 
     def test_hunter_lost_during_a_quest_is_announced_on_each_return(self) -> None:
         # A guest timed out mid-quest got no `CMD_LEAVE` (the members run
