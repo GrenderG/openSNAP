@@ -21,8 +21,11 @@ MARKET_CLAW_DAY = 1
 MARKET_TOOLS_DAY = 2
 MARKET_FOOD_DAY = 3
 MARKET_HALF_PRICE_DAY = 4
-# Minegarde shop rotation used by the JP service, indexed by day of the year.
+# Minegarde shop rotation, indexed by day of the year. The JP service uses
+#   CLAW, NORMAL, HALF_PRICE, NORMAL, TOOLS, NORMAL, HALF_PRICE, NORMAL, FOOD, NORMAL;
+# ours is offset one day later, so a sale day here is never a sale day in JP.
 MARKET_ROTATION = (
+    MARKET_NORMAL,
     MARKET_CLAW_DAY,
     MARKET_NORMAL,
     MARKET_HALF_PRICE_DAY,
@@ -32,7 +35,6 @@ MARKET_ROTATION = (
     MARKET_HALF_PRICE_DAY,
     MARKET_NORMAL,
     MARKET_FOOD_DAY,
-    MARKET_NORMAL,
 )
 EVENTS_DIRECTORY = 'events'
 EVENT_MANIFEST_FILE = 'manifest.json'

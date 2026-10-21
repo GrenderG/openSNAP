@@ -1294,7 +1294,7 @@ class AppContentTests(unittest.TestCase):
             struct.unpack('>L', MarketState(lambda day=start + timedelta(days=offset): day).native_response())[0]
             for offset in range(12)
         ]
-        self.assertEqual(days, [1, 0, 4, 0, 2, 0, 4, 0, 3, 0, 1, 0])
+        self.assertEqual(days, [0, 1, 0, 4, 0, 2, 0, 4, 0, 3, 0, 1])
 
     def _write_events(self, *quest_ids: int) -> dict[int, bytes]:
         events = self.root / 'events'
