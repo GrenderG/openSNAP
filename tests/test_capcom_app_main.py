@@ -50,21 +50,21 @@ class CapcomAppMainTests(unittest.TestCase):
     def test_valid_settings_serve_every_title(self) -> None:
         builds, stamped = self._served()
         self.assertEqual(builds, MONSTER_HUNTER_BUILDS | OUTBREAK_BUILDS | OUTBREAK2_BUILDS)
-        self.assertEqual(stamped, {monsterhunter.NA_PUBLIC_BETA_VERSION})
+        self.assertEqual(stamped, {monsterhunter.NA_PUBLIC_BETA_VERSION, outbreak.PUBLIC_BETA_VERSION})
 
     def test_bad_outbreak2_setting_leaves_only_file2_out(self) -> None:
         with self.assertLogs('opensnap_app.capcom', 'ERROR') as logs:
             builds, stamped = self._served(OPENSNAP_OUTBREAK2_AREA_KEY='BAD')
         self.assertTrue(any('Resident Evil Outbreak File#2 is not served' in line for line in logs.output))
         self.assertEqual(builds, MONSTER_HUNTER_BUILDS | OUTBREAK_BUILDS)
-        self.assertEqual(stamped, {monsterhunter.NA_PUBLIC_BETA_VERSION})
+        self.assertEqual(stamped, {monsterhunter.NA_PUBLIC_BETA_VERSION, outbreak.PUBLIC_BETA_VERSION})
 
     def test_bad_monster_hunter_setting_leaves_only_monster_hunter_out(self) -> None:
         with self.assertLogs('opensnap_app.capcom', 'ERROR') as logs:
             builds, stamped = self._served(OPENSNAP_MH_WORLDS='not json')
         self.assertTrue(any('Monster Hunter is not served' in line for line in logs.output))
         self.assertEqual(builds, OUTBREAK_BUILDS | OUTBREAK2_BUILDS)
-        self.assertEqual(stamped, {monsterhunter.NA_PUBLIC_BETA_VERSION})
+        self.assertEqual(stamped, {monsterhunter.NA_PUBLIC_BETA_VERSION, outbreak.PUBLIC_BETA_VERSION})
 
     def test_bad_monster_hunter_beta_setting_leaves_only_the_beta_out(self) -> None:
         with self.assertLogs('opensnap_app.capcom', 'ERROR') as logs:
@@ -72,7 +72,7 @@ class CapcomAppMainTests(unittest.TestCase):
         message = 'Monster Hunter NA public beta is not served: OPENSNAP_MH_NA_BETA_WORLDS'
         self.assertTrue(any(message in line for line in logs.output))
         self.assertEqual(builds, MONSTER_HUNTER_BUILDS | OUTBREAK_BUILDS | OUTBREAK2_BUILDS)
-        self.assertEqual(stamped, set())
+        self.assertEqual(stamped, {outbreak.PUBLIC_BETA_VERSION})
 
 
 if __name__ == '__main__':

@@ -15,7 +15,7 @@ An open, clean-room server for SEGA's SN@P online middleware, bringing PlayStati
 | Monster Hunter PAL test build | `TLES_527.07` | `monsterhunter` | Supported, untested. Plays with the releases. DNAS patch required. |
 | Monster Hunter NTSC-U public beta | `SLUS_291.10` | `monsterhunter_na_beta` | Supported, untested. Separate server: beta players only meet each other. DNAS patch required. |
 | Resident Evil Outbreak (File#1) NTSC-U | `SLUS_207.65` | `outbreak` | Supported, v1 and v2 play together. Not yet fully tested in game. |
-| Resident Evil Outbreak (File#1) NTSC-U public beta | `SLUS_290.89` | - | Not supported: same login as the release, but an earlier lobby design (own Areas `obbs01`/`obbf01`, fixed "TEST GAME" rooms, older APP flow) that would need its own reverse engineering. |
+| Resident Evil Outbreak (File#1) NTSC-U public beta | `SLUS_290.89` | `outbreak_beta` | Supported, untested. Separate server: beta players only meet each other. DNAS patch required. |
 | Resident Evil Outbreak File#2 NTSC-U | `SLUS_209.84` | `outbreak2` | Supported. Plays with PAL. Not yet tested in game. |
 | Resident Evil Outbreak File#2 PAL | `SLES_533.19` | `outbreak2` | Supported. Plays with NTSC-U. Not yet tested in game. |
 
@@ -83,7 +83,8 @@ Serves account signup for every game, plus game pages and rankings.
 - `OPENSNAP_WEB_HTTPS_HOST`, `OPENSNAP_WEB_HTTPS_PORT`, `OPENSNAP_WEB_HTTPS_CERTFILE`, `OPENSNAP_WEB_HTTPS_KEYFILE`:
   optional HTTPS listener (port 443), used by Auto Modellista's `rankweb` uploads.
 - `OPENSNAP_WEB_GAME_PLUGIN`: `generic` (default, every game's pages) or one module: `automodellista`,
-  `automodellista_beta1`, `monsterhunter`, `outbreak`, `outbreak2`. Also `python3 run.py web --web-plugin <module>`.
+  `automodellista_beta1`, `monsterhunter`, `outbreak`, `outbreak_beta`, `outbreak2`. Also
+  `python3 run.py web --web-plugin <module>`.
 
 Signup creates the account on first use and logs in afterwards. Usernames are 4-10 letters, digits and single inner
 `_` (the longest ID the game browsers keep). Passwords are 4-15 characters (the in-game keyboard limit).
@@ -123,7 +124,8 @@ Capcom's games also talk to Capcom's own APP service over TCP, beside SN@P. They
 connection's first answer.
 
 - Monster Hunter: World and Land menus, Market, Events, quest records.
-- Resident Evil Outbreak: lobby welcome page, data files, scenario results and the DATABASE rankings.
+- Resident Evil Outbreak: lobby welcome page, data files, scenario results and the DATABASE rankings. The public
+  beta gets its own welcome page and records.
 - Resident Evil Outbreak File#2: server list, lobby information page, Area and room-rule data, scenario results and
   the DATABASE rankings.
 
@@ -248,6 +250,26 @@ Both releases (v1 and v2) play together.
   The game shows `ERR:D9xx` when that upload fails.
 - `OPENSNAP_DATA_DIR`: the welcome page is `data/outbreak/files/01/TOP_INFOR.HTM` (included; at most 4095 bytes,
   game page markup such as `<BODY><SIZE=2><CENTER>...<END>`).
+
+#### Resident Evil Outbreak NA public beta
+
+```bash
+OPENSNAP_GAME_PLUGIN=outbreak_beta python3 run.py game
+```
+
+The beta (December 2003) has an earlier lobby than the release: one scenario-mode Area and one free-mode Area
+(`obbs01`, `obbf01`, each holding `OPENSNAP_OUTBREAK_AREA_CAPACITY` players), rooms named "TEST GAME", and the
+scenarios Outbreak and Below Freezing Point. It logs in exactly like the release, on the same bootstrap host
+(`snap01.reo.capcom.sf.yav4.com`), so it needs its own deployment:
+
+- The beta's bootstrap sets `OPENSNAP_BOOTSTRAP_GAMES=outbreak_beta` (plus `monsterhunter_na_beta` if served, which
+  uses the same host). If the release is served too, its bootstrap needs another IP (the bootstrap port is fixed),
+  and each group of players uses a DNS that points `snap01.reo.capcom.sf.yav4.com` at its bootstrap.
+- The Capcom APP service recognises the beta by its build stamp. It serves the welcome page
+  `data/outbreak_beta/files/01/INFOR/INFOR00.HTM` (included; at most 4095 bytes) and stores the beta's scenario
+  results apart from the release's.
+- Web: the beta opens the release's Notice Board URL. A web server with `OPENSNAP_WEB_GAME_PLUGIN=outbreak_beta`
+  shows the beta's own rankings there. The beta's DATABASE menu never contacts a server, so it stays empty.
 
 ### Resident Evil Outbreak File#2
 

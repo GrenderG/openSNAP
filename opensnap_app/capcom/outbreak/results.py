@@ -49,6 +49,12 @@ client comes back to the lobby:
 - The last two words are never written: the summary is zeroed
   (`0x0057bd88`) and nothing stores them before it is copied.
 
+The public beta (`SLUS_290.89`) sends the same report from the same fields
+(builder `0x005986a0`, summary `0x0057bd90`), except for the network test: its
+first word sums 4 echo round trips in lobby frames (`0x005835e0`), and the
+echo replies, echo losses and peak words are never written, so its records
+leave them out.
+
 The decoder is shared with File#2 (`opensnap_app.capcom.outbreak.scenario_report`).
 """
 
@@ -60,33 +66,42 @@ from opensnap_app.capcom.outbreak.scenario_report import ScenarioResult, Teammat
 __all__ = ['ScenarioResult', 'Teammate', 'decode_scenario_result', 'store_scenario_result']
 
 
-def store_scenario_result(records: RecordStore, account: Account, result: ScenarioResult) -> None:
-    """Keep one report: every run on `points-<n>`, a clear also on `clear-<n>-<mode>`."""
+def store_scenario_result(
+    records: RecordStore, account: Account, result: ScenarioResult, *, game: str = GAME, network_test: bool = True
+) -> None:
+    """Keep one report: every run on `points-<n>`, a clear also on `clear-<n>-<mode>`.
+
+    `network_test` keeps the lobby network test words, which the public beta doesn't fill.
+    """
 
     team = [{'name': mate.name, 'alive': mate.alive, 'character': mate.character} for mate in result.teammates]
+    details = {
+        'free_mode': bool(result.mode),
+        'cleared': result.cleared,
+        'clear_ticks': result.clear_ticks,
+        'character': result.character,
+        'teammates': team,
+        'network_error': result.network_error,
+    }
+    if network_test:
+        details |= {
+            'echo_ticks': result.echo_ticks,
+            'echo_replies': result.echo_replies,
+            'echo_losses': result.echo_losses,
+            'peak_queue': result.peak_queue,
+            'peak_location': result.peak_location,
+        }
     records.add(
-        game=GAME,
+        game=game,
         board=points_board(result.scenario),
         user_id=account.user_id,
         player=account.username,
         score=result.points,
-        details={
-            'free_mode': bool(result.mode),
-            'cleared': result.cleared,
-            'clear_ticks': result.clear_ticks,
-            'character': result.character,
-            'teammates': team,
-            'echo_ticks': result.echo_ticks,
-            'echo_replies': result.echo_replies,
-            'echo_losses': result.echo_losses,
-            'network_error': result.network_error,
-            'peak_queue': result.peak_queue,
-            'peak_location': result.peak_location,
-        },
+        details=details,
     )
     if result.cleared:
         records.add(
-            game=GAME,
+            game=game,
             board=clear_board(result.scenario, bool(result.mode)),
             user_id=account.user_id,
             player=account.username,

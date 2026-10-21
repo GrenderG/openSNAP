@@ -10,6 +10,12 @@ GAME = 'outbreak'
 # The report's scenario number indexes the main ELF scenario names table
 # (`0x002342b0`).
 SCENARIO_NAMES = ('Outbreak', 'Below Freezing Point', 'The Hive', 'Hellfire', 'Decisions, Decisions')
+# The public beta (`SLUS_290.89`) keeps its own records. Its report numbers the
+# scenarios the same way, by the row of its scenario table (`netwk.bin`
+# `0x005f2c84`), which it builds in and which holds only the first two
+# (`0x00610270`, copied by `0x005ecb40`).
+PUBLIC_BETA_GAME = 'outbreak_beta'
+PUBLIC_BETA_SCENARIO_NAMES = SCENARIO_NAMES[:2]
 # Cleared runs, scored by clear time in game frames (lowest first), one board
 # per scenario and mode: the save keeps its best times per mode too (submain
 # `0x0037c560` indexes them by the report's free-mode byte).

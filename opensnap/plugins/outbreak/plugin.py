@@ -124,6 +124,9 @@ class OutbreakPlugin(GamePlugin):
     name = 'outbreak'
     snap_titles = (SnapTitle(title_code=TITLE_CODE, footer_marker=FOOTER_MARKER, name='Resident Evil Outbreak NA'),)
     companion_app = 'capcom'
+    # The status a client reports once it is back in the lobby.
+    lobby_status = STATUS_IN_LOBBY
+    max_listed_rooms = MAX_LISTED_ROOMS
 
     def __init__(self) -> None:
         self._players: dict[int, _Player] = {}
@@ -135,7 +138,7 @@ class OutbreakPlugin(GamePlugin):
         return self._directory
 
     def register_handlers(self, router: CommandRouter, context: HandlerContext) -> None:
-        self._directory = read_directory()
+        self._directory = self._read_directory()
         router.register(commands.CMD_LOGIN_TO_KICS, self._tracking_rooms(self._handle_login_to_kics))
         router.register(commands.CMD_LOGOUT_CLIENT, self._tracking_rooms(self._handle_logout))
         router.register(commands.CMD_QUERY_AREA, self._handle_query_area)
@@ -153,6 +156,9 @@ class OutbreakPlugin(GamePlugin):
         router.register(commands.CMD_SEND, self._handle_send)
         router.register(commands.CMD_SEND_TARGET, self._handle_send_target)
         router.register(commands.CMD_SEND_ECHO, game_handlers.handle_send_echo)
+
+    def _read_directory(self) -> Directory:
+        return read_directory()
 
     def on_session_timeout(self, context: HandlerContext, session: Session) -> list[SnapMessage]:
         """Take a timed-out player out of its room; only lobby peers are told."""
@@ -431,7 +437,7 @@ class OutbreakPlugin(GamePlugin):
         player = self._players.get(session.session_id)
         status = get_u32(message.payload, 0)
         deferred: list[SnapMessage] = []
-        if player is not None and status in (STATUS_IN_SCENARIO, STATUS_IN_LOBBY):
+        if player is not None and status in (STATUS_IN_SCENARIO, self.lobby_status):
             player.in_scenario = status == STATUS_IN_SCENARIO
             if not player.in_scenario:
                 deferred = [
@@ -666,10 +672,9 @@ class OutbreakPlugin(GamePlugin):
             if self._reachable(member)
         ]
 
-    @staticmethod
-    def _open_rooms(context: HandlerContext, area_id: int) -> list[GameRoom]:
+    def _open_rooms(self, context: HandlerContext, area_id: int) -> list[GameRoom]:
         rooms = [room for room in context.rooms.list_for_lobby(area_id) if not room.rules & ROOM_CLOSED_FLAG]
-        return rooms[:MAX_LISTED_ROOMS]
+        return rooms[:self.max_listed_rooms]
 
     def _member_record(self, session: Session) -> bytes:
         profile = self._players[session.session_id].profile if session.session_id in self._players else bytes(PROFILE_SIZE)

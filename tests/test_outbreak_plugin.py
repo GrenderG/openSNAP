@@ -68,18 +68,26 @@ def _join_payload(room_id: int, password: bytes = b'') -> bytes:
     return struct.pack('>2L', room_id, 1) + password.ljust(16, b'\x00')
 
 
-class OutbreakLobbyTests(unittest.TestCase):
-    """Areas, rooms and scenarios through the protocol engine."""
+class OutbreakEngineHarness(unittest.TestCase):
+    """Three logged-in players in one free-mode Area of an Outbreak game server."""
+
+    plugin_class: type[OutbreakPlugin] = OutbreakPlugin
+    lobby_status = STATUS_IN_LOBBY
+    area_id = FREE_AREA_ID
 
     def setUp(self) -> None:
         temp_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temp_directory.cleanup)
+        config = serving(default_app_config(), self.plugin_class.name)
+        # The bootstrap serves this game only, as a deployment does for the beta, whose
+        # title code is the release's (`OPENSNAP_BOOTSTRAP_GAMES`).
         self.config = replace(
-            serving(default_app_config(), 'outbreak'),
+            config,
+            server=replace(config.server, bootstrap_games=(self.plugin_class.name,)),
             storage=StorageConfig(backend='sqlite', sqlite_path=f'{temp_directory.name}/ob.sqlite'),
         )
         create_accounts(self.config, *(f'jill{index}' for index in range(4)))
-        self.plugin = OutbreakPlugin()
+        self.plugin = self.plugin_class()
         self.engine = SnapProtocolEngine(config=self.config, plugin=self.plugin, role='combined')
         self.addCleanup(self.engine.close)
         self.sequences: dict[int, int] = {}
@@ -100,8 +108,8 @@ class OutbreakLobbyTests(unittest.TestCase):
         result = self._send((endpoint, session_id), commands.CMD_LOGIN_TO_KICS, kics, FLAG_CHANNEL_BITS)
         self.assertEqual(result[0].command, commands.CMD_RESULT_LOGIN_TO_KICS)
         player = (endpoint, session_id)
-        self._send(player, commands.CMD_CHANGE_USER_STATUS, struct.pack('>L', STATUS_IN_LOBBY))
-        self._send(player, commands.CMD_JOIN, struct.pack('>L', FREE_AREA_ID), LOBBY_FLAGS)
+        self._send(player, commands.CMD_CHANGE_USER_STATUS, struct.pack('>L', self.lobby_status))
+        self._send(player, commands.CMD_JOIN, struct.pack('>L', self.area_id), LOBBY_FLAGS)
         return player
 
     def _send_raw(self, endpoint, session_id, command, payload, type_flags, sequence=None) -> list[SnapMessage]:
@@ -141,6 +149,10 @@ class OutbreakLobbyTests(unittest.TestCase):
     @staticmethod
     def _to(messages: list[SnapMessage], player, command: int) -> list[SnapMessage]:
         return [message for message in messages if message.session_id == player[1] and message.command == command]
+
+
+class OutbreakLobbyTests(OutbreakEngineHarness):
+    """Areas, rooms and scenarios through the protocol engine."""
 
     def test_area_queries_follow_the_client_names(self) -> None:
         player = self.players[0]

@@ -50,6 +50,10 @@ class BootstrapGameDetectionTests(unittest.TestCase):
         self.assertEqual(_detect(message, ('monsterhunter',)), 'monsterhunter')
         with self.assertLogs('opensnap.core.bootstrap', 'WARNING'):
             self.assertIsNone(_detect(message, ('outbreak',)))
+        # The Outbreak public beta logs in like the Outbreak release, on the same host.
+        outbreak = _message(footer_bytes=FOOTER_BYTES, payload=_login_payload(0xCAE0))
+        self.assertEqual(_detect(outbreak, ('monsterhunter_na_beta', 'outbreak_beta')), 'outbreak_beta')
+        self.assertEqual(_detect(outbreak), 'outbreak')
 
     def test_unknown_title_code_is_not_identified(self) -> None:
         message = _message(footer_bytes=FOOTER_BYTES, payload=_login_payload(0x1234))

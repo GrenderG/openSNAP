@@ -10,8 +10,14 @@ with `CMD_QUERY_AREA`:
 
 The client numbers an Area by the last two digits of its name (`0x00588a68`)
 and keeps at most 99.
+
+The public beta (`SLUS_290.89`, `netwk.bin` at the same address) asks for one
+Area per mode, `NAME` from `obbs01` to `obbs01` (scenario mode) or from
+`obbf01` to `obbf01` (free mode), limit 5 (`0x00587abc`, names `0x0061c7b8`,
+`0x0061c7e0`), and reads only each row's name and id (`0x00587840`).
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 import os
 
@@ -22,6 +28,7 @@ SCENARIO_AREA_COUNT = 5
 MAX_FREE_AREAS = 99
 DEFAULT_FREE_AREAS = 10
 DEFAULT_AREA_CAPACITY = 100
+PUBLIC_BETA_AREA_NAMES = ('obbs01', 'obbf01')
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,13 +66,23 @@ def build_directory(free_areas: int, capacity: int) -> Directory:
 
     if not 1 <= free_areas <= MAX_FREE_AREAS:
         raise ValueError(f'Outbreak free-mode Areas must be 1-{MAX_FREE_AREAS}, got {free_areas}.')
-    if capacity < 1:
-        raise ValueError(f'Outbreak Area capacity must be positive, got {capacity}.')
     names = (
         [FREE_HALL_NAME]
         + [f'{SCENARIO_AREA_PREFIX}{number:02d}' for number in range(1, SCENARIO_AREA_COUNT + 1)]
         + [f'{FREE_AREA_PREFIX}{number:02d}' for number in range(1, free_areas + 1)]
     )
+    return _numbered(names, capacity)
+
+
+def build_public_beta_directory(capacity: int) -> Directory:
+    """The public beta's scenario-mode and free-mode Areas."""
+
+    return _numbered(PUBLIC_BETA_AREA_NAMES, capacity)
+
+
+def _numbered(names: Iterable[str], capacity: int) -> Directory:
+    if capacity < 1:
+        raise ValueError(f'Outbreak Area capacity must be positive, got {capacity}.')
     return Directory(
         areas=tuple(Area(area_id=index, name=name) for index, name in enumerate(names, start=1)),
         capacity=capacity,
@@ -76,5 +93,14 @@ def read_directory() -> Directory:
     """Build the directory from `OPENSNAP_OUTBREAK_FREE_AREAS` and `OPENSNAP_OUTBREAK_AREA_CAPACITY`."""
 
     free_areas = int(os.getenv('OPENSNAP_OUTBREAK_FREE_AREAS', '').strip() or DEFAULT_FREE_AREAS)
-    capacity = int(os.getenv('OPENSNAP_OUTBREAK_AREA_CAPACITY', '').strip() or DEFAULT_AREA_CAPACITY)
-    return build_directory(free_areas, capacity)
+    return build_directory(free_areas, _read_capacity())
+
+
+def read_public_beta_directory() -> Directory:
+    """Build the public beta's directory with `OPENSNAP_OUTBREAK_AREA_CAPACITY`."""
+
+    return build_public_beta_directory(_read_capacity())
+
+
+def _read_capacity() -> int:
+    return int(os.getenv('OPENSNAP_OUTBREAK_AREA_CAPACITY', '').strip() or DEFAULT_AREA_CAPACITY)

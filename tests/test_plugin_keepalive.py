@@ -19,6 +19,7 @@ class PluginKeepaliveTests(unittest.TestCase):
                 'monsterhunter': 20.0,
                 'monsterhunter_na_beta': 20.0,
                 'outbreak': 20.0,
+                'outbreak_beta': 20.0,
                 'outbreak2': 20.0,
             },
         )

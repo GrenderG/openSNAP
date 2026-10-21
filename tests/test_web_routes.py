@@ -398,9 +398,33 @@ class WebRouteTests(unittest.TestCase):
         self.assertIn('<td>jill</td><td>7965</td>', points)
         self.assertIn('<td>carlos</td><td>6304</td>', points)
 
+    def test_outbreak_public_beta_notice_board_ranks_beta_results_only(self) -> None:
+        from opensnap.storage.sql import SqlAccountStore, SqlRecordStore
+        from opensnap.storage.sqlite import SqliteConnection
+        from opensnap_app.capcom.outbreak.results import ScenarioResult, store_scenario_result
+
+        client = self._outbreak_client('outbreak_beta')
+        connection = SqliteConnection(f'{self._temp_directory.name}/web.sqlite')
+        self.addCleanup(connection.close)
+        accounts = SqlAccountStore(connection, server_secret='test secret')
+        records = SqlRecordStore(connection)
+        result = ScenarioResult(1, False, True, 6, 89367, 4185, (), 5, 0, 0, 0, 0, 0)
+        store_scenario_result(records, accounts.create_user('jill', 'secret'), result, game='outbreak_beta')
+        store_scenario_result(records, accounts.create_user('carlos', 'secret'), result)
+
+        index = client.get('/reweb/index.jsp').get_data(as_text=True)
+        self.assertIn('Resident Evil Outbreak public beta rankings', index)
+        self.assertIn('Fastest clears: Below Freezing Point', index)
+        self.assertNotIn('The Hive', index)
+        self.assertEqual(client.get('/reweb/rank_clear_2.html').status_code, 404)
+        page = client.get('/reweb/rank_clear_1.html').get_data(as_text=True)
+        self.assertIn('<td>jill</td><td>YOKO</td>', page)
+        self.assertNotIn('carlos', page)
+
     def test_generic_web_serves_the_outbreak_notice_board_on_reweb(self) -> None:
         client = self._outbreak_client('generic')
         self.assertIn('openSNAP Notice Board', client.get('/reweb/index.jsp').get_data(as_text=True))
+        self.assertIn('Resident Evil Outbreak rankings', client.get('/reweb/index.jsp').get_data(as_text=True))
         self.assertIn('openSNAP signup service', client.get('/reweb/signup/').get_data(as_text=True))
 
     _FILE2_SCENARIOS = (

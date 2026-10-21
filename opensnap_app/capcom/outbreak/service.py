@@ -20,6 +20,15 @@ in mode 1, or sends its 6301 in mode 0, `0x001f4f54`), then this service's
 `0x001f50f0`). Client frames are dispatched by
 direction and command only (`0x001f6cf4`). Addresses are v2; v1's main ELF is
 `-0x910`.
+
+The public beta (`SLUS_290.89`) runs an older client of the same protocol
+(main `0x001f1200..0x001f3ba0`, receive payload 256 bytes): mode 0 on lobby
+entry asks for `01/INFOR/INFOR00.HTM` in 222-byte chunks (`0x002520c0`), mode 1
+uploads the 6301 report, and a 6001 in mode 1 is ignored (`0x001f23e4`). It
+answers the 1002 with the release's build byte and its own build stamp
+(`PUBLIC_BETA_VERSION`), which routes it to its own service: its data folder,
+its records, and no DATABASE pages (its `lbs://` requests send nothing,
+`nethttp.bin` `0x0074e7a0`).
 """
 
 from dataclasses import dataclass
@@ -29,6 +38,7 @@ from pathlib import Path
 import socket
 import struct
 
+from opensnap.plugins.outbreak.records import GAME, PUBLIC_BETA_GAME
 from opensnap.storage.interfaces import AccountStore, RecordStore
 from opensnap_app.capcom.connection import AppConnection
 from opensnap_app.capcom.outbreak.database import DatabasePages
@@ -52,6 +62,7 @@ _LOGGER = logging.getLogger('opensnap_app.capcom.outbreak')
 
 DEFAULT_DATA_DIRECTORY = 'data'
 DATA_SUBDIRECTORY = 'outbreak'
+PUBLIC_BETA_DATA_SUBDIRECTORY = 'outbreak_beta'
 FILES_DIRECTORY = 'files'
 # The client fails a connection after 1800 polls without a frame (about 30 s).
 CONNECTION_TIMEOUT_SECONDS = 30.0
@@ -60,6 +71,8 @@ CLOSE_LINGER_SECONDS = 2.0
 # Build byte of the client's 1002 answer (`netwk.bin` `0x00608f0c`, `nethttp.bin`
 # `0x0073482c`); the same in v1 and v2.
 APP_BUILD = 1
+# The public beta's build stamp, built from its build date (main `0x001ba0b8`).
+PUBLIC_BETA_VERSION = b'0312181725'
 
 CMD_APP_PAGE_INFO = 0x6101
 CMD_APP_PAGE_CHUNK = 0x6102
@@ -101,21 +114,24 @@ class AppServiceConfig:
     data_directory: Path
 
 
-def read_app_service_config() -> AppServiceConfig:
+def read_app_service_config(subdirectory: str = DATA_SUBDIRECTORY) -> AppServiceConfig:
     """Build APP settings from the environment."""
 
     data_root = os.getenv('OPENSNAP_DATA_DIR', '').strip() or DEFAULT_DATA_DIRECTORY
-    return AppServiceConfig(data_directory=Path(data_root) / DATA_SUBDIRECTORY)
+    return AppServiceConfig(data_directory=Path(data_root) / subdirectory)
 
 
 class AppService:
     """Serve every Outbreak APP connection."""
 
-    def __init__(self, config: AppServiceConfig, accounts: AccountStore, records: RecordStore) -> None:
+    def __init__(
+        self, config: AppServiceConfig, accounts: AccountStore, records: RecordStore, *, public_beta: bool = False
+    ) -> None:
         self._files_root = config.data_directory / FILES_DIRECTORY
         self._accounts = accounts
         self._records = records
-        self._database = DatabasePages(records)
+        self._public_beta = public_beta
+        self._database = None if public_beta else DatabasePages(records)
         self._data_files = netbio_files()
 
     def serve(self, connection: AppConnection, answer: ConnectAnswer) -> None:
@@ -193,7 +209,10 @@ class AppService:
         if account is None:
             _LOGGER.warning('Scenario result from unknown login %r; not stored.', login)
             return
-        store_scenario_result(self._records, account, result)
+        store_scenario_result(
+            self._records, account, result,
+            game=PUBLIC_BETA_GAME if self._public_beta else GAME, network_test=not self._public_beta,
+        )
         _LOGGER.info(
             'Scenario result from %s stored: scenario %d (%s mode), cleared %s, %d ticks, %d points.',
             account.username, result.scenario, 'free' if result.mode else 'scenario', result.cleared,
@@ -204,7 +223,7 @@ class AppService:
         """A DATABASE page, else the named page from `files/` (empty when missing), NUL-terminated."""
 
         text = name.split(b'\x00', 1)[0].decode('ascii', errors='replace')
-        content = self._database.render(text)
+        content = None if self._database is None else self._database.render(text)
         if content is None:
             root = self._files_root.resolve()
             path = (root / text).resolve()

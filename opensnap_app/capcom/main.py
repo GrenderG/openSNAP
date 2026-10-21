@@ -40,6 +40,10 @@ def main() -> None:
     )
     _add_title(titles, (outbreak.APP_BUILD,), 'Resident Evil Outbreak', lambda: _outbreak_service(storage))
     _add_title(
+        stamped_builds, (outbreak.PUBLIC_BETA_VERSION,), 'Resident Evil Outbreak NA public beta',
+        lambda: _outbreak_service(storage, public_beta=True),
+    )
+    _add_title(
         titles, (outbreak2.APP_BUILD_NA, outbreak2.APP_BUILD_EU), 'Resident Evil Outbreak File#2',
         lambda: _outbreak2_service(config, storage),
     )
@@ -90,10 +94,14 @@ def _monster_hunter_service(
     )
 
 
-def _outbreak_service(storage: StorageBundle) -> outbreak.AppService:
-    """Resident Evil Outbreak File#1."""
+def _outbreak_service(storage: StorageBundle, *, public_beta: bool = False) -> outbreak.AppService:
+    """Resident Evil Outbreak File#1, or its public beta with its own data folder and records."""
 
-    return outbreak.AppService(outbreak.read_app_service_config(), accounts=storage.accounts, records=storage.records)
+    subdirectory = outbreak.PUBLIC_BETA_DATA_SUBDIRECTORY if public_beta else outbreak.DATA_SUBDIRECTORY
+    return outbreak.AppService(
+        outbreak.read_app_service_config(subdirectory),
+        accounts=storage.accounts, records=storage.records, public_beta=public_beta,
+    )
 
 
 def _outbreak2_service(config: AppConfig, storage: StorageBundle) -> outbreak2.AppService:

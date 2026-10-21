@@ -6,6 +6,7 @@ from opensnap.plugins.base import GamePlugin
 from opensnap.plugins.monsterhunter import MonsterHunterPlugin
 from opensnap.plugins.monsterhunter_na_beta import MonsterHunterNaBetaPlugin
 from opensnap.plugins.outbreak import OutbreakPlugin
+from opensnap.plugins.outbreak_beta import OutbreakBetaPlugin
 from opensnap.plugins.outbreak2 import Outbreak2Plugin
 
 PLUGIN_FACTORIES: dict[str, type[GamePlugin]] = {
@@ -14,6 +15,7 @@ PLUGIN_FACTORIES: dict[str, type[GamePlugin]] = {
     'monsterhunter': MonsterHunterPlugin,
     'monsterhunter_na_beta': MonsterHunterNaBetaPlugin,
     'outbreak': OutbreakPlugin,
+    'outbreak_beta': OutbreakBetaPlugin,
     'outbreak2': Outbreak2Plugin,
 }
 
