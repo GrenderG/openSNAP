@@ -698,6 +698,43 @@ class UdpReliabilityTests(unittest.TestCase):
         self.assertTrue(sent.type_flags & FLAG_RESPONSE)
         self.assertEqual(self._pump_at(server, 101.0), [])
 
+    def test_framed_resend_carries_only_an_ack_owed_now(self) -> None:
+        # The first copy's ACK is stale once that copy arrived; Beta1's
+        # `kkSetRevAck` would stop resending the client's packets (0x002ebaf4).
+        endpoint = Endpoint(host='170.253.44.213', port=1026)
+        session_id = 0x61384AE8
+        server = self._framed_server(endpoint, session_id)
+        self._mark_inbound_active(server, endpoint, 100.0)
+        relay = self._reliable_message(endpoint=endpoint, session_id=session_id, sequence_number=134)
+        server._send_messages(_FakeSocket(), [relay, self._framed_ack(endpoint, session_id, 137)])  # type: ignore[arg-type]
+        (first,) = self._pump_at(server, 100.0)
+        self.assertEqual(decode_datagram(first, endpoint)[0].acknowledge_number, 137)
+
+        with patch('opensnap.udp_server.time.monotonic', return_value=110.0):
+            server._retransmit_due(_FakeSocket())  # type: ignore[arg-type]
+        (resend,) = self._pump_at(server, 110.0) + self._pump_at(server, 110.0)
+        self.assertFalse(decode_datagram(resend, endpoint)[0].type_flags & FLAG_RESPONSE)
+
+        with patch('opensnap.udp_server.time.monotonic', return_value=120.0):
+            server._retransmit_due(_FakeSocket())  # type: ignore[arg-type]
+        server._send_messages(_FakeSocket(), [self._framed_ack(endpoint, session_id, 138)])  # type: ignore[arg-type]
+        (owed,) = self._pump_at(server, 120.0) + self._pump_at(server, 120.0)
+        (sent,) = decode_datagram(owed, endpoint)
+        self.assertEqual((sent.sequence_number, sent.acknowledge_number), (134, 138))
+        self.assertTrue(sent.type_flags & FLAG_RESPONSE)
+
+    @staticmethod
+    def _framed_ack(endpoint: Endpoint, session_id: int, acknowledge_number: int) -> SnapMessage:
+        return SnapMessage(
+            endpoint=endpoint,
+            type_flags=FLAG_ROOM | FLAG_RESPONSE,
+            packet_number=0,
+            command=commands.CMD_ACK,
+            session_id=session_id,
+            sequence_number=0,
+            acknowledge_number=acknowledge_number,
+        )
+
     def test_ack_with_the_clients_pre_login_word_clears_the_answer(self) -> None:
         # snap00.pcap: the bootstrap's login failure (0x2e) was ACKed at once with
         # header session 0x6fe607d0, the client's own word before KICS, and was

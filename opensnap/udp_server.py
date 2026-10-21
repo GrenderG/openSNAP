@@ -186,20 +186,17 @@ class SnapUdpServer:
       dispatches children, and the multi-child `kkSetMessage` path leaves the
       child `+0x0c` word uninitialized. In practice that inner `ack` field is
       just raw copied/reused header bytes.
-    - Retransmission is oldest-pending-per-session. The server retries every
-      `200 ms`, up to four counted retransmits, which matches the client
-      `kkSendOperation` cadence and retry gate.
+    - Every unacknowledged reliable packet is resent on its own timer until
+      it is ACKed, with no retry cap, timed like the SDK sender (see the
+      class constants below).
     - The peer reliable receive window is only 16 packets wide, so the server
       keeps at most 16 reliable packets in flight per endpoint/session and
       defers newer reliable work behind that window instead of emitting it
       immediately.
-    - After the retry cap is reached, the packet stays pending but is no
-      longer retransmitted. `kkSendOperation` stops requeueing at that point;
-      the later watchdog is a timeout path, not a second resend loop.
-    - If the same peer then stays inbound-silent for `60 s` after a reliable
-      packet has already hit the retry cap, the server treats that as a
-      transport timeout and asks the engine/plugin to clean up the timed-out
-      session.
+    - If the peer sends nothing for the game's `reliable_timeout_seconds`
+      while it owes the ACK of a packet other than a keepalive (counted from
+      that packet's first send), the server treats that as a transport
+      timeout and asks the engine/plugin to clean up the timed-out session.
     - If the session is already gone by the time retransmit logic runs, the
       server immediately clears the stale pending state instead of retrying
       forever.
@@ -239,9 +236,8 @@ class SnapUdpServer:
     # Upper bound on one socket wait while reliable packets are pending.
     _RETRANSMIT_INTERVAL_SECONDS = 0.20
     # Idle socket poll fallback. When no reliable packet is pending, the recv
-    # loop can sleep longer without smearing the binary-backed `200 ms`
-    # retransmit cadence; `_poll_timeout_seconds(...)` shortens this as soon as
-    # one pending reliable has an earlier due time.
+    # loop can sleep longer; `_poll_timeout_seconds(...)` shortens this as
+    # soon as one pending reliable has an earlier due time.
     _IDLE_SOCKET_POLL_SECONDS = 0.50
     # `kkCreateARUDPRevWindow(0x10)` allocates a 16-entry reliable receive
     # window in both builds:
@@ -563,7 +559,15 @@ class SnapUdpServer:
                 continue
             link = self._framed_links.get(pending.session_id)
             if pending.message is not None and link is not None:
-                link.add(pending.message)
+                # A resend carries only an ACK owed now, which `add_ack` folds
+                # in, as the SDK's resend takes the owed ACK
+                # (`kkSendToTargetServer` 0x002e6e14). The one its first copy
+                # carried is stale once that copy arrived, and AM Beta1's
+                # `kkSetRevAck` then stops resending every packet the client
+                # has in flight (0x002ebad8..0x002ebaf4). `0x4000` is cleared
+                # before dispatch (0x002e848c), and a client whose ACK was in
+                # a lost first copy resends its packet and is ACKed again.
+                link.add(replace(pending.message, type_flags=pending.message.type_flags & ~FLAG_RESPONSE))
                 pending.awaiting_send = True
                 continue
 
