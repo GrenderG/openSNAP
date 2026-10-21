@@ -9,7 +9,6 @@ from opensnap.core.sessions import Session
 from opensnap.protocol import commands
 from opensnap.protocol.constants import (
     FLAG_RELIABLE,
-    FLAG_RESPONSE,
     FLAG_ROOM,
     RELAY_CONTEXT_MASK,
 )
@@ -201,7 +200,7 @@ def build_room_leave_callbacks(
     context: HandlerContext,
     leaving_session_id: int,
     recipients: list[Session],
-    type_flags: int = FLAG_ROOM | FLAG_RESPONSE,
+    type_flags: int,
 ) -> list[SnapMessage]:
     """Notify remaining room members that one peer left the room."""
 

@@ -738,6 +738,7 @@ class MonsterHunterPlugin(GamePlugin):
                 payload=lambda member: (
                     struct.pack('>2L', session.session_id, len(profile)) + self._profile_for(member, profile)
                 ),
+                type_flags=FLAG_ROOM | FLAG_RESPONSE,
             )
         return [
             self._result(context, message, session, GameTags.RESULT, RESULT_WRAPPER_STATUS_OK, FLAG_ROOM)
@@ -933,7 +934,7 @@ class MonsterHunterPlugin(GamePlugin):
         exclude_session_id: int,
         command: int,
         payload: Callable[[Session], bytes],
-        reliable: bool = False,
+        type_flags: int,
     ) -> list[SnapMessage]:
         """Build one lobby callback per member physically in the room, with its own payload."""
 
@@ -943,7 +944,7 @@ class MonsterHunterPlugin(GamePlugin):
             context.direct(
                 endpoint=member.endpoint,
                 session_id=member.session_id,
-                type_flags=FLAG_ROOM | FLAG_RESPONSE | (FLAG_RELIABLE if reliable else 0),
+                type_flags=type_flags,
                 command=command,
                 payload=payload(member),
                 acknowledge_number=ack_for_session(member),
@@ -976,7 +977,7 @@ class MonsterHunterPlugin(GamePlugin):
             exclude_session_id=session.session_id,
             command=commands.CMD_JOIN,
             payload=lambda member: _member_record(session, self._profile_for(member, profile)),
-            reliable=True,
+            type_flags=FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE,
         )
 
     def _room_peers(self, context: HandlerContext, session: Session) -> list[Session]:

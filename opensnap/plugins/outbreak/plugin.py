@@ -374,7 +374,12 @@ class OutbreakPlugin(GamePlugin):
                 context.sessions.set_room(session.session_id, room_id)
                 outbound = departures + [self._result(context, message, session, RESULT_OK, FLAG_ROOM)]
                 outbound += self._room_callbacks(
-                    context, room, session.session_id, commands.CMD_JOIN, self._member_record(session), reliable=True
+                    context,
+                    room,
+                    session.session_id,
+                    commands.CMD_JOIN,
+                    self._member_record(session),
+                    type_flags=FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE,
                 )
         return outbound
 
@@ -420,7 +425,12 @@ class OutbreakPlugin(GamePlugin):
         if room is not None:
             payload = struct.pack('>2L', session.session_id, len(message.payload)) + message.payload
             callbacks = self._room_callbacks(
-                context, room, session.session_id, commands.CMD_CHANGE_USER_PROPERTY, payload
+                context,
+                room,
+                session.session_id,
+                commands.CMD_CHANGE_USER_PROPERTY,
+                payload,
+                type_flags=FLAG_ROOM | FLAG_RESPONSE,
             )
         return [self._result(context, message, session, RESULT_OK, FLAG_ROOM)] + callbacks
 
@@ -618,7 +628,7 @@ class OutbreakPlugin(GamePlugin):
         exclude_session_id: int,
         command: int,
         payload: bytes,
-        reliable: bool = False,
+        type_flags: int,
     ) -> list[SnapMessage]:
         """Room callbacks to the reachable members; joins and leaves are reliable.
 
@@ -640,7 +650,7 @@ class OutbreakPlugin(GamePlugin):
             context.direct(
                 endpoint=member.endpoint,
                 session_id=member.session_id,
-                type_flags=FLAG_ROOM | FLAG_RESPONSE | (FLAG_RELIABLE if reliable else 0),
+                type_flags=type_flags,
                 command=command,
                 payload=payload,
                 acknowledge_number=ack_for_session(member),
