@@ -1,6 +1,6 @@
 """Auto Modellista game plugin."""
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 import logging
 import struct
 
@@ -43,8 +43,6 @@ from opensnap.protocol.fields import get_c_string, get_u16, get_u32
 from opensnap.protocol.models import SnapMessage
 
 _LOGGER = logging.getLogger('opensnap.plugins.automodellista')
-PENDING_ROOM_JOIN_RETRY_TICKS = 3
-PENDING_ROOM_JOIN_MAX_RETRIES = 3
 # Event create-race uses this client-side sentinel when password is disabled.
 # Keep room creation semantics as "no password", not literal sentinel text.
 ROOM_PASSWORD_EMPTY_SENTINELS = frozenset({'No PW'})
@@ -55,29 +53,33 @@ ROOM_PASSWORD_EMPTY_SENTINELS = frozenset({'No PW'})
 MAX_LISTED_ROOMS = 24
 
 
-@dataclass(slots=True)
-class _PendingRoomJoin:
-    """Tracked room join waiting for the guest-side sync to begin."""
-
-    room_id: int
-    ticks_until_retry: int = PENDING_ROOM_JOIN_RETRY_TICKS
-    retries_remaining: int = PENDING_ROOM_JOIN_MAX_RETRIES
-
-
 class AutoModellistaPlugin(GamePlugin):
     """Command handlers for Auto Modellista behavior."""
 
     name = 'automodellista'
     # `SLUS_206.42` (`0x00278a34`) and `SLUS_280.31` pass title code 0xCAAD.
     snap_titles = (SnapTitle(title_code=0xCAAD, footer_marker=FOOTER_MARKER, name='Auto Modellista'),)
+    # Room join and leave callbacks (`kkJoinGameRoomCallBack` 0x002a0750,
+    # `kkLeaveGameRoomCallBack` 0x002a08d0) are reliable. The host's member
+    # slots (`g+9856`) gain a joiner only from the join callback, which also
+    # starts the joiner's sync (`0x8005`, 0x002a08b0; the joiner leaves after
+    # 1200 frames without it, `lbc_in_room_01` 0x0028a0f8), and lose one only
+    # from the leave callback: a missed leave leaves a slot whose ready flag
+    # never comes, so each race start waits out 1200 frames
+    # (`lbc_game_ready_01` 0x0028b460..0x0028b534). The SDK drops an
+    # unreliable packet that is lost or arrives after a newer one
+    # (`kkReceiveExtentCheck` 0x002f5028); a reliable one is ACKed, delivered
+    # once and in order (0x002f4d08..0x002f4fac), and dispatched the same way,
+    # `0x4000` being stripped before dispatch (0x002ee73c). The host inserts a
+    # joiner without a duplicate check (0x002a07e8..0x002a0850), so the
+    # callback is never sent twice under new sequences.
+    room_callback_flags = FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE
 
     def __init__(self) -> None:
         self._room_game_states: dict[int, RoomGameState] = {}
         # Track which post-game packet families each room member has reported
         # for the current game. Keys are room_id -> {session_id: bitmask}.
         self._post_game_reports: dict[int, dict[int, PostGameReportMask]] = {}
-        # Track guest joins until the joiner confirms room sync (`0x8102` / `0x8008`).
-        self._pending_room_joins: dict[int, _PendingRoomJoin] = {}
 
     def register_handlers(self, router: CommandRouter, context: HandlerContext) -> None:
         """Register plugin handlers."""
@@ -97,51 +99,8 @@ class AutoModellistaPlugin(GamePlugin):
         router.register(commands.CMD_CHANGE_ATTRIBUTE, self._handle_change_attribute)
         router.register(commands.CMD_LOGOUT_CLIENT, self._handle_logout)
 
-    def on_tick(self, context: HandlerContext) -> list[SnapMessage]:
-        """Run periodic game-specific recovery tasks."""
-
-        messages: list[SnapMessage] = []
-        for joining_session_id in tuple(self._pending_room_joins):
-            pending = self._pending_room_joins.get(joining_session_id)
-            if pending is None:
-                continue
-
-            joining_session = context.sessions.get(joining_session_id)
-            if joining_session is None or joining_session.room_id != pending.room_id:
-                self._pending_room_joins.pop(joining_session_id, None)
-                continue
-
-            recipients = [
-                member for member in context.sessions.list_room_members(pending.room_id)
-                if member.session_id != joining_session_id
-            ]
-            if not recipients:
-                self._pending_room_joins.pop(joining_session_id, None)
-                continue
-
-            if pending.ticks_until_retry > 0:
-                pending.ticks_until_retry -= 1
-                continue
-
-            messages.extend(
-                _build_room_join_callbacks(
-                    context=context,
-                    joining_session=joining_session,
-                    recipients=recipients,
-                )
-            )
-            if pending.retries_remaining <= 1:
-                self._pending_room_joins.pop(joining_session_id, None)
-            else:
-                pending.retries_remaining -= 1
-                pending.ticks_until_retry = PENDING_ROOM_JOIN_RETRY_TICKS
-
-        return messages
-
     def on_session_timeout(self, context: HandlerContext, session: Session) -> list[SnapMessage]:
         """Clean up room state after one client-side transport timeout."""
-
-        self._clear_session_join_retry_state(session.session_id)
 
         room_id = session.room_id
         if room_id <= 0:
@@ -153,7 +112,6 @@ class AutoModellistaPlugin(GamePlugin):
 
         self._reset_post_game_state(room_id)
         if session.session_id == room.host_session_id:
-            self._clear_pending_room_joins_for_room(room_id)
             for member in context.sessions.list_room_members(room_id):
                 if member.session_id != session.session_id:
                     context.sessions.set_room(member.session_id, 0)
@@ -170,6 +128,7 @@ class AutoModellistaPlugin(GamePlugin):
             context=context,
             leaving_session_id=session.session_id,
             recipients=recipients,
+            type_flags=self.room_callback_flags,
         )
 
     def _handle_logout(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
@@ -453,16 +412,12 @@ class AutoModellistaPlugin(GamePlugin):
                     context=context,
                     joining_session=session,
                     recipients=existing_members,
+                    type_flags=self.room_callback_flags,
                 )
-                if callbacks:
-                    self._pending_room_joins[session.session_id] = _PendingRoomJoin(room_id=room_id)
-                else:
-                    self._pending_room_joins.pop(session.session_id, None)
                 command = commands.CMD_RESULT_WRAPPER
                 payload = struct.pack('>2L', GameTags.GAME_START, RESULT_WRAPPER_STATUS_OK)
             else:
                 callbacks = []
-                self._clear_session_join_retry_state(session.session_id)
                 command = commands.CMD_RESULT_ERROR
                 payload = struct.pack('>2L', GameTags.GAME_START, RESULT_ERROR_CODE_GENERIC)
 
@@ -493,7 +448,6 @@ class AutoModellistaPlugin(GamePlugin):
         acknowledge_number = ack_for_request(message, session)
 
         if (message.type_flags & FLAG_CHANNEL_BITS) == FLAG_CHANNEL_BITS:
-            self._clear_session_join_retry_state(session.session_id)
             callbacks: list[SnapMessage] = []
             if session.room_id > 0:
                 room_id = session.room_id
@@ -508,6 +462,7 @@ class AutoModellistaPlugin(GamePlugin):
                     context=context,
                     leaving_session_id=session.session_id,
                     recipients=recipients,
+                    type_flags=self.room_callback_flags,
                 )
             context.sessions.set_lobby(session.session_id, 0)
             # Even during the post-game return path, a real CMD_LEAVE must keep
@@ -525,7 +480,6 @@ class AutoModellistaPlugin(GamePlugin):
             return [result_wrapper] + callbacks
 
         if (message.type_flags & FLAG_CHANNEL_BITS) == FLAG_ROOM:
-            self._clear_session_join_retry_state(session.session_id)
             callbacks: list[SnapMessage] = []
             room_id = session.room_id
             if room_id > 0:
@@ -540,6 +494,7 @@ class AutoModellistaPlugin(GamePlugin):
                     context=context,
                     leaving_session_id=session.session_id,
                     recipients=recipients,
+                    type_flags=self.room_callback_flags,
                 )
             # Room leave keeps the leave selector in both manual and post-game
             # flows. The post-game distinction is carried by the earlier room
@@ -842,8 +797,6 @@ class AutoModellistaPlugin(GamePlugin):
             )
             return response
 
-        self._clear_pending_room_join_for_send_target(message.payload)
-
         target_session_id = get_u32(message.payload, 4)
         target = context.sessions.get(target_session_id)
         if target is None:
@@ -912,29 +865,6 @@ class AutoModellistaPlugin(GamePlugin):
                 acknowledge_number=acknowledge_number,
             )
         ]
-
-    def _clear_pending_room_join_for_send_target(self, payload: bytes) -> None:
-        """Clear pending join retries once the joiner-side room sync begins."""
-
-        subcommand = get_u16(payload, 8)
-        if subcommand == RoomSubcommand.JOIN_READY:
-            self._pending_room_joins.pop(get_u32(payload, 4), None)
-            return
-
-        if subcommand == RoomSubcommand.JOIN_GUEST_SYNC and len(payload) >= 14:
-            self._pending_room_joins.pop(get_u32(payload, 10), None)
-
-    def _clear_pending_room_joins_for_room(self, room_id: int) -> None:
-        """Drop all tracked join retries tied to one room."""
-
-        for joining_session_id, pending in tuple(self._pending_room_joins.items()):
-            if pending.room_id == room_id:
-                self._clear_session_join_retry_state(joining_session_id)
-
-    def _clear_session_join_retry_state(self, session_id: int) -> None:
-        """Drop join-retry transport state for one session."""
-
-        self._pending_room_joins.pop(session_id, None)
 
     def _build_multi_lobby_user_query_payload(
         self, context: HandlerContext, message: SnapMessage, entry_flags: int
@@ -1124,6 +1054,7 @@ def _build_room_join_callbacks(
     context: HandlerContext,
     joining_session: Session,
     recipients: list[Session],
+    type_flags: int,
 ) -> list[SnapMessage]:
     """Notify existing room members that a player joined."""
 
@@ -1145,9 +1076,7 @@ def _build_room_join_callbacks(
             context.direct(
                 endpoint=member.endpoint,
                 session_id=member.session_id,
-                # The host does not ACK this callback family, so keep it on
-                # the response channel without transport reliability.
-                type_flags=FLAG_ROOM | FLAG_RESPONSE,
+                type_flags=type_flags,
                 command=commands.CMD_JOIN,
                 payload=payload,
                 acknowledge_number=ack_for_session(member),

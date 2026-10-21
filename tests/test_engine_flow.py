@@ -853,7 +853,8 @@ class EngineFlowTests(unittest.TestCase):
             self.assertEqual(callback.endpoint, endpoint_one)
             self.assertEqual(callback.session_id, host_session)
             self.assertEqual(callback.type_flags & FLAG_RESPONSE, FLAG_RESPONSE)
-            self.assertEqual(callback.type_flags & FLAG_RELIABLE, 0)
+            # Reliable: the host's slots gain a joiner only from this callback.
+            self.assertEqual(callback.type_flags & FLAG_RELIABLE, FLAG_RELIABLE)
             self.assertEqual(callback.acknowledge_number, 4)
             callback_username, callback_session_id, callback_unknown, callback_team = struct.unpack(
                 '>16s2L16s',
@@ -1010,7 +1011,9 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(len(join_result.messages), 2)
         self.assertEqual(engine.tick(), [])
 
-    def test_beta1_host_naming_the_joiner_ends_join_callback_resends(self) -> None:
+    def test_beta1_room_callbacks_are_reliable_without_an_ack(self) -> None:
+        # A Beta1 callback's ACK word would stop `kkSetRevAck` resending the
+        # member's packets in flight (0x002ebaf4).
         engine = SnapProtocolEngine(config=self._config, plugin=AutoModellistaBeta1Plugin())
         endpoint_one = Endpoint(host='127.0.0.1', port=50122)
         endpoint_two = Endpoint(host='127.0.0.2', port=50123)
@@ -1019,21 +1022,35 @@ class EngineFlowTests(unittest.TestCase):
         _join_lobby(engine, endpoint_one, host_session, lobby_id=1, sequence=3)
         _join_lobby(engine, endpoint_two, joiner_session, lobby_id=1, sequence=3)
         room_id = _create_room(engine, endpoint_one, host_session, sequence=4, room_name='beta1-join')
-        _join_room(engine, endpoint_two, joiner_session, room_id=room_id, sequence=4)
-
-        start = SnapMessage(
-            endpoint=endpoint_one,
-            type_flags=FLAG_ROOM | FLAG_RELIABLE,
+        join = SnapMessage(
+            endpoint=endpoint_two,
+            type_flags=FLAG_ROOM,
             packet_number=0,
-            command=commands.CMD_SEND_TARGET,
-            session_id=host_session,
+            command=commands.CMD_JOIN,
+            session_id=joiner_session,
+            sequence_number=4,
+            acknowledge_number=0,
+            payload=struct.pack('>L', room_id),
+        )
+        joined = engine.handle_datagram(_encode(join), endpoint_two).messages
+        leave = SnapMessage(
+            endpoint=endpoint_two,
+            type_flags=FLAG_ROOM,
+            packet_number=0,
+            command=commands.CMD_LEAVE,
+            session_id=joiner_session,
             sequence_number=5,
             acknowledge_number=0,
-            payload=struct.pack('>LLH', 1, joiner_session, 0x0201),
+            payload=b'',
         )
-        self.assertFalse(engine.handle_datagram(_encode(start), endpoint_one).errors)
+        left = engine.handle_datagram(_encode(leave), endpoint_two).messages
 
-        self.assertEqual([message for _ in range(4) for message in engine.tick()], [])
+        callbacks = [
+            message for message in joined + left
+            if message.command in (commands.CMD_JOIN, commands.CMD_LEAVE) and message.endpoint == endpoint_one
+        ]
+        self.assertEqual([(message.command, message.type_flags) for message in callbacks],
+                         [(commands.CMD_JOIN, FLAG_ROOM | FLAG_RELIABLE), (commands.CMD_LEAVE, FLAG_ROOM | FLAG_RELIABLE)])
 
     def test_room_leave_notifies_remaining_members(self) -> None:
         config = self._config
@@ -1076,7 +1093,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(callback.endpoint, endpoint_one)
         self.assertEqual(callback.session_id, host_session)
         self.assertEqual(callback.type_flags & FLAG_RESPONSE, FLAG_RESPONSE)
-        self.assertEqual(callback.type_flags & FLAG_RELIABLE, 0)
+        self.assertEqual(callback.type_flags & FLAG_RELIABLE, FLAG_RELIABLE)
         self.assertEqual(struct.unpack('>L', callback.payload)[0], leaver_session)
 
     def test_login_to_kics_reentry_clears_room_state_and_restarts_reliable_transport(self) -> None:
@@ -1215,7 +1232,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(leave_callback.command, commands.CMD_LEAVE)
         self.assertEqual(leave_callback.endpoint, endpoint_two)
         self.assertEqual(struct.unpack('>L', leave_callback.payload)[0], host_session)
-        self.assertEqual(leave_callback.type_flags & FLAG_RELIABLE, 0)
+        self.assertEqual(leave_callback.type_flags & FLAG_RELIABLE, FLAG_RELIABLE)
 
         # Post-game room leave still uses the normal leave selector.
         # Switching this wrapper to `0x06` routes the guest into the
@@ -1354,7 +1371,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(leave_callback.command, commands.CMD_LEAVE)
         self.assertEqual(leave_callback.endpoint, endpoint_one)
         self.assertEqual(struct.unpack('>L', leave_callback.payload)[0], guest_session)
-        self.assertEqual(leave_callback.type_flags & FLAG_RELIABLE, 0)
+        self.assertEqual(leave_callback.type_flags & FLAG_RELIABLE, FLAG_RELIABLE)
 
     def test_lobby_leave_notifies_remaining_room_members(self) -> None:
         config = self._config
@@ -1394,7 +1411,7 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(callback.endpoint, endpoint_one)
         self.assertEqual(callback.session_id, host_session)
         self.assertEqual(callback.type_flags & FLAG_RESPONSE, FLAG_RESPONSE)
-        self.assertEqual(callback.type_flags & FLAG_RELIABLE, 0)
+        self.assertEqual(callback.type_flags & FLAG_RELIABLE, FLAG_RELIABLE)
         self.assertEqual(struct.unpack('>L', callback.payload)[0], leaver_session)
 
     def test_send_subcommand_8006_broadcasts_to_other_room_members(self) -> None:
@@ -2408,9 +2425,10 @@ class EngineFlowTests(unittest.TestCase):
         relay = result.messages[1]
         self.assertEqual(relay.command, commands.CMD_SEND_TARGET)
         self.assertEqual(relay.endpoint, endpoint_one)
-        # Contiguous reliable stream: the relay is the host's next reliable packet.
+        # Contiguous reliable stream: after the reliable join callback, the
+        # relay is the host's next reliable packet.
         self.assertEqual(relay.type_flags & FLAG_RELIABLE, FLAG_RELIABLE)
-        self.assertEqual(relay.sequence_number, create_wrapper.sequence_number + 1)
+        self.assertEqual(relay.sequence_number, create_wrapper.sequence_number + 2)
 
     def test_send_target_subcommand_8103_relays_to_target(self) -> None:
         config = self._config

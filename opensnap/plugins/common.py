@@ -201,7 +201,7 @@ def build_room_leave_callbacks(
     context: HandlerContext,
     leaving_session_id: int,
     recipients: list[Session],
-    reliable: bool = False,
+    type_flags: int = FLAG_ROOM | FLAG_RESPONSE,
 ) -> list[SnapMessage]:
     """Notify remaining room members that one peer left the room."""
 
@@ -214,7 +214,7 @@ def build_room_leave_callbacks(
             context.direct(
                 endpoint=member.endpoint,
                 session_id=member.session_id,
-                type_flags=FLAG_ROOM | FLAG_RESPONSE | (FLAG_RELIABLE if reliable else 0),
+                type_flags=type_flags,
                 command=commands.CMD_LEAVE,
                 payload=payload,
                 acknowledge_number=ack_for_session(member),

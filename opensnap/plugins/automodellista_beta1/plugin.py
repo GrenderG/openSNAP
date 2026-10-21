@@ -11,7 +11,7 @@ from opensnap.plugins.automodellista.plugin import (
     _prune_stale_room_members,
 )
 from opensnap.plugins.base import SnapTitle
-from opensnap.plugins.common import USER_ATTRIBUTE_TOKEN, ack_for_session
+from opensnap.plugins.common import USER_ATTRIBUTE_TOKEN
 from opensnap.protocol import commands
 from opensnap.protocol.codec import (
     PacketDecodeError,
@@ -21,6 +21,7 @@ from opensnap.protocol.codec import (
 from opensnap.protocol.constants import (
     FLAG_CHANNEL_BITS,
     FLAG_MULTI,
+    FLAG_RELIABLE,
     FLAG_RESPONSE,
     FLAG_ROOM,
     FOOTER_MARKER_KAGE,
@@ -56,6 +57,13 @@ class AutoModellistaBeta1Plugin(AutoModellistaPlugin):
     # the room's result transition or relays on the results and car save
     # screens, which the player leaves at their own pace.
     reliable_timeout_seconds = 300.0
+    # Room join and leave callbacks (0x003616c0, 0x003618e0) without `0x4000`:
+    # its ACK word would re-ACK the member's last packet, and `kkSetRevAck`
+    # (0x002ebaa8..0x002ebaf4) then stops resending the member's packets in
+    # flight. `0x4000` is stripped before dispatch (0x002e848c), so the
+    # callbacks reach the same slots, and the framed link folds a pending
+    # ACK into them instead.
+    room_callback_flags = FLAG_ROOM | FLAG_RELIABLE
     # Beta1 merges every datagram waiting at one poll into a single buffer and
     # drops what follows a leading bare ACK (`CopyDataToBuf` 0x002ed400,
     # `kkReceiveExtentCheck` 0x002ec080), and a non-matching ACK stops it
@@ -122,15 +130,6 @@ class AutoModellistaBeta1Plugin(AutoModellistaPlugin):
         # resending them all, and a lost ACK then ends in error 601.
         flags = (request.type_flags if type_flags is None else type_flags) & ~FLAG_RESPONSE
         return super()._handle_room_game_send(context=context, session=session, request=request, type_flags=flags)
-
-    def _clear_pending_room_join_for_send_target(self, payload: bytes) -> None:
-        # Beta1 sends no `0x8008` / `0x8102`. Its host names each joiner at `+4`
-        # of a send-target as soon as the join callback gave it the session
-        # (`lbc_in_room_04` 0x002cb620 -> `cpnkkSendGamePacket` 0x0035e4b8..
-        # 0x0035e4e8, one per occupied slot), so the join needs no resend; each
-        # resend's stray ACK would also stop `kkSetRevAck` resending (above).
-        if len(payload) >= 8:
-            self._pending_room_joins.pop(get_u32(payload, 4), None)
 
     def _handle_query_attribute(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         channel_type = message.type_flags & FLAG_CHANNEL_BITS
@@ -323,7 +322,11 @@ def _build_room_user_count_callbacks(
     room_id: int,
     excluding_endpoint: Endpoint,
 ) -> list[SnapMessage]:
-    """Push the beta1 room USER count callback to existing room members."""
+    """Push the beta1 room USER count callback to existing room members.
+
+    Without `0x4000`, like the join and leave callbacks it follows (see
+    `room_callback_flags`).
+    """
 
     room = context.rooms.get(room_id)
     if room is None:
@@ -338,10 +341,9 @@ def _build_room_user_count_callbacks(
             context.direct(
                 endpoint=member.endpoint,
                 session_id=member.session_id,
-                type_flags=FLAG_ROOM | FLAG_RESPONSE,
+                type_flags=FLAG_ROOM,
                 command=commands.CMD_QUERY_ATTRIBUTE,
                 payload=payload,
-                acknowledge_number=ack_for_session(member),
             )
         )
     return messages

@@ -444,7 +444,10 @@ class OutbreakPlugin(GamePlugin):
                     message_
                     for left in player.pending_leaves
                     for message_ in build_room_leave_callbacks(
-                        context=context, leaving_session_id=left, recipients=[session], reliable=True
+                        context=context,
+                        leaving_session_id=left,
+                        recipients=[session],
+                        type_flags=FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE,
                     )
                 ]
                 player.pending_leaves.clear()
@@ -602,7 +605,10 @@ class OutbreakPlugin(GamePlugin):
             elif member.session_id in self._players:
                 self._players[member.session_id].pending_leaves.append(session.session_id)
         return build_room_leave_callbacks(
-            context=context, leaving_session_id=session.session_id, recipients=recipients, reliable=True
+            context=context,
+            leaving_session_id=session.session_id,
+            recipients=recipients,
+            type_flags=FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE,
         )
 
     def _room_callbacks(

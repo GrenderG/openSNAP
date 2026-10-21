@@ -799,7 +799,7 @@ class MonsterHunterPlugin(GamePlugin):
                 context=context,
                 leaving_session_id=leaving_session_id,
                 recipients=[session],
-                reliable=True,
+                type_flags=FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE,
             )
         ]
 
@@ -866,7 +866,7 @@ class MonsterHunterPlugin(GamePlugin):
             context=context,
             leaving_session_id=leaving_session_id,
             recipients=context.sessions.list_room_members(room.room_id),
-            reliable=True,
+            type_flags=FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE,
         )
 
     def _tracking_towns(
