@@ -155,7 +155,7 @@ class OutbreakPlugin(GamePlugin):
         router.register(commands.CMD_CHANGE_USER_STATUS, self._handle_change_user_status)
         router.register(commands.CMD_SEND, self._handle_send)
         router.register(commands.CMD_SEND_TARGET, self._handle_send_target)
-        router.register(commands.CMD_SEND_ECHO, game_handlers.handle_send_echo)
+        router.register(commands.CMD_SEND_ECHO, self._handle_send_echo)
 
     def _read_directory(self) -> Directory:
         return read_directory()
@@ -565,6 +565,33 @@ class OutbreakPlugin(GamePlugin):
         return [
             context.reply(message, type_flags=ack_flags, command=commands.CMD_ACK, session_id=session.session_id)
         ] + relays
+
+    def _handle_send_echo(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
+        """Mirror an echo, but not to a player in a scenario.
+
+        The lobby's echo test (`0x00583f30`, started by the lobby status
+        result `0x005841e0`) sends each echo from the previous one's reply
+        callback, which the SDK keeps in slot 40 (`0x001e5d70`) pointing into
+        `netwk.bin` (`0x00584180`). `game.bin` replaces `netwk.bin` and no
+        slot is cleared, so a reply to an echo still in flight at the launch
+        runs scenario code (dispatch `0x001e0a6c` only checks that the slot
+        is set). The echo is unreliable; the public beta's is reliable
+        (`0x005835c0`) and is only ACKed. Addresses are NA v2.
+        """
+
+        player = self._players.get(message.session_id)
+        if player is None or not player.in_scenario:
+            return game_handlers.handle_send_echo(context, message)
+        # Embedded children ride on the outer packet's ACK (see `_handle_send`).
+        if not message.type_flags & FLAG_RELIABLE or message.embedded_in_multi:
+            return []
+        return [
+            context.reply(
+                message,
+                type_flags=(message.type_flags & FLAG_CHANNEL_BITS or FLAG_ROOM) | FLAG_RESPONSE,
+                command=commands.CMD_ACK,
+            )
+        ]
 
     def _handle_send_target(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         """Relay one waiting-room packet; the receiver checks the header sender id (`0x00583680`)."""

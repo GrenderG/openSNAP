@@ -24,6 +24,7 @@ from opensnap_app.capcom.protocol import (
 from opensnap_app.capcom.server import CapcomAppServer
 from tests.test_outbreak_plugin import (
     LOBBY_FLAGS,
+    ROOM_FLAGS,
     STATUS_IN_SCENARIO,
     OutbreakEngineHarness,
     _join_payload,
@@ -72,6 +73,13 @@ class OutbreakBetaLobbyTests(OutbreakEngineHarness):
         self.assertEqual(len(pages), 1)
         self.assertEqual(struct.unpack_from('>L', pages[0].payload, 8)[0], 24)
         self.assertLessEqual(len(encode_messages(pages)), 896)
+
+    def test_reliable_echo_in_a_scenario_is_only_acked(self) -> None:
+        # The beta's echo is reliable (`0x005835c0`): ACKed, never answered.
+        host = self.players[0]
+        self._send(host, commands.CMD_CHANGE_USER_STATUS, struct.pack('>L', STATUS_IN_SCENARIO))
+        replies = self._send(host, commands.CMD_SEND_ECHO, b'\x01', ROOM_FLAGS)
+        self.assertEqual([(m.command, m.sequence_number) for m in replies], [(commands.CMD_ACK, 0)])
 
     def test_scenario_window_ends_at_the_beta_lobby_status(self) -> None:
         host, guest, _ = self.players

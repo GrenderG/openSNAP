@@ -632,6 +632,15 @@ class Outbreak2LobbyTests(unittest.TestCase):
 
     # Deferred room leave callbacks.
 
+    def test_echo_gets_no_reply_in_a_scenario(self) -> None:
+        # Its reply callback stays in SDK slot 40, inside `netwk.bin`, which
+        # `game.bin` has replaced (`0x005b6010`).
+        host = self.players[0]
+        self._set_status(host, STATUS_IN_SCENARIO)
+        self.assertEqual(self._send(host, commands.CMD_SEND_ECHO, b'\x01', FLAG_ROOM), [])
+        self._set_status(host, STATUS_IN_LOBBY)
+        self.assertEqual([m.payload for m in self._send(host, commands.CMD_SEND_ECHO, b'\x01', FLAG_ROOM)], [b'\x01'])
+
     def test_room_leaves_during_a_scenario_wait_for_the_lobby_status(self) -> None:
         host, guest, watcher = self.players
         fourth = self._login('jill3', '10.0.0.4', 4)

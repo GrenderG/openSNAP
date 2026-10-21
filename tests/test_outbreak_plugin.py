@@ -300,6 +300,17 @@ class OutbreakLobbyTests(OutbreakEngineHarness):
         refused = self._send(guest, commands.CMD_JOIN, _join_payload(room_id))
         self.assertEqual(refused[-1].command, commands.CMD_RESULT_ERROR)
 
+    def test_echo_gets_no_reply_in_a_scenario(self) -> None:
+        # Its reply callback stays in SDK slot 40, inside `netwk.bin`, which
+        # `game.bin` has replaced (`0x00584180`).
+        host = self.players[0]
+        echo = bytes(range(64))
+        self.assertEqual([m.payload for m in self._send(host, commands.CMD_SEND_ECHO, echo, FLAG_ROOM)], [echo])
+        self._send(host, commands.CMD_CHANGE_USER_STATUS, struct.pack('>L', STATUS_IN_SCENARIO))
+        self.assertEqual(self._send(host, commands.CMD_SEND_ECHO, echo, FLAG_ROOM), [])
+        self._send(host, commands.CMD_CHANGE_USER_STATUS, struct.pack('>L', self.lobby_status))
+        self.assertEqual([m.payload for m in self._send(host, commands.CMD_SEND_ECHO, echo, FLAG_ROOM)], [echo])
+
     def test_no_lobby_callbacks_reach_a_player_in_a_scenario(self) -> None:
         host, guest, watcher = self.players
         room_id = self._create_room(host)
