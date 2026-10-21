@@ -80,12 +80,14 @@ STAT_ATTRIBUTE = b'STAT'
 # Member profile (`CMD_CHANGE_USER_PROPERTY` payload, slot 10 `0x0061a0b0`): its
 # size and departure offsets depend on the build (`MemberProfileLayout`).
 # Quest departure. A player leaving its Town for a quest stays listed there,
-# so that its return `STAT` finds that Town again with its place kept. Clients
-# never see this listing: the client leaves its Town with a plain room leave,
-# and the members drop it from their member table and the Town only on the
-# leave callback (`0x00619590` -> `0x0060f190`). The leave is announced like
-# any other, rosters and the room `USER` count hold the hunters in the room,
-# and the return is announced as an arrival.
+# so that its return `STAT` finds that Town again with its place kept. The
+# client leaves its Town with a plain room leave, and the members drop it
+# from their member table and the Town only on the leave callback
+# (`0x00619590` -> `0x0060f190`). The leave is announced like any other,
+# rosters hold the hunters in the room, and the return is announced as an
+# arrival. Only the Town's counts (directory row and room `USER`) keep the
+# listing, so that the Town select screen joins the Town rather than
+# creating it again (see `_handle_query_attribute`).
 # The departure is announced differently by the two sides (`lobby.bin`):
 # - Guests publish profile `+136/+137 = 3/5` (release layout; `0x0061cb64`, step 0 of the
 #   guest machine `0x0061c7a0`) before their room leave (step 4, `0x0061cdd0`).
@@ -199,21 +201,32 @@ class MonsterHunterPlugin(GamePlugin):
         starts, `game.bin` overwrites `lobby.bin` (it makes no SNAP requests and
         registers no callbacks) and the slots keep pointing into it, so the
         reply to a keepalive still in flight jumps into the quest overlay and
-        hangs the client at "Preparing Quest". The profile is still stored.
-        Once the return `STAT` moves the player back to its Town, keepalives
-        are answered again. Transport ACKs only retire packets (`kkSetRevAck`).
+        hangs the client at "Preparing Quest". The profile is still stored, and
+        a reliable request gets a bare ACK, which only retires it
+        (`kkSetRevAck`; command 0 runs no callback, `0x002035c0`). No reply is
+        built: a reliable one would take a sequence that is never sent, and
+        the client delivers reliable packets only in order (`0x00209a00`), so
+        everything after it, from the return `STAT` result on, would wait
+        forever. Once that `STAT` moves the player back to its Town,
+        keepalives are answered again.
         """
 
         def handle(context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
             requester = context.sessions.get(message.session_id)
-            in_quest = requester is not None and self._in_started_quest(context, requester)
-            outbound = handler(context, message)
-            if not in_quest:
-                return outbound
+            if requester is None or not self._in_started_quest(context, requester):
+                return handler(context, message)
+            if message.command == commands.CMD_CHANGE_USER_PROPERTY:
+                self._store_profile(requester, message)
+            # Embedded children ride on the outer packet's ACK (see `_handle_send`).
+            if not message.type_flags & FLAG_RELIABLE or message.embedded_in_multi:
+                return []
             return [
-                reply for reply in outbound
-                if reply.session_id != requester.session_id
-                or reply.command not in (commands.CMD_RESULT_WRAPPER, commands.CMD_SEND_ECHO)
+                context.reply(
+                    message,
+                    type_flags=(message.type_flags & FLAG_CHANNEL_BITS or FLAG_ROOM) | FLAG_RESPONSE,
+                    command=commands.CMD_ACK,
+                    session_id=requester.session_id,
+                )
             ]
 
         return handle
@@ -350,10 +363,13 @@ class MonsterHunterPlugin(GamePlugin):
         channel_type = message.type_flags & FLAG_CHANNEL_BITS
         channel_id = get_u32(message.payload, 0)
         if channel_type == FLAG_ROOM:
-            # The client keeps this count as the room's population and moves it
-            # with each join and leave callback (`0x006156a0`, `0x00619520`,
-            # `0x00619768`), so it counts the hunters in the room.
-            users = len(context.sessions.list_room_members(self._server_room_id(session, channel_id)))
+            # The Town select screen shows this count in place of the row's
+            # (`0x006156a0`, refreshed by `0x005f3ce8..0x005f3d70`) and creates
+            # a new Town when it is 0 (`0x005f37a0`, then `kkCreateGameRoom`
+            # `0x00615bb8`), so like the row it counts the hunters a Town
+            # still lists while they are away on a quest.
+            room = context.rooms.get(self._server_room_id(session, channel_id))
+            users = 0 if room is None else len(room.members)
         else:
             users = self._area_population(channel_id)
 
@@ -722,11 +738,7 @@ class MonsterHunterPlugin(GamePlugin):
         if session is None:
             return []
 
-        player = self._players.get(session.session_id)
-        profile = self._server_profile(player, bytes(message.payload))
-        if player is not None and len(profile) == self.profile.member_profile.size:
-            player.profile = profile
-
+        profile = self._store_profile(session, message)
         callbacks: list[SnapMessage] = []
         room = context.rooms.get(session.room_id)
         if room is not None:
@@ -743,6 +755,15 @@ class MonsterHunterPlugin(GamePlugin):
         return [
             self._result(context, message, session, GameTags.RESULT, RESULT_WRAPPER_STATUS_OK, FLAG_ROOM)
         ] + callbacks
+
+    def _store_profile(self, session: Session, message: SnapMessage) -> bytes:
+        """Keep a published profile, in server room ids; return it."""
+
+        player = self._players.get(session.session_id)
+        profile = self._server_profile(player, bytes(message.payload))
+        if player is not None and len(profile) == self.profile.member_profile.size:
+            player.profile = profile
+        return profile
 
     def _handle_change_attribute(self, context: HandlerContext, message: SnapMessage) -> list[SnapMessage]:
         """Apply `STAT` rules changes, including the return from a quest.
@@ -1132,9 +1153,10 @@ class MonsterHunterPlugin(GamePlugin):
     ) -> SnapMessage:
         """Fail a request: the `lobby.bin` result callbacks test only the `CMD_RESULT_ERROR` mark.
 
-        NA create `0x00611e40`, Area join `0x00615340` and room join
-        `0x00616010` (EU `0x005bf490`, `0x005c2a90`, `0x005c3770`) treat any
-        `CMD_RESULT_WRAPPER` as success; a create keeps its word as the room id.
+        NA quest room create `0x00611e40`, Town create `0x00615f50`, Area join
+        `0x00615340` and room join `0x00616010` (EU `0x005bf490`, `0x005c36b0`,
+        `0x005c2a90`, `0x005c3770`) treat any `CMD_RESULT_WRAPPER` as success;
+        a create keeps its word as the room id.
         """
 
         return context.reply(

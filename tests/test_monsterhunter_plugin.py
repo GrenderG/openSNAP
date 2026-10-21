@@ -449,14 +449,17 @@ class MonsterHunterFlowTests(unittest.TestCase):
         notices = [message for message in leave if message.command == commands.CMD_LEAVE]
         self.assertEqual({notice.endpoint for notice in notices}, {guest[0], waiting[0]})
         self.assertEqual(self._roster(waiting, town_id), sorted((guest[1], waiting[1])))
+        # The Town keeps the departing hunter's place for its return, and its
+        # count with it: a count of 0 makes the Town select screen create a
+        # new Town (`0x005f37a0`).
         attribute = self._send(waiting, commands.CMD_QUERY_ATTRIBUTE, struct.pack('>L', town_id))[0]
-        self.assertEqual(struct.unpack('>L4sL', attribute.payload)[2], 2)
-        # The Town keeps the departing hunter's place for its return.
+        self.assertEqual(struct.unpack('>L4sL', attribute.payload)[2], 3)
         self.assertEqual(self._town_row_members(waiting, town_id), 3)
 
     def test_solo_host_departure_keeps_its_town_listing(self) -> None:
-        # Live NA solo order: selector 3 to itself, room leave, quest room
-        # CREATE, then STAT and only afterwards the 3/5 profile.
+        # Live NA solo order (opensnap-game.log, 2026-10-11 22:35:25): selector
+        # 3 to itself, room leave, quest room CREATE, the 3/5 profile
+        # (`0x00611d1c`), then STAT at the quest start (`0x0061ca8c`).
         town_id = self._town_with_residents()
         host, guest, waiting = self.players
         self._join(waiting, town_id)
@@ -468,8 +471,8 @@ class MonsterHunterFlowTests(unittest.TestCase):
         notices = [message for message in leave if message.command == commands.CMD_LEAVE]
         self.assertEqual({notice.endpoint for notice in notices}, {guest[0], waiting[0]})
         quest_id = self._create(host, QUEST_RULES)
-        self._stat(host, QUEST_STARTED_RULES)
         self._publish(host, self._profile(1, departing=True))
+        self._stat(host, QUEST_STARTED_RULES)
         self.assertNotIn(host[1], self._roster(guest, town_id))
         self.assertEqual(self._town_row_members(guest, town_id), 3)
 
@@ -635,8 +638,8 @@ class MonsterHunterFlowTests(unittest.TestCase):
         messages = self._publish(guest, self._profile(9))
 
         # Its quest room runs `game.bin`, its Town dropped it at its leave, and the
-        # keepalive result is held back in a started quest.
-        self.assertEqual(messages, [])
+        # keepalive result is held back in a started quest: only a bare ACK.
+        self.assertEqual([(message.endpoint, message.command) for message in messages], [(guest[0], commands.CMD_ACK)])
 
     def test_lobby_keepalive_in_flight_at_quest_start_gets_no_callback_reply(self) -> None:
         town_id = self._town_with_residents()
@@ -650,14 +653,18 @@ class MonsterHunterFlowTests(unittest.TestCase):
         )
         self._depart(host, guest, town_id)
 
-        # The client now runs game.bin: no echo reply and no property result.
+        # The client now runs game.bin: no echo reply and no property result,
+        # only a bare ACK that takes no reliable sequence.
         self.assertEqual(self._send(host, commands.CMD_SEND_ECHO, echo, type_flags=FLAG_ROOM), [])
+        before = self.engine._sessions.get(host[1]).request_number  # noqa: SLF001
         replies = self._publish(host, self._profile(5))
-        self.assertNotIn(host[0], [message.endpoint for message in replies])
+        self.assertEqual([(message.command, message.sequence_number) for message in replies], [(commands.CMD_ACK, 0)])
         self.assertEqual(self.plugin._players[host[1]].profile, self._profile(5))  # noqa: SLF001
 
-        # After the return STAT the lobby is back and keepalives are answered.
-        self._stat(host, TOWN_RULES)
+        # After the return STAT the lobby is back and keepalives are answered;
+        # its result continues the reliable numbering without a gap.
+        back = self._stat(host, TOWN_RULES)
+        self.assertEqual(back[0].sequence_number, before)
         self.assertEqual(
             [message.command for message in self._send(host, commands.CMD_SEND_ECHO, echo, type_flags=FLAG_ROOM)],
             [commands.CMD_SEND_ECHO],
