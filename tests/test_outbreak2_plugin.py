@@ -310,7 +310,7 @@ class Outbreak2LobbyTests(unittest.TestCase):
         self.assertEqual(struct.unpack('>2L', result.payload), (commands.CMD_JOIN, 0))
         self.assertEqual(result.type_flags, FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE)
         arrival = self._to(joined, host, commands.CMD_JOIN)[0]
-        self.assertEqual(arrival.type_flags, FLAG_ROOM | FLAG_RESPONSE)
+        self.assertEqual(arrival.type_flags, FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE)
         self.assertEqual(arrival.payload, b'jill1'.ljust(16, b'\x00') + struct.pack('>2L', guest[1], 240) + _profile(2))
         self.assertFalse(self._to(joined, guest, commands.CMD_JOIN))
 
@@ -542,6 +542,7 @@ class Outbreak2LobbyTests(unittest.TestCase):
                   if message.command == commands.CMD_LEAVE and message.type_flags & FLAG_CHANNEL_BITS == FLAG_ROOM]
         self.assertEqual(sorted(message.session_id for message in leaves), sorted([host[1], watcher[1]]))
         self.assertTrue(all(message.payload == struct.pack('>L', guest[1]) for message in leaves))
+        self.assertTrue(all(message.type_flags & FLAG_RELIABLE for message in leaves))
         self.assertEqual(sorted(self._roster(host, room_id)), sorted([host[1], watcher[1]]))
 
         with self.assertLogs('opensnap.engine', 'WARNING'):
@@ -647,7 +648,7 @@ class Outbreak2LobbyTests(unittest.TestCase):
 
         def room_leaves(messages: list[SnapMessage], player) -> list[bytes]:
             return sorted(message.payload for message in self._to(messages, player, commands.CMD_LEAVE)
-                          if message.type_flags == FLAG_ROOM | FLAG_RESPONSE)
+                          if message.type_flags == FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE)
 
         departed = sorted([struct.pack('>L', watcher[1]), struct.pack('>L', fourth[1])])
         back = self._set_status(host, STATUS_IN_LOBBY)
@@ -716,7 +717,7 @@ class Outbreak2LobbyTests(unittest.TestCase):
         deletes = self._to(closed + left, watcher, commands.CMD_DELETE)
         self.assertEqual([message.payload for message in deletes], [struct.pack('>L', room_id)])
         leave = [message for message in self._to(left, guest, commands.CMD_LEAVE)
-                 if message.type_flags == FLAG_ROOM | FLAG_RESPONSE]
+                 if message.type_flags == FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE]
         self.assertEqual([message.payload for message in leave], [struct.pack('>L', host[1])])
 
         refused = self._join_room(watcher, room_id)

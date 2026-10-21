@@ -525,6 +525,7 @@ class MonsterHunterFlowTests(unittest.TestCase):
 
         notices = [message for message in messages if message.command == commands.CMD_LEAVE]
         self.assertEqual([notice.endpoint for notice in notices], [host[0]])
+        self.assertEqual(notices[0].type_flags, FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE)
         self.assertEqual(notices[0].payload, struct.pack('>L', guest[1]))
         self.assertNotIn(guest[1], self._roster(host, town_id))
 
@@ -875,6 +876,8 @@ class MonsterHunterFlowTests(unittest.TestCase):
 
         callback = [message for message in messages if message.command == commands.CMD_JOIN][0]
         self.assertEqual(callback.endpoint, host[0])
+        # Reliable: a lost join callback would leave the hunter unseen (`0x00619430`).
+        self.assertEqual(callback.type_flags, FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE)
         self.assertEqual(callback.payload[:16], pack16('hunter1'))
         self.assertEqual(struct.unpack_from('>2L', callback.payload, 16), (guest[1], self.layout.size))
         self.assertEqual(callback.payload[24:], self._profile(2))

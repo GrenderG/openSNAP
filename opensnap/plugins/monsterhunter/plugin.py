@@ -799,6 +799,7 @@ class MonsterHunterPlugin(GamePlugin):
                 context=context,
                 leaving_session_id=leaving_session_id,
                 recipients=[session],
+                reliable=True,
             )
         ]
 
@@ -865,6 +866,7 @@ class MonsterHunterPlugin(GamePlugin):
             context=context,
             leaving_session_id=leaving_session_id,
             recipients=context.sessions.list_room_members(room.room_id),
+            reliable=True,
         )
 
     def _tracking_towns(
@@ -931,6 +933,7 @@ class MonsterHunterPlugin(GamePlugin):
         exclude_session_id: int,
         command: int,
         payload: Callable[[Session], bytes],
+        reliable: bool = False,
     ) -> list[SnapMessage]:
         """Build one lobby callback per member physically in the room, with its own payload."""
 
@@ -940,8 +943,7 @@ class MonsterHunterPlugin(GamePlugin):
             context.direct(
                 endpoint=member.endpoint,
                 session_id=member.session_id,
-                # Same unreliable callback channel as the shared join callbacks.
-                type_flags=FLAG_ROOM | FLAG_RESPONSE,
+                type_flags=FLAG_ROOM | FLAG_RESPONSE | (FLAG_RELIABLE if reliable else 0),
                 command=command,
                 payload=payload(member),
                 acknowledge_number=ack_for_session(member),
@@ -951,7 +953,19 @@ class MonsterHunterPlugin(GamePlugin):
         ]
 
     def _arrival_callbacks(self, context: HandlerContext, room: GameRoom, session: Session) -> list[SnapMessage]:
-        """Announce a hunter entering the room to the others there (`0x00619430`)."""
+        """Announce a hunter entering the room to the others there (`0x00619430`).
+
+        Join and leave callbacks are reliable. A member's hunter list gains
+        another hunter only from this callback (event 38, `0x0060aab0`) or
+        from the roster at its own Town entry (`0x006041b0`), and loses one
+        only on the leave callback, so a lost callback leaves a hunter unseen,
+        or a stale one, until the member next enters a Town. The SDK drops an
+        unreliable packet that is lost or arrives after a newer one
+        (`0x001fe88c..0x001fe8c4`); a reliable one is ACKed on receipt
+        (`0x001fe83c`), delivered in order, and dispatched to the same slot,
+        since dispatch (`0x00201d68`) never reads bits `0x8000`/`0x4000`.
+        Leaves are reliable too, so one cannot overtake a join held behind a gap.
+        """
 
         profile = self._profile(session.session_id)
         if profile is None:
@@ -962,6 +976,7 @@ class MonsterHunterPlugin(GamePlugin):
             exclude_session_id=session.session_id,
             command=commands.CMD_JOIN,
             payload=lambda member: _member_record(session, self._profile_for(member, profile)),
+            reliable=True,
         )
 
     def _room_peers(self, context: HandlerContext, session: Session) -> list[Session]:

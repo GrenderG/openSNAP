@@ -254,7 +254,9 @@ class OutbreakLobbyTests(OutbreakEngineHarness):
         result = self._to(joined, guest, commands.CMD_RESULT_WRAPPER)[0]
         self.assertEqual(struct.unpack('>2L', result.payload), (commands.CMD_JOIN, 0))
         self.assertEqual(result.type_flags, FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE)
-        arrival = self._to(joined, host, commands.CMD_JOIN)[0].payload
+        arrival_message = self._to(joined, host, commands.CMD_JOIN)[0]
+        self.assertEqual(arrival_message.type_flags, FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE)
+        arrival = arrival_message.payload
         self.assertEqual(arrival[:5], b'jill1')
         self.assertEqual(struct.unpack_from('>2L', arrival, 16), (guest[1], 240))
         self.assertEqual(arrival[24:], _profile(2))
@@ -322,8 +324,8 @@ class OutbreakLobbyTests(OutbreakEngineHarness):
         # Back in the lobby, the host gets the held-back leave once, then lobby
         # callbacks again.
         back = self._send(host, commands.CMD_CHANGE_USER_STATUS, struct.pack('>L', STATUS_IN_LOBBY))
-        self.assertEqual([message.payload for message in self._to(back, host, commands.CMD_LEAVE)],
-                         [struct.pack('>L', guest[1])])
+        self.assertEqual([(message.type_flags, message.payload) for message in self._to(back, host, commands.CMD_LEAVE)],
+                         [(FLAG_ROOM | FLAG_RESPONSE | FLAG_RELIABLE, struct.pack('>L', guest[1]))])
         again = self._send(host, commands.CMD_CHANGE_USER_STATUS, struct.pack('>L', STATUS_IN_LOBBY))
         self.assertFalse(self._to(again, host, commands.CMD_LEAVE))
         created = self._send(guest, commands.CMD_CREATE_GAME_ROOM, _create_payload(), LOBBY_FLAGS)

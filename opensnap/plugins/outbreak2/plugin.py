@@ -432,7 +432,7 @@ class Outbreak2Plugin(GamePlugin):
                 context.sessions.set_room(session.session_id, room_id)
                 outbound = departures + [self._result(context, message, session, RESULT_OK, FLAG_ROOM)]
                 outbound += self._room_callbacks(
-                    context, room, session.session_id, commands.CMD_JOIN, self._member_record(session)
+                    context, room, session.session_id, commands.CMD_JOIN, self._member_record(session), reliable=True
                 )
         return outbound
 
@@ -502,7 +502,7 @@ class Outbreak2Plugin(GamePlugin):
                     message_
                     for left in player.pending_leaves
                     for message_ in build_room_leave_callbacks(
-                        context=context, leaving_session_id=left, recipients=[session]
+                        context=context, leaving_session_id=left, recipients=[session], reliable=True
                     )
                 ]
                 player.pending_leaves.clear()
@@ -643,7 +643,7 @@ class Outbreak2Plugin(GamePlugin):
             elif member.session_id in self._players:
                 self._players[member.session_id].pending_leaves.append(session.session_id)
         return build_room_leave_callbacks(
-            context=context, leaving_session_id=session.session_id, recipients=recipients
+            context=context, leaving_session_id=session.session_id, recipients=recipients, reliable=True
         )
 
     def _leave_area(self, context: HandlerContext, session: Session) -> list[SnapMessage]:
@@ -677,13 +677,34 @@ class Outbreak2Plugin(GamePlugin):
         ]
 
     def _room_callbacks(
-        self, context: HandlerContext, room: GameRoom, exclude_session_id: int, command: int, payload: bytes
+        self,
+        context: HandlerContext,
+        room: GameRoom,
+        exclude_session_id: int,
+        command: int,
+        payload: bytes,
+        reliable: bool = False,
     ) -> list[SnapMessage]:
+        """Room callbacks to the reachable members; joins and leaves are reliable.
+
+        The member list gains a player only from the join callback (slot 2
+        `0x0059b250` -> event 31 `0x00592a40`) and loses one only on the leave
+        callback (slot 6 `0x0059b3f0` -> event 32 `0x00592ca0`); it is rebuilt
+        only on room entry and before a scenario (`0x005ec1a0`, `0x005ed790`).
+        The SDK drops an unreliable packet that is lost or arrives after a
+        newer one (`0x00161e64..0x00161e98`), so one lost callback leaves a
+        player unseen, or a stale one, in the room. A reliable one is ACKed on
+        receipt (`0x00161e14`), delivered in order, and dispatched to the same
+        slot (`kkDispatchingOperation` `0x00165340` never reads
+        `0x8000`/`0x4000`); leaves are reliable too, so that one cannot
+        overtake a join held behind a gap.
+        """
+
         return [
             context.direct(
                 endpoint=member.endpoint,
                 session_id=member.session_id,
-                type_flags=FLAG_ROOM | FLAG_RESPONSE,
+                type_flags=FLAG_ROOM | FLAG_RESPONSE | (FLAG_RELIABLE if reliable else 0),
                 command=command,
                 payload=payload,
                 acknowledge_number=ack_for_session(member),

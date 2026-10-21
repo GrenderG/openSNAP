@@ -374,7 +374,7 @@ class OutbreakPlugin(GamePlugin):
                 context.sessions.set_room(session.session_id, room_id)
                 outbound = departures + [self._result(context, message, session, RESULT_OK, FLAG_ROOM)]
                 outbound += self._room_callbacks(
-                    context, room, session.session_id, commands.CMD_JOIN, self._member_record(session)
+                    context, room, session.session_id, commands.CMD_JOIN, self._member_record(session), reliable=True
                 )
         return outbound
 
@@ -444,7 +444,7 @@ class OutbreakPlugin(GamePlugin):
                     message_
                     for left in player.pending_leaves
                     for message_ in build_room_leave_callbacks(
-                        context=context, leaving_session_id=left, recipients=[session]
+                        context=context, leaving_session_id=left, recipients=[session], reliable=True
                     )
                 ]
                 player.pending_leaves.clear()
@@ -602,17 +602,39 @@ class OutbreakPlugin(GamePlugin):
             elif member.session_id in self._players:
                 self._players[member.session_id].pending_leaves.append(session.session_id)
         return build_room_leave_callbacks(
-            context=context, leaving_session_id=session.session_id, recipients=recipients
+            context=context, leaving_session_id=session.session_id, recipients=recipients, reliable=True
         )
 
     def _room_callbacks(
-        self, context: HandlerContext, room: GameRoom, exclude_session_id: int, command: int, payload: bytes
+        self,
+        context: HandlerContext,
+        room: GameRoom,
+        exclude_session_id: int,
+        command: int,
+        payload: bytes,
+        reliable: bool = False,
     ) -> list[SnapMessage]:
+        """Room callbacks to the reachable members; joins and leaves are reliable.
+
+        The member slots gain a player only from the join callback (slot 2
+        `0x00582fb0` -> event 31 `0x0057ad60`, where the host accepts or
+        rejects the joiner, who leaves after waiting ~30 s for that answer,
+        `0x005ce59c..0x005ce664`) and lose one only on the leave callback
+        (slot 6 `0x005831a0` -> event 32 `0x0057b0a0`); they are rebuilt only
+        on screen entries (`0x005cd920`, `0x005d1c30`). The SDK drops an
+        unreliable packet that is lost or arrives after a newer one
+        (`0x001dc8e0`), so one lost callback hides a joiner, or leaves a ghost
+        member. A reliable one is ACKed on receipt (`0x001dc87c`), delivered
+        in order, and dispatched to the same slot (`0x001dfda8` never reads
+        `0x8000`/`0x4000`); leaves are reliable too, so that one cannot
+        overtake a join held behind a gap. Addresses are NA v2.
+        """
+
         return [
             context.direct(
                 endpoint=member.endpoint,
                 session_id=member.session_id,
-                type_flags=FLAG_ROOM | FLAG_RESPONSE,
+                type_flags=FLAG_ROOM | FLAG_RESPONSE | (FLAG_RELIABLE if reliable else 0),
                 command=command,
                 payload=payload,
                 acknowledge_number=ack_for_session(member),
