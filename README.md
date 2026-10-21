@@ -11,13 +11,13 @@ An open, clean-room server for SEGA's SN@P online middleware, bringing PlayStati
 | Auto Modellista NTSC-U/C | `SLUS_206.42` | `automodellista` | Supported. |
 | Monster Hunter NTSC-U | `SLUS_208.96` | `monsterhunter` | Supported. Plays with PAL. |
 | Monster Hunter PAL | `SLES_527.07` | `monsterhunter` | Supported. Plays with NTSC-U; accented EU text looks garbled on NTSC-U screens. |
-| Monster Hunter PAL demo | `SLED_530.83` | `monsterhunter` | Expected to work with the releases; untested. DNAS patch required. |
-| Monster Hunter PAL test build | `TLES_527.07` | `monsterhunter` | Supported, untested. Plays with the releases. DNAS patch required. |
-| Monster Hunter NTSC-U public beta | `SLUS_291.10` | `monsterhunter_na_beta` | Supported, untested. Separate server: beta players only meet each other. DNAS patch required. |
-| Resident Evil Outbreak (File#1) NTSC-U | `SLUS_207.65` | `outbreak` | Supported, v1 and v2 play together. Not yet fully tested in game. |
-| Resident Evil Outbreak (File#1) NTSC-U public beta | `SLUS_290.89` | `outbreak_beta` | Supported, untested. Separate server: beta players only meet each other. DNAS patch required. |
-| Resident Evil Outbreak File#2 NTSC-U | `SLUS_209.84` | `outbreak2` | Supported. Plays with PAL. Not yet tested in game. |
-| Resident Evil Outbreak File#2 PAL | `SLES_533.19` | `outbreak2` | Supported. Plays with NTSC-U. Not yet tested in game. |
+| Monster Hunter PAL demo | `SLED_530.83` | `monsterhunter` | Supported. Plays with the releases. DNAS patch required. |
+| Monster Hunter PAL test build | `TLES_527.07` | `monsterhunter` | Supported. Plays with the releases. DNAS patch required. |
+| Monster Hunter NTSC-U public beta | `SLUS_291.10` | `monsterhunter_na_beta` | Supported. Separate server: beta players only meet each other. DNAS patch required. |
+| Resident Evil Outbreak (File#1) NTSC-U | `SLUS_207.65` | `outbreak` | Supported. v1 and v2 play together. |
+| Resident Evil Outbreak (File#1) NTSC-U public beta | `SLUS_290.89` | `outbreak_beta` | Supported. Separate server: beta players only meet each other. DNAS patch required. |
+| Resident Evil Outbreak File#2 NTSC-U | `SLUS_209.84` | `outbreak2` | Supported. Plays with PAL. |
+| Resident Evil Outbreak File#2 PAL | `SLES_533.19` | `outbreak2` | Supported. Plays with NTSC-U. |
 
 Monster Hunter and Resident Evil Outbreak also need the [Capcom APP service](#capcom-app-service).
 
