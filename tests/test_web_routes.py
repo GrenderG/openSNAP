@@ -71,10 +71,21 @@ class WebRouteTests(unittest.TestCase):
         self.assertTrue(text.endswith('<!--INPUT-IDS-->alpha_9<!--INPUT-IDE-->\n'))
 
     def test_signup_route_accepts_maximum_length_credentials(self) -> None:
-        # The browser keeps 10 ID characters; clients type up to 15 password characters.
-        response = self._client.get('/amweb/create_id.html?username=grender_12&password=123456789012345')
-        self.assertIn('<!--INPUT-IDS-->grender_12', response.get_data(as_text=True))
-        response = self._client.get('/amweb/create_id.html?username=grender_123&password=abcd')
+        # The browser keeps 15 ID characters; clients type up to 15 password characters.
+        response = self._client.get('/amweb/create_id.html?username=grender_1234567&password=123456789012345')
+        self.assertIn('<!--INPUT-IDS-->grender_1234567', response.get_data(as_text=True))
+        response = self._client.get('/amweb/create_id.html?username=grender_12345678&password=abcd')
+        self.assertIn('Invalid username.', response.get_data(as_text=True))
+
+    def test_signup_route_accepts_two_character_usernames(self) -> None:
+        response = self._client.get('/amweb/create_id.html?username=Yu&password=abcd')
+        self.assertIn('<!--INPUT-IDS-->Yu<!--INPUT-IDE-->', response.get_data(as_text=True))
+
+    def test_beta1_signup_limits_usernames_to_seven_characters(self) -> None:
+        self.assertIn('name="username" size="7" maxlength="7"', self._client.get('/ftpublicbeta/reg/').get_data(as_text=True))
+        response = self._client.get('/ftpublicbeta/reg/create_id.html?username=beta_12&password=abcd')
+        self.assertIn('<!--INPUT-IDS-->beta_12<!--INPUT-IDE-->', response.get_data(as_text=True))
+        response = self._client.get('/ftpublicbeta/reg/create_id.html?username=beta_123&password=abcd')
         self.assertIn('Invalid username.', response.get_data(as_text=True))
 
     def test_monster_hunter_signup_uses_the_same_limits(self) -> None:
@@ -83,7 +94,7 @@ class WebRouteTests(unittest.TestCase):
         created = client.get('/mhweb/create_id.html?username=hunter_123&password=abcd')
         self.assertIn('<!--INPUT-IDS-->hunter_123', created.get_data(as_text=True))
         self.assertIn('<a href="AMUSA_MENU_BACK">', created.get_data(as_text=True))
-        self.assertIn('maxlength="10"', client.get('/mhweb/index.jsp').get_data(as_text=True))
+        self.assertIn('maxlength="15"', client.get('/mhweb/index.jsp').get_data(as_text=True))
 
     def test_query_signup_route_supports_post(self) -> None:
         response = self._client.post('/amweb/create_id.html', data={'username': 'alpha_9', 'password': 'abc123'})
@@ -107,7 +118,7 @@ class WebRouteTests(unittest.TestCase):
         self.assertIn('Invalid username.', text)
 
     def test_short_signup_username_returns_error_page(self) -> None:
-        response = self._client.get('/amweb/create_id.html?username=abc&password=abcd')
+        response = self._client.get('/amweb/create_id.html?username=a&password=abcd')
         self.assertEqual(response.status_code, 200)
         text = response.get_data(as_text=True)
         self.assertIn('Login error', text)
@@ -168,13 +179,13 @@ class WebRouteTests(unittest.TestCase):
         # Release AM (and MH) `AMUSA_MENU_BACK`; Beta1's browser only has `AMUSA_GAME_BACK`.
         text = self._client.get('/amweb/create_id.html?username=linkuser&password=abcd').get_data(as_text=True)
         self.assertIn('<a href="AMUSA_MENU_BACK">Return to the game</a>', text)
-        text = self._client.get('/ftpublicbeta/reg/create_id.html?username=linkuser&password=abcd').get_data(
+        text = self._client.get('/ftpublicbeta/reg/create_id.html?username=linkusr&password=abcd').get_data(
             as_text=True
         )
         self.assertIn('<a href="AMUSA_GAME_BACK">Return to the game</a>', text)
 
     def test_error_page_links_back_to_its_signup_form(self) -> None:
-        text = self._client.get('/ftpublicbeta/reg/create_id.html?username=abc&password=abcd').get_data(as_text=True)
+        text = self._client.get('/ftpublicbeta/reg/create_id.html?username=a&password=abcd').get_data(as_text=True)
         self.assertIn('<a href="/ftpublicbeta/reg/">Try again</a>', text)
         text = self._client.get('/amweb/create_id_invalid!name.html?password=abc123').get_data(as_text=True)
         self.assertIn('<a href="/amweb/">Try again</a>', text)
@@ -185,7 +196,7 @@ class WebRouteTests(unittest.TestCase):
         response = self._client.post('/create_id.html', data={'username': 'rootuser', 'password': 'abcd'})
         self.assertEqual(response.status_code, 200)
         self.assertIn('<!--INPUT-IDS-->rootuser<!--INPUT-IDE-->', response.get_data(as_text=True))
-        text = self._client.get('/create_id.html?username=abc&password=abcd').get_data(as_text=True)
+        text = self._client.get('/create_id.html?username=a&password=abcd').get_data(as_text=True)
         self.assertIn('<a href="/">Try again</a>', text)
 
     def test_index_page_has_user_selected_signup_form(self) -> None:
@@ -194,7 +205,7 @@ class WebRouteTests(unittest.TestCase):
         text = response.get_data(as_text=True)
         self.assertIn('name="username"', text)
         self.assertIn('name="password"', text)
-        self.assertIn('name="username" size="10" maxlength="10"', text)
+        self.assertIn('name="username" size="15" maxlength="15"', text)
         self.assertIn('name="password" size="15" maxlength="15"', text)
         self.assertIn('action="create_id.html"', text)
         self.assertIn('type="submit"', text)
@@ -207,12 +218,12 @@ class WebRouteTests(unittest.TestCase):
         self.assertIn('action="create_id.html"', text)
 
     def test_beta_create_id_route_supports_registration(self) -> None:
-        response = self._client.get('/ftpublicbeta/reg/create_id.html?username=betauser&password=abc123')
+        response = self._client.get('/ftpublicbeta/reg/create_id.html?username=betausr&password=abc123')
         self.assertEqual(response.status_code, 200)
         text = response.get_data(as_text=True)
         self.assertIn('Account ready', text)
-        self.assertIn('<!--INPUT-IDS-->betauser', text)
-        self.assertTrue(text.endswith('<!--INPUT-IDS-->betauser<!--INPUT-IDE-->\n'))
+        self.assertIn('<!--INPUT-IDS-->betausr', text)
+        self.assertTrue(text.endswith('<!--INPUT-IDS-->betausr<!--INPUT-IDE-->\n'))
 
     def test_login_php_route_is_available(self) -> None:
         response = self._client.get('/login.php')

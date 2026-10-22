@@ -45,6 +45,8 @@ class AutoModellistaWebModule:
             return_links={'ftpublicbeta/reg': 'AMUSA_GAME_BACK'},
             # Beta1 (`SLUS_204.98`, KAGE SDK) decrypts its login reply with the typed password.
             kage_prefixes=('ftpublicbeta/reg',),
+            # Beta1 logs in with at most 7 ID characters (see `opensnap_web.signup`).
+            max_username_lengths={'ftpublicbeta/reg': 7},
         )
         add_routes(blueprint, [self.info_path], page_view(AM_INFO_PAGE))
         add_routes(blueprint, [self.rule_path], page_view(self.rule_page))

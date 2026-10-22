@@ -86,8 +86,9 @@ Serves account signup for every game, plus game pages and rankings.
   `automodellista_beta1`, `monsterhunter`, `outbreak`, `outbreak_beta`, `outbreak2`. Also
   `python3 run.py web --web-plugin <module>`.
 
-Signup creates the account on first use and logs in afterwards. Usernames are 4-10 letters, digits and single inner
-`_` (the longest ID the game browsers keep). Passwords are 4-15 characters (the in-game keyboard limit).
+Signup creates the account on first use and logs in afterwards. Usernames are 2-15 letters, digits and single inner
+`_` (the longest ID the game browsers keep; 7 on the Auto Modellista Beta1 page, whose login breaks longer IDs).
+Passwords are 4-15 characters (the in-game keyboard limit).
 
 Requests to unknown paths are logged in full, to help with reverse engineering.
 

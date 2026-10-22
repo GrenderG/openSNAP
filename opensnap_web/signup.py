@@ -43,8 +43,14 @@ Binary limits:
   `lbc_prelogin_00` `strcpy`s it into the login buffer `cw+0x280`. (Choosing
   a memory-card account only rewrites its first 6 bytes,
   `lbc_login_selection_account_03` `strncpy(.., 6)`, which keeps the ID of the
-  account in `Net_CN_Data`.) Usernames stay within the 10 characters every
-  existing account was created with.
+  account in `Net_CN_Data`.) MH and Outbreak keep the same 15 characters
+  end to end. No client checks more than a non-empty ID.
+- AM Beta1 logs in with at most 7 ID characters: `lbc_prelogin_00` copies
+  the ID to `cw+640` (`0x002c7298`) and again to `cw+648` (`0x002c72ac`),
+  and `cw+640` is the login name (`0x0035de24`). From 8 characters on, the
+  name sent is `ID[:8] + ID`, and the KICS login keeps only its first 16
+  bytes. Its signup page caps the username at 7 (`max_username_lengths`),
+  so a longer shared account cannot be saved to a Beta1 memory card.
 - Password: typed in-game at every login, through a 15-character keyboard (AM
   `net_pass_entry` -> `kb_input_init2(.., 15)`, MH
   `Net_kb_input_init2(76, 312, password, 15)`).
@@ -65,14 +71,12 @@ from opensnap_web.common import add_routes, html_response, page_view
 LOGGER = logging.getLogger('opensnap.web.signup')
 
 # Longest username accepted (see the module docstring).
-MAX_USERNAME_LENGTH = 10
-MIN_USERNAME_LENGTH = 4
+MAX_USERNAME_LENGTH = 15
+MIN_USERNAME_LENGTH = 2
 MIN_PASSWORD_LENGTH = 4
 MAX_PASSWORD_LENGTH = 15
 # Letters, digits and single inner underscores.
-USERNAME_PATTERN = re.compile(
-    rf'(?!_)(?!.*__)(?!.*_$)[A-Za-z0-9_]{{{MIN_USERNAME_LENGTH},{MAX_USERNAME_LENGTH}}}'
-)
+USERNAME_PATTERN = re.compile(r'(?!_)(?!.*__)(?!.*_$)[A-Za-z0-9_]+')
 
 def _page(title: str, body: str, *, title_color: str = TITLE_COLOR) -> str:
     """One signup page: a centered panel (shared browser page style)."""
@@ -80,26 +84,29 @@ def _page(title: str, body: str, *, title_color: str = TITLE_COLOR) -> str:
     return document(panel(title, body, title_color=title_color))
 
 
-SIGNUP_INDEX_PAGE = _page(
-    'openSNAP signup service',
-    'Create an account with a new username<br>\n'
-    'and password, or log in with an existing one.<br>\n'
-    '<br>\n'
-    '<form action="create_id.html" method="post">\n'
-    'Username: '
-    f'<input type="text" name="username" size="{MAX_USERNAME_LENGTH}" maxlength="{MAX_USERNAME_LENGTH}">'
-    '<br>\n'
-    'Password: '
-    f'<input type="password" name="password" size="{MAX_PASSWORD_LENGTH}" maxlength="{MAX_PASSWORD_LENGTH}">'
-    '<br>\n'
-    '<br>\n'
-    f'<font color="{NOTE_COLOR}">'
-    f'Username: {MIN_USERNAME_LENGTH}-{MAX_USERNAME_LENGTH} letters, digits or _.<br>\n'
-    f'Password: {MIN_PASSWORD_LENGTH}-{MAX_PASSWORD_LENGTH} characters.</font><br>\n'
-    '<br>\n'
-    '<center><input type="submit" value="Create / Log in"></center>\n'
-    '</form>\n',
-)
+def signup_index_page(max_username_length: int = MAX_USERNAME_LENGTH) -> str:
+    """The signup form, for usernames of at most `max_username_length` characters."""
+
+    return _page(
+        'openSNAP signup service',
+        'Create an account with a new username<br>\n'
+        'and password, or log in with an existing one.<br>\n'
+        '<br>\n'
+        '<form action="create_id.html" method="post">\n'
+        'Username: '
+        f'<input type="text" name="username" size="{max_username_length}" maxlength="{max_username_length}">'
+        '<br>\n'
+        'Password: '
+        f'<input type="password" name="password" size="{MAX_PASSWORD_LENGTH}" maxlength="{MAX_PASSWORD_LENGTH}">'
+        '<br>\n'
+        '<br>\n'
+        f'<font color="{NOTE_COLOR}">'
+        f'Username: {MIN_USERNAME_LENGTH}-{max_username_length} letters, digits or _.<br>\n'
+        f'Password: {MIN_PASSWORD_LENGTH}-{MAX_PASSWORD_LENGTH} characters.</font><br>\n'
+        '<br>\n'
+        '<center><input type="submit" value="Create / Log in"></center>\n'
+        '</form>\n',
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,8 +149,8 @@ class SignupService:
         return SignupResult(True, username, created)
 
 
-def is_valid_username(username: str) -> bool:
-    return USERNAME_PATTERN.fullmatch(username) is not None
+def is_valid_username(username: str, max_length: int = MAX_USERNAME_LENGTH) -> bool:
+    return MIN_USERNAME_LENGTH <= len(username) <= max_length and USERNAME_PATTERN.fullmatch(username) is not None
 
 
 def is_valid_password(password: str) -> bool:
@@ -162,22 +169,26 @@ def add_signup_routes(
     root_aliases: bool = False,
     return_links: Mapping[str, str] | None = None,
     kage_prefixes: tuple[str, ...] = (),
+    max_username_lengths: Mapping[str, int] | None = None,
 ) -> None:
     """Serve the signup index and create-id pages under each prefix.
 
     `return_links` maps a prefix to its game's browser exit link when that
     game lacks `DEFAULT_RETURN_LINK` (see the module docstring). Logins on
     `kage_prefixes` (KAGE-SDK games) also store the KAGE login key.
+    `max_username_lengths` maps a prefix to a shorter username limit.
     """
 
     # The form posts to the relative `create_id.html`, so every directory that
     # serves the form also serves the create-id pages.
+    max_username_lengths = max_username_lengths or {}
     directories = [f'/{prefix}/' for prefix in prefixes]
-    index_paths = [path for directory in directories for path in (directory, f'{directory}index.jsp')]
+    for prefix in prefixes:
+        page = signup_index_page(max_username_lengths.get(prefix, MAX_USERNAME_LENGTH))
+        add_routes(blueprint, [f'/{prefix}/', f'/{prefix}/index.jsp'], page_view(page))
     if root_aliases:
         directories.append('/')
-        index_paths += ['/', '/login.php']
-    add_routes(blueprint, index_paths, page_view(SIGNUP_INDEX_PAGE))
+        add_routes(blueprint, ['/', '/login.php'], page_view(signup_index_page()))
 
     def create_id(username: str | None = None, **_kwargs: str) -> Response:
         if username is None:
@@ -185,7 +196,10 @@ def add_signup_routes(
         password = (request.values.get('password') or '').strip()
         prefix = request.path.rsplit('/', 1)[0].strip('/')
         return_link = (return_links or {}).get(prefix, DEFAULT_RETURN_LINK)
-        return _signup_response(service, username.strip(), password, return_link, prefix in kage_prefixes)
+        max_username_length = max_username_lengths.get(prefix, MAX_USERNAME_LENGTH)
+        return _signup_response(
+            service, username.strip(), password, return_link, prefix in kage_prefixes, max_username_length
+        )
 
     add_routes(blueprint, [f'{directory}create_id.html' for directory in directories], create_id, methods=('GET', 'POST'))
     add_routes(blueprint, [f'{directory}create_id_<username>.html' for directory in directories], create_id)
@@ -197,8 +211,9 @@ def _signup_response(
     password: str,
     return_link: str,
     store_kage_login_key: bool,
+    max_username_length: int,
 ) -> Response:
-    if not is_valid_username(username):
+    if not is_valid_username(username, max_username_length):
         return _error_page('Invalid username.')
     if not is_valid_password(password):
         return _error_page('Invalid password.')
