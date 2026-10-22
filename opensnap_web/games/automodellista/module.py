@@ -54,7 +54,7 @@ class AutoModellistaWebModule:
             add_routes(blueprint, [self.taboo_path], page_view(AM_TABOO_PAGE))
         # Both builds' patch URL families stay served: Beta1 fetches
         # `/amusa/patchN.html` and release `/amusa/patch/2/am_patchN.html`;
-        # `N` selects chunk `'1'..'5'` of the `AM-USA-GAME-PROG` patch buffer.
+        # the patch buffer and its page format are in `patch.py`.
         add_routes(
             blueprint,
             [

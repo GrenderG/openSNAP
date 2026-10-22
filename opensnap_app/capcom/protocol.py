@@ -35,7 +35,9 @@ APP_DIRECTION_PUSH = 0x10
 #   salt above. The client answers with its login name, build and version.
 # - 1004 closes it: the client sends it when done and waits for the reply.
 # - 6001 is the server's client patch offer (a push); `u8 0` offers no patch
-#   (MH NA `0x002b4150`, MH EU `0x002a46f8`, Outbreak `0x001f512c`).
+#   (MH NA `0x002b4150`, MH EU `0x002a46f8`, Outbreak `0x001f512c`). `u8 1`
+#   offers a code patch the client pulls with 6002; each title's `patch.py`
+#   documents the install and how to write one.
 CMD_APP_CONNECT = 0x1002
 CMD_APP_COMPLETE = 0x1004
 CMD_APP_VERSION = 0x6001

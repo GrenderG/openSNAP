@@ -251,13 +251,17 @@ class WebRouteTests(unittest.TestCase):
             '/amusa/am_info.html': 'AM-USA-INFORMATION',
             '/amusa/am_rule.html': 'AM-USA-GAME-RULE',
             '/amusa/am_rank.html': 'AM-USA-RANKING',
-            '/amusa/am_taboo.html': 'am_taboo',
         }
 
         for path, marker in page_expectations.items():
             response = self._client.get(path)
             self.assertEqual(response.status_code, 200)
             self.assertIn(marker, response.get_data(as_text=True))
+
+        # Served empty: no extra taboo phrases.
+        taboo_response = self._client.get('/amusa/am_taboo.html')
+        self.assertEqual(taboo_response.status_code, 200)
+        self.assertEqual(taboo_response.get_data(as_text=True), '')
 
         upload_response = self._client.post('/amusa/am_up.php', data={'crs': 'D'})
         self.assertEqual(upload_response.status_code, 200)
