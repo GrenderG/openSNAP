@@ -88,6 +88,18 @@ class SqliteConnection:
         )
         self.execute('CREATE INDEX IF NOT EXISTS records_board ON records (game, board, score)')
         self.execute(
+            'CREATE TABLE IF NOT EXISTS standings ('
+            'game TEXT NOT NULL, '
+            'board TEXT NOT NULL, '
+            'user_id INTEGER NOT NULL, '
+            'player TEXT NOT NULL, '
+            'score INTEGER NOT NULL, '
+            'reached_at TEXT NOT NULL, '
+            'updated_at TEXT NOT NULL, '
+            'PRIMARY KEY (game, board, user_id)'
+            ')'
+        )
+        self.execute(
             'CREATE TABLE IF NOT EXISTS online_players ('
             'session_id INTEGER PRIMARY KEY, '
             'game TEXT NOT NULL, '

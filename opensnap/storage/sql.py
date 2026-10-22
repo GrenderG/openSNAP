@@ -1,4 +1,4 @@
-"""Shared stores (accounts, session handoffs, records, online players) over any SQL backend.
+"""Shared stores (accounts, session handoffs, records, standings, online players) over any SQL backend.
 
 Backends provide a `SqlConnection`: `?` placeholders, rows readable by column
 name, their own schema and integrity-error type, and the two statements whose
@@ -21,7 +21,7 @@ from opensnap.core.accounts import (
     seal_kage_login_key,
 )
 from opensnap.core.online import OnlinePlayer
-from opensnap.core.records import PlayerTotal, Record
+from opensnap.core.records import PlayerTotal, Record, Standing
 from opensnap.core.sessions import Session, SessionHandoff, create_session_id
 from opensnap.protocol.models import Endpoint
 from opensnap.storage.interfaces import DuplicateAccountError
@@ -307,6 +307,61 @@ class SqlRecordStore:
             (game, len(board_prefix), board_prefix, limit),
         )
         return [PlayerTotal(int(row['user_id']), str(row['player']), int(row['total'])) for row in rows]
+
+
+class SqlStandingStore:
+    """Current-value rankings in the shared store, one row per game, board and player."""
+
+    def __init__(self, connection: SqlConnection) -> None:
+        self._connection = connection
+
+    def set(self, *, game: str, board: str, user_id: int, player: str, score: int) -> Standing:
+        # Microseconds so that players reaching the same score in one second keep their order.
+        now = datetime.now(UTC).isoformat(timespec='microseconds')
+        key = (game, board, user_id)
+        row = self._connection.query_one(
+            'SELECT score, reached_at FROM standings WHERE game = ? AND board = ? AND user_id = ?', key
+        )
+        if row is None:
+            self._connection.execute(
+                (
+                    'INSERT INTO standings (game, board, user_id, player, score, reached_at, updated_at) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?)'
+                ),
+                (*key, player, score, now, now),
+            )
+            reached_at = now
+        else:
+            reached_at = str(row['reached_at']) if int(row['score']) == score else now
+            self._connection.execute(
+                (
+                    'UPDATE standings SET player = ?, score = ?, reached_at = ?, updated_at = ? '
+                    'WHERE game = ? AND board = ? AND user_id = ?'
+                ),
+                (player, score, reached_at, now, *key),
+            )
+        return Standing(game, board, user_id, player, score, reached_at, now)
+
+    def top(self, game: str, board: str, limit: int) -> list[Standing]:
+        rows = self._connection.query_all(
+            (
+                'SELECT * FROM standings WHERE game = ? AND board = ? '
+                'ORDER BY score DESC, reached_at, user_id LIMIT ?'
+            ),
+            (game, board, limit),
+        )
+        return [
+            Standing(
+                game=str(row['game']),
+                board=str(row['board']),
+                user_id=int(row['user_id']),
+                player=str(row['player']),
+                score=int(row['score']),
+                reached_at=str(row['reached_at']),
+                updated_at=str(row['updated_at']),
+            )
+            for row in rows
+        ]
 
 
 def _record_from_row(row: Row) -> Record:

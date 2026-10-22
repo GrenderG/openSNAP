@@ -119,6 +119,18 @@ class PostgresqlConnection:
         )
         self.execute('CREATE INDEX IF NOT EXISTS records_board ON records (game, board, score)')
         self.execute(
+            'CREATE TABLE IF NOT EXISTS standings ('
+            'game VARCHAR(64) NOT NULL, '
+            'board VARCHAR(64) NOT NULL, '
+            'user_id INTEGER NOT NULL, '
+            'player VARCHAR(255) NOT NULL, '
+            'score BIGINT NOT NULL, '
+            'reached_at VARCHAR(32) NOT NULL, '
+            'updated_at VARCHAR(32) NOT NULL, '
+            'PRIMARY KEY (game, board, user_id)'
+            ')'
+        )
+        self.execute(
             'CREATE TABLE IF NOT EXISTS online_players ('
             'session_id BIGINT PRIMARY KEY, '
             'game VARCHAR(64) NOT NULL, '

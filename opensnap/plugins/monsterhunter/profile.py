@@ -42,6 +42,10 @@ class MonsterHunterProfile:
     # `0x005bf7c0`). False: it looks `name[:-2]` up among the Land keys and
     # prints that Land's name (beta `0x005b2bc0`).
     status_area_name_skips_prefix: bool
+    # Whether the APP service asks for the stock 6321 hunter summary after a
+    # quest return (its HRP feeds the Hunter Rank Points page). Traced only in
+    # the retail NA and EU clients.
+    uploads_hunter_summary: bool
 
 
 # `SLUS_208.96` (Monster Hunter NTSC-U), and the PAL builds sharing its lobby
@@ -56,6 +60,7 @@ MONSTER_HUNTER_NA = MonsterHunterProfile(
     member_profile=MemberProfileLayout(size=140, party_state_offset=136, quest_state_offset=137, town_room_offset=32),
     connection_timing_words=8,
     status_area_name_skips_prefix=True,
+    uploads_hunter_summary=True,
 )
 
 # `SLUS_291.10` (Monster Hunter NTSC-U public beta, May 2004). Its profile is
@@ -71,4 +76,5 @@ MONSTER_HUNTER_NA_BETA = MonsterHunterProfile(
     member_profile=MemberProfileLayout(size=216, party_state_offset=213, quest_state_offset=215, town_room_offset=72),
     connection_timing_words=4,
     status_area_name_skips_prefix=False,
+    uploads_hunter_summary=False,
 )

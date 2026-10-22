@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import socket
 import struct
 import tempfile
@@ -33,7 +34,7 @@ from opensnap.protocol.constants import (
     FLAG_ROOM,
 )
 from opensnap.protocol.models import Endpoint, SnapMessage
-from opensnap.storage.sql import SqlOnlinePlayerStore, SqlRecordStore
+from opensnap.storage.sql import SqlOnlinePlayerStore, SqlRecordStore, SqlStandingStore
 from opensnap.storage.sqlite import SqliteConnection
 from opensnap_app.capcom.monsterhunter.content import EventCatalog, InformationPages, MarketState
 from opensnap_app.capcom.monsterhunter.flows import AppFlowTracker, AppPhase
@@ -43,6 +44,7 @@ from opensnap_app.capcom.monsterhunter.records import (
     RecordPages,
     load_quests,
 )
+from opensnap_app.capcom.monsterhunter.patch import load_patches
 from opensnap_app.capcom.monsterhunter.service import (
     APP_BUILD_EU,
     APP_BUILD_NA,
@@ -68,6 +70,17 @@ QUEST_STARTED_RULES = 0x40000002
 AREA_ID = 1
 # Build stamp of the TLES_527.07 test build's APP answer (`0x00397ce0`).
 TLES_STAMP = b'0408131008'
+# Build stamp of the SLED_530.83 demo (`0x0035ad60`), which answers like EU.
+SLED_STAMP = b'0412241846'
+EU_STOCK_STAMP = b'0502180939'
+NA_STOCK_STAMP = b'0407251750'
+# The patches the repository ships, as `tools/monsterhunter` built them.
+DATA_DIRECTORY = Path(__file__).resolve().parents[1] / 'data' / 'monsterhunter'
+PATCHES = load_patches(DATA_DIRECTORY)
+EU_PATCH = PATCHES[EU_STOCK_STAMP]
+NA_PATCH = PATCHES[NA_STOCK_STAMP]
+# `PatchExecCS` keeps the decoded EU blob at `0x0039e300`.
+EU_RESIDENT_BLOB = 0x0039E300
 
 
 class MonsterHunterFlowTests(unittest.TestCase):
@@ -1385,9 +1398,11 @@ class AppServiceTests(unittest.TestCase):
         temp_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temp_directory.cleanup)
         self.data_directory = Path(temp_directory.name)
+        shutil.copytree(DATA_DIRECTORY / 'patches', self.data_directory / 'patches')
         connection = SqliteConnection(self.data_directory / 'records.sqlite')
         self.addCleanup(connection.close)
         self.records = SqlRecordStore(connection)
+        self.standings = SqlStandingStore(connection)
         self.online = SqlOnlinePlayerStore(connection)
         self.sessions = {
             1: Session(session_id=1, user_id=7, username='hunter', endpoint=Endpoint('127.0.0.1', 4000)),
@@ -1413,6 +1428,7 @@ class AppServiceTests(unittest.TestCase):
             directory=self.directory,
             online_players=self.online,
             records=self.records,
+            standings=self.standings,
         )
         # The NA public beta: its own service, chosen by its build stamp.
         self.beta_service = AppService(
@@ -1423,6 +1439,7 @@ class AppServiceTests(unittest.TestCase):
             directory=self.directory,
             online_players=self.online,
             records=self.records,
+            standings=self.standings,
         )
         server = CapcomAppServer(
             host='127.0.0.1',
@@ -1456,7 +1473,7 @@ class AppServiceTests(unittest.TestCase):
         return frame
 
     def _open(
-        self, client: socket.socket, buffer: bytearray, *, build: int = 2, flags: int = 1, version: bytes = b'0502180939',
+        self, client: socket.socket, buffer: bytearray, *, build: int = 2, flags: int = 1, version: bytes | None = None,
         login: bytes = b'hunter',
     ) -> None:
         """Answer the server's opening 1002 like the client build does (`0x002aeb40`).
@@ -1465,17 +1482,26 @@ class AppServiceTests(unittest.TestCase):
         its stamp `0408131008`) run the NA client, which may speak first.
         """
 
+        if version is None:
+            # Each build's own stamp (NA `0x0010fe00`, EU `0x0010fec0`).
+            version = EU_STOCK_STAMP if build == 3 else NA_STOCK_STAMP
         opening = self._receive(client, buffer)
         self.assertEqual((frame_command(opening), frame_payload(opening)), (0x1002, b'\x00\x00'))
         reply = encode_app_field(login, 2) + bytes([build, flags]) + encode_app_field(version, 2) + bytes(4)
         client.sendall(app_frame(2, 0x1002, sequence=2, payload=reply))
+        self._version = version
         if build == 3 and version != TLES_STAMP:
             self._receive_version(client, buffer)
 
     def _receive_version(self, client: socket.socket, buffer: bytearray) -> None:
-        """6001 is a server push (direction 0x10) with flag 0: no client patch."""
+        """6001 is a server push (direction 0x10): flag 1 offering the patch built for the client's version, or 0."""
 
-        self.assertEqual(self._receive(client, buffer), app_frame(0x10, 0x6001, payload=b'\x00'))
+        payload = b'\x00'
+        offered = PATCHES.get(self._version)
+        if offered is not None:
+            field = encode_app_field(offered.name + offered.version, 0)
+            payload = b'\x01' + field + struct.pack('>2L', len(offered.blob), 0)
+        self.assertEqual(self._receive(client, buffer), app_frame(0x10, 0x6001, payload=payload))
 
     def _exchange(self, client: socket.socket, buffer: bytearray, command: int, payload: bytes = b'') -> bytes:
         client.sendall(app_frame(1, command, sequence=5, payload=payload))
@@ -1633,10 +1659,58 @@ class AppServiceTests(unittest.TestCase):
 
         for command in (0x6401, 0x6403, 0x6105):
             self.assertEqual(self._exchange(client, buffer, command), b'\x00\x00')
-        self.assertEqual(self._exchange(client, buffer, 0x6320, b'\x00\x00\x00\x01'), b'\x00')
+        # It announces its equipment box (type 2); the server asks for the hunter summary instead.
+        self.assertEqual(self._exchange(client, buffer, 0x6320, struct.pack('>BL', 2, 304)), b'\x01')
+        self.assertEqual(self._exchange(client, buffer, 0x6320, struct.pack('>BL', 1, 20)), b'\x01')
+        self.assertEqual(self._exchange(client, buffer, 0x6321, self._hunter_summary(5000)), b'')
         self.assertEqual(self._exchange(client, buffer, 0x1004), b'')
+        # APP1 comes before the KICS login: no player to rank yet.
+        self.assertEqual(self.standings.top('monsterhunter', 'hrp', 10), [])
         # APP1 does not advance any online flow.
         self.assertEqual(self.flows.claim('127.0.0.1'), (None, AppPhase.APP1))
+
+    def test_stock_eu_downloads_the_description_patch(self) -> None:
+        client, buffer = self._connect()
+        self._open(client, buffer, build=3, flags=0x11)
+        name = EU_PATCH.name
+        field = encode_app_field(name, 5)
+        downloaded = b''
+        # The client asks `min(768 - (len(name) + 12), rest)` bytes at a time (EU `0x002a4840`).
+        while len(downloaded) < len(EU_PATCH.blob):
+            length = min(746, len(EU_PATCH.blob) - len(downloaded))
+            chunk = self._exchange(client, buffer, 0x6002, field + struct.pack('>LH', len(downloaded), length))
+            self.assertEqual(chunk[:len(field) + 4], field + struct.pack('>L', len(downloaded)))
+            downloaded += decode_app_field(chunk[len(field) + 4:], 5)[0]
+        self.assertEqual(downloaded, EU_PATCH.blob)
+        self.assertEqual(self._exchange(client, buffer, 0x1004), b'')
+        self.assertEqual(self.flows.claim('127.0.0.1'), (None, AppPhase.APP1))
+
+    def test_stock_na_downloads_its_patch_then_continues_app1(self) -> None:
+        client, buffer = self._connect()
+        self._open(client, buffer)
+        self._receive_version(client, buffer)
+        field = encode_app_field(NA_PATCH.name, 5)
+        downloaded = b''
+        while len(downloaded) < len(NA_PATCH.blob):
+            length = min(746, len(NA_PATCH.blob) - len(downloaded))
+            chunk = self._exchange(client, buffer, 0x6002, field + struct.pack('>LH', len(downloaded), length))
+            downloaded += decode_app_field(chunk[len(field) + 4:], 5)[0]
+        self.assertEqual(downloaded, NA_PATCH.blob)
+        # NA goes on with its Information page (state 33) after the last chunk.
+        self.assertEqual(self._exchange(client, buffer, 0x6401), b'\x00\x00')
+
+    def test_patched_na_gets_no_patch(self) -> None:
+        client, buffer = self._connect()
+        self._open(client, buffer, version=NA_PATCH.name)
+        self._receive_version(client, buffer)
+        self.assertEqual(self._exchange(client, buffer, 0x6501), b'\x00')
+
+    def test_patched_eu_and_the_demo_get_no_patch(self) -> None:
+        for version in (EU_PATCH.name, SLED_STAMP):
+            client, buffer = self._connect()
+            # `_open` expects 6001 flag 0 for any version but the stock one.
+            self._open(client, buffer, build=3, flags=0x11, version=version)
+            self.assertEqual(self._exchange(client, buffer, 0x6220, b'\x01'), b'\x01' + bytes(4))
 
     def test_missing_named_file_is_published_empty(self) -> None:
         client, buffer = self._connect()
@@ -1707,6 +1781,8 @@ class AppServiceTests(unittest.TestCase):
             [('hunter', 7, {'quest': 261, 'hunter_rank': 5})],
         )
         self.assertEqual(set(boards), {'tles-kills-20'})
+        # Its resource upload is not traced: nothing is asked for.
+        self.assertEqual(self._exchange(client, buffer, 0x6320, struct.pack('>BL', 1, 20)), b'\x00')
 
     def test_eu_quest_records_are_acknowledged_and_stored(self) -> None:
         self._login(self.sessions[1])
@@ -1724,7 +1800,12 @@ class AppServiceTests(unittest.TestCase):
         self.assertEqual(self._exchange(client, buffer, 0x6307, hunts), b'')
         clear = struct.pack('>BBHBL', 2, 4, 0x0105, 0, 754)
         self.assertEqual(self._exchange(client, buffer, 0x6307, clear), b'')
-        self.assertEqual(self._exchange(client, buffer, 0x6320, b'\x00\x00\x00\x01'), b'\x00')
+        self.assertEqual(self._exchange(client, buffer, 0x6320, struct.pack('>BL', 1, 20)), b'\x01')
+        self.assertEqual(self._exchange(client, buffer, 0x6321, self._hunter_summary(150000)), b'')
+        self.assertEqual(
+            [(standing.player, standing.score) for standing in self.standings.top('monsterhunter', 'hrp', 10)],
+            [('hunter', 150000)],
+        )
 
         boards = self.records.best_by_board('monsterhunter', 10)
         self.assertEqual(
@@ -1778,8 +1859,63 @@ class AppServiceTests(unittest.TestCase):
             {str(quest): {'name': name, 'category': category} for quest, (name, category) in quests.items()}
         ))
 
+    @staticmethod
+    def _hunter_summary(points: int, *, size: int = 20) -> bytes:
+        """6321 type 1 payload: `u8 1, u32 0, u16 20, field(summary)` with HRP at summary +12."""
+
+        summary = bytes(range(1, 13)) + struct.pack('<L', points) + bytes((20, 0, 0, 0))
+        return struct.pack('>B4xH', 1, size) + encode_app_field(summary[:size], 5)
+
+    def test_na_quest_return_uploads_the_hunter_rank_points(self) -> None:
+        self._login(self.sessions[1])
+        self.flows.advance('127.0.0.1', 1, AppPhase.LAND)
+        client, buffer = self._connect()
+        self._open(client, buffer)
+        self.assertEqual(self._exchange(client, buffer, 0x6306, bytes(32)), b'')
+        self.assertEqual(self._exchange(client, buffer, 0x6320, struct.pack('>BL', 1, 20)), b'\x01')
+        self.assertEqual(self._exchange(client, buffer, 0x6321, self._hunter_summary(9_999_999)), b'')
+        # A failed quest lowers it again.
+        self.assertEqual(self._exchange(client, buffer, 0x6321, self._hunter_summary(9_999_900)), b'')
+        self.assertEqual(
+            [(standing.player, standing.score) for standing in self.standings.top('monsterhunter', 'hrp', 10)],
+            [('hunter', 9_999_900)],
+        )
+
+    def test_malformed_hunter_summary_is_acknowledged_and_ignored(self) -> None:
+        self._login(self.sessions[1])
+        self.flows.advance('127.0.0.1', 1, AppPhase.LAND)
+        client, buffer = self._connect()
+        self._open(client, buffer)
+        for payload in (b'\x01', self._hunter_summary(10_000_000), self._hunter_summary(10, size=16)):
+            self.assertEqual(self._exchange(client, buffer, 0x6321, payload), b'')
+        self.assertEqual(self.standings.top('monsterhunter', 'hrp', 10), [])
+
+    def test_hunter_rank_points_page_ranks_ties_at_the_maximum_by_who_reached_it_first(self) -> None:
+        for user_id, player, points in ((1, 'Aiko', 9_999_999), (2, 'Cato', 1200), (3, 'Bren', 9_999_999)):
+            self.standings.set(game='monsterhunter', board='hrp', user_id=user_id, player=player, score=points)
+        # Aiko drops below the maximum and climbs back: now behind Bren.
+        self.standings.set(game='monsterhunter', board='hrp', user_id=1, player='Aiko', score=9_999_000)
+        self.standings.set(game='monsterhunter', board='hrp', user_id=1, player='Aiko', score=9_999_999)
+        text = self._pages().render(b'02/RANK_HRP_1.HTM').decode()
+        self.assertLess(text.index('Bren'), text.index('Aiko'))
+        self.assertLess(text.index('Aiko'), text.index('Cato'))
+        index = self._pages().render(b'02/DATABASE.HTM').decode()
+        self.assertIn('<a href="lbs://lbs/02/RANK_HRP_1.HTM">Hunter Rank Points</a>', index)
+
+    def test_hunter_rank_points_list_the_top_hundred_on_four_pages(self) -> None:
+        for user in range(130):
+            self.standings.set(game='monsterhunter', board='hrp', user_id=user, player=f'H{user:03d}', score=user)
+        pages = self._pages()
+        second = pages.render(b'02/RANK_HRP_2.HTM').decode()
+        # Ranks continue across pages: rank 26 is the 26th highest (HRP 104).
+        self.assertIn('<td>26</td>', second)
+        self.assertIn('H104', second)
+        self.assertIn('lbs://lbs/02/RANK_HRP_3.HTM', second)
+        self.assertNotIn('H029', pages.render(b'02/RANK_HRP_4.HTM').decode())
+        self.assertIsNone(pages.render(b'02/RANK_HRP_5.HTM'))
+
     def _pages(self) -> RecordPages:
-        return RecordPages(self.records, 'monsterhunter', load_quests(self.data_directory))
+        return RecordPages(self.records, self.standings, 'monsterhunter', load_quests(self.data_directory))
 
     def test_eu_record_index_links_to_its_own_directory(self) -> None:
         text = self._download_page(b'03/04/DATABASE.HTM', eu=True)
@@ -1795,7 +1931,7 @@ class AppServiceTests(unittest.TestCase):
         self.assertIn('<a href="lbs://lbs/03/04/RANK_HUNT_1.HTM">Hunt quests</a> (1 quest)', text)
         self.assertIn('<a href="lbs://lbs/03/04/RANK_EVNT_1.HTM">Event quests</a> (0 quests)', text)
         self.assertNotIn('Other quests', text)
-        self.assertIn('so these rankings list EU players only.', text)
+        self.assertIn('NA needs the openSNAP patch for quest records.', text)
         self.assertIn('<a href="AMUSA_MENU_BACK">Close</a>', text)
 
     def test_na_record_pages_link_to_02(self) -> None:
@@ -1894,8 +2030,14 @@ class AppServiceTests(unittest.TestCase):
             for monster in range(1, 35):
                 self.records.add(game='monsterhunter', board=f'kills-{monster:02d}', user_id=user, player=player,
                                  score=999999, details={})
+        for user in range(60):
+            self.standings.set(game='monsterhunter', board='hrp', user_id=user, player=f'Hunter_{user:03d}',
+                               score=9_999_999)
         pages = self._pages()
-        for name in (b'03/05/DATABASE.HTM', b'03/05/RANK_HUNT_1.HTM', b'03/05/RANK_MON_1.HTM', b'03/05/RANK_MON_4.HTM'):
+        for name in (
+            b'03/05/DATABASE.HTM', b'03/05/RANK_HUNT_1.HTM', b'03/05/RANK_MON_1.HTM', b'03/05/RANK_MON_4.HTM',
+            b'03/05/RANK_HRP_1.HTM',
+        ):
             page = pages.render(name)
             self.assertLessEqual(len(page), RECORD_PAGE_SAFE_SIZE, name)
             self.assertLessEqual(page.count(b'<td'), RECORD_PAGE_SAFE_CELLS, name)
@@ -1926,3 +2068,101 @@ class AppServiceTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class EuDescriptionsPatchTests(unittest.TestCase):
+    """The shipped EU patch, read the way the applier reads it (EU `0x00248350`)."""
+
+    def test_shipped_blob_matches_its_builder(self) -> None:
+        from tools.monsterhunter.build_eu_patch import build
+
+        self.assertEqual(build(), EU_PATCH.blob)
+
+    def _entries(self) -> list[tuple[int, int, bytes]]:
+        blob = EU_PATCH.blob
+        self.assertEqual(blob[:8], b'M-HUNTER')
+        count, = struct.unpack_from('<I', blob, 8)
+        offset, entries = 12, []
+        for _ in range(count):
+            key, dest, length = struct.unpack_from('<3I', blob, offset)
+            offset += 12
+            self.assertFalse(length & 0x80000000)
+            entries.append((key, dest, blob[offset:offset + length]))
+            offset = (offset + length + 3) & ~3
+        self.assertEqual(offset, len(blob))
+        return entries
+
+    def _text(self, address: int) -> str:
+        blob = EU_PATCH.blob
+        start = address - EU_RESIDENT_BLOB
+        return blob[start:blob.index(b'\x00', start)].decode('utf-8')
+
+    def test_key_0_applies_the_text_overlay_slot(self) -> None:
+        pokes = [(dest, data) for key, dest, data in self._entries() if key == 0]
+        li_a0_3 = struct.pack('<I', 0x24040003)
+        self.assertEqual(pokes, [(dest, li_a0_3) for dest in (0x002488A4, 0x002488BC, 0x00246C34, 0x00246C4C)])
+
+    def test_each_language_points_both_descriptions_at_resident_text(self) -> None:
+        entries = self._entries()
+        self.assertEqual(entries[0][0], 0xFFFFFFFF)
+        for key in range(0x31, 0x36):
+            voucher, sword = [data for entry_key, _dest, data in entries if entry_key == key]
+            self.assertEqual(self._text(struct.unpack('<I', voucher)[0]).count('\n'), 2)
+            lines = [self._text(address) for address in struct.unpack('<3I', sword)]
+            self.assertTrue(lines[2].rstrip().endswith('GMR') or lines[2].rstrip().endswith('GMR.'))
+        english = [data for key, _dest, data in entries if key == 0x31]
+        self.assertEqual(
+            self._text(struct.unpack('<I', english[0])[0]),
+            "For those about to rock. \nGMR salutes you. \nWe're rocking right along. ",
+        )
+
+    def test_texts_fit_the_description_boxes(self) -> None:
+        texts = [
+            line
+            for key, _dest, data in self._entries() if key in range(0x31, 0x36)
+            for address in struct.unpack(f'<{len(data) // 4}I', data)
+            for line in self._text(address).split('\n')
+        ]
+        self.assertEqual(len(texts), 5 * (3 + 3))
+        for line in texts:
+            # Fixed-width Latin-1 font; 28 visible characters per line (item and weapon boxes).
+            self.assertLessEqual(len(line.rstrip(' ')), 28, line)
+            line.encode('latin-1')
+            self.assertNotIn('%', line)
+
+
+class NaPatchTests(unittest.TestCase):
+    """The shipped NA patch (`tools/monsterhunter/build_na_patch.py`)."""
+
+    @unittest.skipUnless(shutil.which('mipsel-linux-gnu-as'), 'needs the MIPS binutils')
+    def test_shipped_blob_matches_its_builder(self) -> None:
+        from tools.monsterhunter.build_na_patch import build
+
+        self.assertEqual(build(), NA_PATCH.blob)
+
+    @unittest.skipUnless((DATA_DIRECTORY.parents[1] / 'slus_208.96').is_file(), 'needs slus_208.96')
+    def test_main_elf_pokes_replace_the_expected_words(self) -> None:
+        from tools.monsterhunter.build_na_patch import original_words
+
+        # The NA ELF's one loaded segment: file offset 0x180 -> RAM 0x100000.
+        image = (DATA_DIRECTORY.parents[1] / 'slus_208.96').read_bytes()
+        for key, dest, original in original_words():
+            if key == 0:
+                offset = dest - 0x100000 + 0x180
+                self.assertEqual(image[offset:offset + len(original)], original, hex(dest))
+
+    def test_blob_keeps_its_code_resident_and_widens_the_reply_loop_last(self) -> None:
+        blob = NA_PATCH.blob
+        self.assertEqual(blob[:8], b'M-HUNTER')
+        count, = struct.unpack_from('<I', blob, 8)
+        offset, entries = 12, []
+        for _ in range(count):
+            key, dest, length = struct.unpack_from('<3I', blob, offset)
+            offset += 12
+            entries.append((key, dest, blob[offset:offset + length]))
+            offset = (offset + length + 3) & ~3
+        self.assertEqual(offset, len(blob))
+        self.assertLessEqual(len(blob), 0x10000)
+        self.assertEqual(entries[0][0], 0xFFFFFFFF)
+        self.assertEqual({key for key, _dest, _data in entries[1:]}, {0x00, 0x11, 0x23})
+        self.assertEqual(entries[-1][1:], (0x002B4C4C, struct.pack('<I', 0x29420044)))

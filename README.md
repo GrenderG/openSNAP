@@ -124,7 +124,7 @@ Capcom's games also talk to Capcom's own APP service over TCP, beside SN@P. They
 `app01.reo.capcom.sf.yav4.com:10127`, so one process serves every Capcom game and tells them apart from each
 connection's first answer.
 
-- Monster Hunter: World and Land menus, Market, Events, quest records.
+- Monster Hunter: World and Land menus, Market, Events, quest records, Hunter Rank Points ranking.
 - Resident Evil Outbreak: lobby welcome page, data files, scenario results and the DATABASE rankings. The public
   beta gets its own welcome page and records.
 - Resident Evil Outbreak File#2: server list, lobby information page, Area and room-rule data, scenario results and
@@ -206,6 +206,15 @@ Behaviour:
 - Quest records (monsters hunted, clear times) are kept and shown on the in-game Record pages: top hunters per
   monster and fastest clears per quest. The PAL test build's monster kill totals get a page of their own. A record
   from an address with several players logged in can't be attributed, so it is skipped.
+- Hunter Rank Points: after every online quest retail NA and EU upload a hunter summary that holds the hunter's
+  HRP (no client patch needed). The Record pages rank hunters by their current HRP; hunters at the maximum
+  (9,999,999) rank by who reached it first, and one who drops below it loses that place.
+- Client patches: retail clients still on their original version are offered an openSNAP patch on their first
+  APP connection, which they save in their game save (it needs the client's DNAS install step). EU fixes the Chrome
+  Voucher and The GMR Chrome Heart descriptions in all five languages; NA sends quest records like EU and shows EU
+  players' accented text as plain letters. The patches are built by `tools/monsterhunter` (`python3 -m
+  tools.monsterhunter.build_eu_patch`, `build_na_patch`, the latter with the MIPS binutils) into
+  `data/monsterhunter/patches`; `opensnap_app/capcom/monsterhunter/patch.py` documents the mechanism.
 
 #### Monster Hunter NA public beta
 

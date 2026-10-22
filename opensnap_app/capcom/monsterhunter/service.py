@@ -39,8 +39,13 @@ from opensnap_app.capcom.protocol import (
 )
 from opensnap_app.capcom.monsterhunter.content import EventCatalog, InformationPages, MarketState, NamedFiles
 from opensnap_app.capcom.monsterhunter.flows import AppFlowTracker, AppPhase
+from opensnap_app.capcom.monsterhunter.patch import ClientPatch, load_patches
 from opensnap_app.capcom.monsterhunter.records import (
+    HRP_BOARD,
+    HUNTER_SUMMARY,
+    HUNTER_SUMMARY_SIZE,
     RecordPages,
+    decode_hunter_summary,
     decode_quest_record,
     decode_test_build_quest_record,
     load_quests,
@@ -50,7 +55,7 @@ from opensnap_app.capcom.monsterhunter.records import (
 from opensnap.core.online import OnlinePlayer
 from opensnap.plugins.monsterhunter.directory import Directory
 from opensnap.plugins.monsterhunter.profile import MonsterHunterProfile
-from opensnap.storage.interfaces import OnlinePlayerStore, RecordStore
+from opensnap.storage.interfaces import OnlinePlayerStore, RecordStore, StandingStore
 
 _LOGGER = logging.getLogger('opensnap_app.capcom.monsterhunter')
 
@@ -65,6 +70,7 @@ CONNECTION_TIMEOUT_SECONDS = 20.0
 # Client APP commands (`SLUS_208.96` request table `0x003698f0`/`0x00369940`,
 # reply handlers `0x00369a30`; `SLES_527.07` table `0x0032aa50`).
 CMD_APP_WORLD = 0x1007
+CMD_APP_PATCH_CHUNK = 0x6002
 CMD_APP_FILE_INFO = 0x6101
 CMD_APP_FILE_CHUNK = 0x6102
 CMD_APP_WORLD_6103 = 0x6103
@@ -86,7 +92,24 @@ CMD_APP_MARKET = 0x6211
 CMD_APP_EVENT_AVAILABILITY = 0x6212
 CMD_APP_CONNECTION_TIMING = 0x6213
 CMD_APP_RETURN = 0x6306
+# 6320/6321: the resource upload that follows every online quest return
+# (NA 6306 reply `0x002b3ba0` announces type 1; EU after its 6307 records) and
+# EU APP1 (type 2, after 6105). The client announces `u8 type, u32 size`
+# (sizes NA `0x0055f6c0`: type 1 -> 20, type 2 -> 304; NA `0x002b3780`, EU
+# `0x002a3930`) and the reply's `u8` decides (NA `0x002b3840`, EU
+# `0x002a39f0`):
+# - 0, or any type without a size: nothing is uploaded; the client completes
+#   with 1004.
+# - the announced type: the client uploads it as 6321 `u8 type, u32 0,
+#   u16 size, field(resource)` (NA `0x002b3920`, EU `0x002a3ad0`).
+# - the other type: the client announces that type with 6320 again.
+# Type 1 is the hunter summary with the Hunter Rank Points (`records.py`);
+# type 2 is the equipment box (100 x u8 type, then 100 x u16 id, then the u32
+# rare-item mask; NA `0x0055f720`). The 6321 reply handlers check only the
+# error byte, then complete with 1004 (NA `0x002b3a60`, EU `0x002a3c10`).
 CMD_APP_RETURN_RESOURCE = 0x6320
+CMD_APP_RESOURCE_UPLOAD = 0x6321
+RESOURCE_NONE = 0
 CMD_APP_SERVER_ADDRESS = 0x6501
 # 6502 asks for one World's status (`u32 token, field World key`); a reply
 # flag of 1 loads that World's Lands, 0 skips the World (`0x002b2270`).
@@ -120,7 +143,9 @@ NA_PUBLIC_BETA_VERSION = b'0405171956'
 # `u8 flag` (NA `0x002b4150`, EU `0x002a46f8`): 0 goes on to the Information
 # page; 1 (`field version, u32 size, u32`) first downloads a client patch over
 # 6002, which the client saves only when one was received (NA `0x00248170`).
-# openSNAP ships no client patch (`VERSION_NO_PATCH`).
+# A client whose 1002 version a built patch is offered to (its stock stamp)
+# gets that patch; once installed its version is the patch name, so it gets
+# `VERSION_NO_PATCH` like everyone else (`patch.py`).
 # 6110 `u16 port parameter, field regweb URL, field bootstrap host`; 0 and
 # empty fields keep the client's defaults (`0x002a1580`).
 EU_NETWORK_SETTINGS_DEFAULTS = struct.pack('>H', 0)
@@ -186,17 +211,22 @@ class AppService:
         directory: Directory,
         online_players: OnlinePlayerStore,
         records: RecordStore,
+        standings: StandingStore,
     ) -> None:
         self._config = config
         self._flows = flows
         self._directory = directory
         self._online_players = online_players
         self._records = records
+        self._standings = standings
         self._market = MarketState()
         self._events = EventCatalog(config.data_directory)
         self._information = InformationPages(config.data_directory)
-        self._record_pages = RecordPages(records, config.profile.identifier, load_quests(config.data_directory))
+        self._record_pages = RecordPages(
+            records, standings, config.profile.identifier, load_quests(config.data_directory)
+        )
         self._files = NamedFiles(config.data_directory, self._record_pages.render)
+        self._patches = load_patches(config.data_directory)
 
     def serve(self, connection: AppConnection, answer: ConnectAnswer) -> None:
         host = connection.host
@@ -207,6 +237,7 @@ class AppService:
             connection, phase, owner, APP_BUILD_NA if test_build else answer.build, test_build,
             login=answer.login.split(b'\x00', 1)[0].decode('ascii', errors='replace'),
         )
+        client.patch = self._patches.get(answer.version.split(b'\x00', 1)[0])
         language = answer.flags & APP_LANGUAGE_MASK if client.build == APP_BUILD_EU else 0
         _LOGGER.info(
             'APP connection from %s:%d build %s%s phase=%s owner=%s.',
@@ -224,19 +255,29 @@ class AppService:
                 if client.phase is AppPhase.APP1:
                     client.phase = self._online_phase(connection.peek_command())
             else:
-                connection.send(app_frame(APP_DIRECTION_PUSH, CMD_APP_VERSION, payload=VERSION_NO_PATCH))
+                push = self._version_push(client.patch)
+                connection.send(app_frame(APP_DIRECTION_PUSH, CMD_APP_VERSION, payload=push))
                 if client.build == APP_BUILD_NA:
                     # Only NA APP1 (mode 0) waits for 6001.
                     client.phase = AppPhase.APP1
-                # EU names its mode with its first request (APP1 opens with 6110).
+                # EU names its mode with its first request (APP1 opens with 6110,
+                # or with 6002 when it downloads the offered patch).
                 elif client.phase is AppPhase.APP1 and connection.poll(CONNECTION_TIMEOUT_SECONDS):
-                    if connection.peek_command() != CMD_APP_NETWORK_SETTINGS:
+                    if connection.peek_command() not in (CMD_APP_NETWORK_SETTINGS, CMD_APP_PATCH_CHUNK):
                         client.phase = self._online_phase(connection.peek_command())
             self._serve_online(client)
         except (ConnectionError, socket.timeout) as exc:
             _LOGGER.info('APP connection from %s:%d closed (%s): %s', host, connection.port, client.phase, exc)
         except Exception:  # noqa: BLE001
             _LOGGER.exception('APP connection from %s:%d failed (%s).', host, connection.port, client.phase)
+
+    @staticmethod
+    def _version_push(patch: ClientPatch | None) -> bytes:
+        """6001: `u8 0`, or `u8 1, field (name + version), u32 size, u32 0` offering `patch`."""
+
+        if patch is None:
+            return VERSION_NO_PATCH
+        return b'\x01' + encode_app_field(patch.name + patch.version, 0) + struct.pack('>2L', len(patch.blob), 0)
 
     def _players(self) -> list[OnlinePlayer]:
         return self._online_players.list(self._config.profile.identifier)
@@ -260,7 +301,7 @@ class AppService:
         timing into Land information (`0x002af0c0` -> 6213 -> 6501); EU skips
         Information on its own (6212 -> 6203, `0x0029eef0`). EU APP1 asks for
         its settings and TOP_INFOR page (6110 -> 6220 -> 6210 -> 6101 -> 6401
-        -> 6403 -> 6105 -> 6320 -> 1004); NA APP1 asks for its TOP_INFOR page
+        -> 6403 -> 6105 -> 6320 [-> 6320 -> 6321] -> 1004); NA APP1 asks for its TOP_INFOR page
         and server address (6101 -> 6401 -> 6501 -> 1004).
         """
 
@@ -318,6 +359,8 @@ class AppService:
 
         if command == CMD_APP_WORLD:
             return b'\x00'
+        if command == CMD_APP_PATCH_CHUNK:
+            return self._patch_chunk(payload, client.patch, decode_field, encode_field)
         if command == CMD_APP_WORLD_6103:
             return b'\x00\x00'
         if command == CMD_APP_EVENT_AVAILABILITY:
@@ -352,8 +395,11 @@ class AppService:
         if command == CMD_APP_RETURN:
             return b''
         if command == CMD_APP_RETURN_RESOURCE:
-            # No server-side resource after a quest return.
-            return b'\x00'
+            asks = self._config.profile.uploads_hunter_summary and not client.test_build
+            return bytes((HUNTER_SUMMARY if asks else RESOURCE_NONE,))
+        if command == CMD_APP_RESOURCE_UPLOAD:
+            self._store_hunter_summary(payload, client, decode_field)
+            return b''
         if command == CMD_APP_FILE_INFO:
             return self._files.info(payload, decode_field, encode_field)
         if command == CMD_APP_FILE_CHUNK:
@@ -373,6 +419,27 @@ class AppService:
             return b''
         return None
 
+    @staticmethod
+    def _patch_chunk(
+        request: bytes,
+        patch: ClientPatch | None,
+        decode_field: Callable[[bytes], tuple[bytes, int]],
+        encode_field: Callable[[bytes], bytes],
+    ) -> bytes:
+        """Answer 6002 `field name, u32 offset, u16 length` with `field name, u32 offset, field data`.
+
+        The client checks the name (10 characters) and stores the data at the
+        offset (EU `0x002a4980`).
+        """
+
+        name, size = decode_field(request)
+        if len(request) != size + 6:
+            raise ValueError('patch chunk request has an invalid size')
+        offset, length = struct.unpack_from('>LH', request, size)
+        if patch is None or name != patch.name or offset >= len(patch.blob):
+            raise ValueError('patch chunk request does not match the offered patch')
+        return encode_field(name) + struct.pack('>L', offset) + encode_field(patch.blob[offset:offset + length])
+
     def _store_quest_record(self, payload: bytes, client: '_MhClient') -> None:
         """Keep one 6307 quest record for the connection's player.
 
@@ -382,16 +449,7 @@ class AppService:
 
         test_build = client.test_build
         record = decode_test_build_quest_record(payload) if test_build else decode_quest_record(payload)
-        # The connection names its player: the 1002 answer's login is the client
-        # ID it logged in with (MH NA `0x002aeb40`). The address alone cannot tell
-        # apart players who share one, e.g. two consoles in one home.
-        player = next(
-            (
-                player for player in self._players()
-                if player.host == client.app.host and player.username == client.login
-            ),
-            None,
-        )
+        player = self._player(client)
         if player is None:
             _LOGGER.warning(
                 'Quest record from %s login %r has no logged-in player; not stored: %s',
@@ -403,6 +461,57 @@ class AppService:
         store = store_test_build_quest_record if test_build else store_quest_record
         store(self._records, self._config.profile.identifier, player, record)
         _LOGGER.info('Stored quest record for %s: %s', player.username, record)
+
+    def _store_hunter_summary(
+        self, payload: bytes, client: '_MhClient', decode_field: Callable[[bytes], tuple[bytes, int]]
+    ) -> None:
+        """Keep the Hunter Rank Points of a 6321 hunter summary as the player's `hrp` standing.
+
+        It is acknowledged whatever it holds: the ranking is optional and the
+        client's quest return must go on.
+        """
+
+        try:
+            if len(payload) < 7:
+                raise ValueError('truncated')
+            kind, size = struct.unpack_from('>B4xH', payload)
+            block, length = decode_field(payload[7:])
+            if kind != HUNTER_SUMMARY or size != HUNTER_SUMMARY_SIZE or len(payload) != 7 + length:
+                raise ValueError('not a hunter summary')
+            points = decode_hunter_summary(block)
+        except ValueError as exc:
+            _LOGGER.warning('Ignoring resource upload from %s: %s', client.app.host, exc)
+            return
+        player = self._player(client)
+        if player is None:
+            # EU APP1 uploads before the KICS login.
+            _LOGGER.info('Hunter summary from %s login %r has no logged-in player; HRP %d not stored.',
+                         client.app.host, client.login, points)
+            return
+        self._standings.set(
+            game=self._config.profile.identifier,
+            board=HRP_BOARD,
+            user_id=player.user_id,
+            player=player.username,
+            score=points,
+        )
+        _LOGGER.info('Stored HRP %d for %s.', points, player.username)
+
+    def _player(self, client: '_MhClient') -> OnlinePlayer | None:
+        """The connection's logged-in player.
+
+        The 1002 answer's login is the client ID it logged in with (MH NA
+        `0x002aeb40`). The address alone cannot tell apart players who share
+        one, e.g. two consoles in one home.
+        """
+
+        return next(
+            (
+                player for player in self._players()
+                if player.host == client.app.host and player.username == client.login
+            ),
+            None,
+        )
 
     def _world_list(self, request: bytes, advertise_host: str, encode_field: Callable[[bytes], bytes]) -> bytes:
         """Answer 6503 `u16 start, u16 count` with one page of Worlds.
@@ -513,3 +622,5 @@ class _MhClient:
     test_build: bool = False
     # Login ID from the client's 1002 answer.
     login: str = ''
+    # The client patch offered on this connection.
+    patch: ClientPatch | None = None

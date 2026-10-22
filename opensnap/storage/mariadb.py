@@ -117,6 +117,18 @@ class MariaDbConnection:
             ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
         )
         self.execute(
+            'CREATE TABLE IF NOT EXISTS standings ('
+            'game VARCHAR(64) NOT NULL, '
+            'board VARCHAR(64) NOT NULL, '
+            'user_id INT NOT NULL, '
+            'player VARCHAR(255) NOT NULL, '
+            'score BIGINT NOT NULL, '
+            'reached_at VARCHAR(32) NOT NULL, '
+            'updated_at VARCHAR(32) NOT NULL, '
+            'PRIMARY KEY (game, board, user_id)'
+            ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+        )
+        self.execute(
             'CREATE TABLE IF NOT EXISTS online_players ('
             'session_id BIGINT UNSIGNED PRIMARY KEY, '
             'game VARCHAR(64) NOT NULL, '

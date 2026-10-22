@@ -1,7 +1,10 @@
 """Monster Hunter online code patches.
 
 How a server installs a code patch in every Monster Hunter build openSNAP
-serves, and how to write one: retail NA (`SLUS_208.96`), retail EU
+serves, and how to write one. Patches are built by `tools/monsterhunter` into
+`data/monsterhunter/patches` (`patches.json` names each blob, its 6001 name
+and version, and the client versions it is offered to); the service only
+loads and serves them. Builds: retail NA (`SLUS_208.96`), retail EU
 (`SLES_527.07`), the EU demo (`SLED_530.83`), the EU test build
 (`TLES_527.07`) and the NA public beta (`SLUS_291.10`). Integers on the APP
 wire are big-endian (`protocol.py`), everything inside the patch blob is
@@ -68,12 +71,13 @@ Retail NA and EU, and the EU demo: delivery and install
    stored blob is applied only when its name sorts above the version string.
 
 Version string and naming. The version field of the client's 1002 answer is
-its build stamp (`YYMMDDhhmm` of `__DATE__`/`__TIME__`) or the installed
-patch name: when `count != 0` and the stamp sorts below the name (10
-characters), the applier copies the name over it. Name a patch with 10 ASCII
-characters above the build's stamp (e.g. "1001000000") and give it at least
-one entry; push 6001 `u8 1` only while the 1002 version differs from it, and
-route by the 1002 build byte (2 = NA, 3 = EU and demo) since patches are
+its build stamp (`YYMMDDhhmm` of `__DATE__`/`__TIME__`) or the installed patch
+name: when `count != 0` and the stamp sorts below the name (10 characters),
+the applier copies the name over it. Name a patch with 10 ASCII characters
+above the build's stamp and give it at least one entry; the stamp's own
+`YYMMDDhhmm` form (e.g. "2610221800") keeps the game's "Media Version" looking
+alike; push 6001 `u8 1` only while the 1002 version differs from it, and route
+by the 1002 build byte (2 = NA, 3 = EU and demo) since patches are
 build-specific. A newer patch needs a name above the installed one.
 
 Storage. The stored form is DNAS-encrypted, so a patch can only be installed
@@ -114,3 +118,46 @@ Cannot be patched over the network: it has NA's APP client and accepts the
 download, but the install step (`0x247d28`) never reads the downloaded data
 and the prompt/DNAS path is dead code. Magic "MH-PUB-B", stamp "0408131008".
 """
+
+from dataclasses import dataclass
+import json
+import logging
+from pathlib import Path
+
+_LOGGER = logging.getLogger('opensnap_app.capcom.monsterhunter')
+
+PATCHES_DIRECTORY = 'patches'
+MANIFEST_NAME = 'patches.json'
+
+
+@dataclass(frozen=True, slots=True)
+class ClientPatch:
+    """One built patch: its 6001 name and display version, the client versions it is offered to, and the blob."""
+
+    name: bytes
+    version: bytes
+    offered_to: frozenset[bytes]
+    blob: bytes
+
+
+def load_patches(data_directory: Path) -> dict[bytes, ClientPatch]:
+    """Read `patches/patches.json` (written by `tools/monsterhunter`) into {client version: patch}."""
+
+    directory = data_directory / PATCHES_DIRECTORY
+    manifest_path = directory / MANIFEST_NAME
+    if not manifest_path.is_file():
+        return {}
+    by_version: dict[bytes, ClientPatch] = {}
+    for build, entry in json.loads(manifest_path.read_text()).items():
+        patch = ClientPatch(
+            name=entry['name'].encode('ascii'),
+            version=entry['version'].encode('ascii'),
+            offered_to=frozenset(stamp.encode('ascii') for stamp in entry['offered_to']),
+            blob=(directory / entry['file']).read_bytes(),
+        )
+        if len(patch.name) != 10 or len(patch.version) != 4 or not 0 < len(patch.blob) <= 0x10000:
+            raise ValueError(f'{build} patch in {manifest_path} is malformed')
+        for stamp in patch.offered_to:
+            by_version[stamp] = patch
+        _LOGGER.info('Client patch %s (%s) for versions %s.', build, entry['name'], ', '.join(entry['offered_to']))
+    return by_version

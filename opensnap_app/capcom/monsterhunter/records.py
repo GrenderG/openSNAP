@@ -1,4 +1,4 @@
-"""Quest records uploaded by Monster Hunter EU after a quest (APP 6307)."""
+"""Quest records (APP 6307) and Hunter Rank Points (APP 6321) uploaded after a quest, and the Record pages."""
 
 from dataclasses import dataclass
 import html
@@ -9,7 +9,7 @@ import struct
 
 from opensnap.core.browser_pages import NOTE_COLOR, data_table, document, panel
 from opensnap.core.online import OnlinePlayer
-from opensnap.storage.interfaces import RecordStore
+from opensnap.storage.interfaces import RecordStore, StandingStore
 
 _LOGGER = logging.getLogger('opensnap_app.capcom.monsterhunter')
 
@@ -25,6 +25,37 @@ HUNTS_BOARD_PREFIX = 'hunts-'
 CLEAR_BOARD_PREFIX = 'clear-'
 
 KILLS_BOARD_PREFIX = 'kills-'
+
+# Hunter summary (6321 resource type 1, 20 bytes, built from the current
+# hunter by NA `sub_main.bin` `0x0055f700`, EU `0x0051ee20`); little-endian:
+# +0 u8 hunter +0x635, +1 u8 +0x63b, +2 u16 +0x636, +4..6 u8 +0x63c..0x63e,
+# +7 u8 +0x63a, +8 u32 rare-item mask (+0x6c8), +12 u32 Hunter Rank Points
+# (+0x1c), +16 u8 Hunter Rank (+0x5e3), +17..19 unused. HRP is capped at
+# 9,999,999 and can drop: a failed quest or carts subtract points
+# (NA `0x0055c790`).
+#
+# Rare-item mask: the first time the hunter obtains one of these items its
+# bit is set (NA `0x0055f630`, EU `0x0051ed50`; item -> bit NA `0x0055f3e0`,
+# EU `0x0051eb00`, the same table); nothing seen clears it. It is saved
+# with the hunter, so a save editor can set it too; a hunter owning gear
+# whose rare parts have no bit is only a hint of an edited save. Bit 31 is
+# unused. Bit: item id (EU name)
+#    0: 142 Dragonite Ore     11: 245 Vespoid Abdomen    22: 268 Fatalis' Horn
+#    1: 143 Union Ore         12: 248 Vespoid Bladefin   23: 270 Fatalis' Shell
+#    2: 144 Firestone         13: 250 Hornetaur Head     24: 271 Fatalis' Crust
+#    3: 147 Novacrystal       14: 252 Hornet Bladefin    25: 272 Fatalis' Eye
+#    4: 218 Rathian Plate     15: 258 Monoblos Heart     26: 273 Fatalis' Webbing
+#    5: 223 Rathalos Plate    16: 259 Kirin Horn         27: 279 Guild Ticket
+#    6: 230 Pale Bone         17: 261 Kirin Mane         28: 280 Silver Ticket
+#    7: 233 Basarios Wing     18: 262 Lao-Shan's Claw    29: 281 Gold Ticket
+#    8: 235 Gravios Carapace  19: 263 Lao-Shan's Horn    30: 285 Chrome Voucher
+#    9: 237 Gravios Head      20: 265 Lao-Shan's Plate
+#   10: 241 Diablos Spine     21: 267 Lao-Shan's Spine
+HUNTER_SUMMARY = 1
+HUNTER_SUMMARY_SIZE = 20
+HUNTER_SUMMARY_HRP_OFFSET = 12
+HUNTER_RANK_POINTS_MAX = 9_999_999
+HRP_BOARD = 'hrp'
 
 # Record pages. The EU lobby Information/Record menu opens
 # `lbs://lbs/03/%02d/DATABASE.HTM` (`lobby.bin` `0x005a64f8`); NA copies
@@ -43,6 +74,11 @@ KILLS_BOARD_PREFIX = 'kills-'
 # only `lt gt quot amp nbsp #034 #34 #039 #39` (NA main `0x0038a398`), so
 # text is escaped without quotes (no `&#x27;`).
 RECORD_PAGE_NAME = 'DATABASE.HTM'
+# Current HRP: the top HRP_PAGES * HRP_PAGE_HUNTERS hunters, one table per
+# page (3 cells per row, within RECORD_PAGE_SAFE_CELLS).
+HRP_PAGE_CODE = 'HRP'
+HRP_PAGE_HUNTERS = 25
+HRP_PAGES = 4
 # The EU test build's lifetime kill totals (`TEST_BUILD_RECORD_MONSTERS`),
 # linked from the index once any is stored.
 TEST_BUILD_KILLS_PAGE_NAME = 'TLES_KILLS.HTM'
@@ -57,8 +93,8 @@ RECORD_PAGE_QUESTS_PER_PAGE = 8
 RECORD_PAGE_MONSTERS_PER_PAGE = 10
 # `{"<quest number>": {"name": "...", "category": "..."}}`. The 6307 quest is
 # the quest file's number (EU quest start copies quest information +0x1e into
-# the uploaded word, `lobby.bin` `0x00577558`); EU is the only build that
-# uploads records.
+# the uploaded word, `lobby.bin` `0x00577558`); EU uploads records, and NA
+# once the openSNAP client patch is installed (`tools/monsterhunter`).
 QUESTS_FILE = 'quests.json'
 # Category key -> (page code, title). Quests missing from `quests.json` are
 # listed under `other`.
@@ -132,6 +168,17 @@ def decode_quest_record(payload: bytes) -> QuestRecord:
             kind=kind, quest_id=quest_id, weapon_class=value, clear_seconds=struct.unpack_from('>L', payload, 5)[0]
         )
     raise ValueError(f'Unknown quest record kind {kind}.')
+
+
+def decode_hunter_summary(block: bytes) -> int:
+    """Hunter Rank Points of one decoded 6321 type 1 resource block."""
+
+    if len(block) != HUNTER_SUMMARY_SIZE:
+        raise ValueError('Hunter summary has an invalid size.')
+    points = struct.unpack_from('<L', block, HUNTER_SUMMARY_HRP_OFFSET)[0]
+    if points > HUNTER_RANK_POINTS_MAX:
+        raise ValueError('Hunter summary has invalid Hunter Rank Points.')
+    return points
 
 
 def store_quest_record(records: RecordStore, game: str, player: OnlinePlayer, record: QuestRecord) -> None:
@@ -268,8 +315,11 @@ class RecordPages:
     `03/<language>/`), and their links point back into it.
     """
 
-    def __init__(self, records: RecordStore, game: str, quests: dict[int, QuestInfo]) -> None:
+    def __init__(
+        self, records: RecordStore, standings: StandingStore, game: str, quests: dict[int, QuestInfo]
+    ) -> None:
         self._records = records
+        self._standings = standings
         self._game = game
         self._quests = quests
 
@@ -290,13 +340,18 @@ class RecordPages:
         code, number = parsed
         if code == MONSTER_PAGE_CODE:
             content = self._monsters(number, links)
+        elif code == HRP_PAGE_CODE:
+            content = self._hunter_rank_points(number, links)
         else:
             content = self._category(_CATEGORY_BY_CODE[code], number, links)
         return None if content is None else document(content).encode()
 
     def _index(self, links: '_Links') -> str:
         clears = self._clears_by_category()
-        lines = [f'<a href="{links.page(MONSTER_PAGE_CODE, 1)}">Most monsters hunted</a><br>\n']
+        lines = [
+            f'<a href="{links.page(HRP_PAGE_CODE, 1)}">Hunter Rank Points</a><br>\n',
+            f'<a href="{links.page(MONSTER_PAGE_CODE, 1)}">Most monsters hunted</a><br>\n',
+        ]
         for category, (code, title) in QUEST_CATEGORIES.items():
             count = len(clears.get(category, []))
             if category == 'other' and not count:
@@ -307,13 +362,29 @@ class RecordPages:
             lines.append(f'<a href="{links.named(TEST_BUILD_KILLS_PAGE_NAME)}">EU test build kill totals</a><br>\n')
         return panel(
             'Hunter Records',
-            'Fastest clears of each quest and the hunters<br>\nwith the most kills of each monster.<br>\n<br>\n'
+            'Hunter Rank Points, the fastest clears of each<br>\nquest and the hunters with the most kills<br>\n'
+            'of each monster.<br>\n<br>\n'
             + ''.join(lines)
             + f'<br>\n<a href="{BROWSER_CLOSE_LINK}">Close</a><br>\n',
         ) + (
-            # Only the EU build uploads quest records (6307); NA has no such command.
-            f'<br>\n<font color="{NOTE_COLOR}">Only the European release sends quest records,<br>\n'
-            'so these rankings list EU players only.</font><br>\n'
+            # EU uploads quest records (6307); NA only with the openSNAP client patch.
+            f'<br>\n<font color="{NOTE_COLOR}">NA needs the openSNAP patch for quest records.</font><br>\n'
+        )
+
+    def _hunter_rank_points(self, number: int, links: '_Links') -> str | None:
+        """Current HRP, highest first; hunters at the maximum rank by who reached it first."""
+
+        standings = self._standings.top(self._game, HRP_BOARD, HRP_PAGES * HRP_PAGE_HUNTERS)
+        boards = [
+            _board(
+                'Hunters', 'HRP',
+                [(standing.player, str(standing.score)) for standing in standings[start:start + HRP_PAGE_HUNTERS]],
+                first_rank=start + 1,
+            )
+            for start in range(0, len(standings), HRP_PAGE_HUNTERS)
+        ]
+        return _paged(
+            'Hunter Rank Points', boards, number, 1, HRP_PAGE_CODE, links, empty=_board('Hunters', 'HRP', [])
         )
 
     def _test_build_totals(self) -> dict[int, list]:
@@ -438,7 +509,7 @@ def _parse_paged_name(page: str) -> tuple[str, int] | None:
     if not (page.startswith('RANK_') and page.endswith('.HTM')):
         return None
     code, _, number = page[len('RANK_'):-len('.HTM')].partition('_')
-    if code != MONSTER_PAGE_CODE and code not in _CATEGORY_BY_CODE:
+    if code not in (MONSTER_PAGE_CODE, HRP_PAGE_CODE) and code not in _CATEGORY_BY_CODE:
         return None
     if not number.isdigit() or int(number) < 1:
         return None
@@ -449,11 +520,11 @@ def _kills_board(monster: int) -> str:
     return f'{KILLS_BOARD_PREFIX}{monster:02d}'
 
 
-def _board(title: str, value: str, rows: list[tuple[str, str]]) -> str:
+def _board(title: str, value: str, rows: list[tuple[str, str]], *, first_rank: int = 1) -> str:
     return data_table(
         title,
         ('Rank', 'Hunter', value),
-        [(str(rank), html.escape(name, quote=False), score) for rank, (name, score) in enumerate(rows, start=1)],
+        [(str(rank), html.escape(name, quote=False), score) for rank, (name, score) in enumerate(rows, start=first_rank)],
         empty='No records yet',
     )
 

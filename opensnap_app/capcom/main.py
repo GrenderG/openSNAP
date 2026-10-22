@@ -91,6 +91,7 @@ def _monster_hunter_service(
         ),
         online_players=storage.online_players,
         records=storage.records,
+        standings=storage.standings,
     )
 
 
