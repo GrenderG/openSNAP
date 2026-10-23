@@ -52,12 +52,18 @@ Retail v1/v2: delivery and install
 2. After the connection, `netwk` `0x60932c` compares `name` with the
    client's version string over 10 characters; equal skips the install.
 3. The client reads its system save (`BASLUS-20765NETBIO`; none: "System data
-   could not been found") and asks "Game version was renewed ... save?".
-   No disconnects. Yes: netdnas DNAS authentication (`0x7507d0`, must
-   succeed), insdnas converts the blob in place (`0x7099d0`, DNAS
-   encryption), the save is written, the stored copy is decrypted
-   (`0x709b40`) into the resident blob and keys 0, 4 and the loaded
-   `0x810000` overlay's key are applied.
+   could not been found") and asks "Game version was renewed ... save?". No
+   disconnects. Yes: netdnas DNAS authentication (`0x7507d0`, must succeed),
+   then insdnas `0x7099d0` (InetDNAS2PersonalEncode, the same DNAS2 install
+   library as Monster Hunter's `dnas_ins`) personalizes the blob. It must
+   start with a 0x580 DNAS install header of RSA-1024 signatures (key 83 and
+   two chained keys; the private keys are not on the client), so a
+   server-authored blob cannot pass: 0x580 bytes or more fail the signature
+   check (error state 34), less than 0x580 polls forever (both emulated; the
+   check is `0x706a48`, key 83). On success the save is written, the stored
+   copy is decrypted (`0x709b40`) into the resident blob and keys 0, 4 and the
+   loaded `0x810000` overlay's key are applied. A failed install wipes both
+   buffers (`0x1f7160`) and applies nothing.
 4. Every boot loads the save, decrypts the stored blob into the resident
    blob and applies key 0; later overlay loads apply their keys. A failed
    decrypt clears the patch.
@@ -74,8 +80,8 @@ reports exactly the patch name, and the server offers 6001 `u8 1` only when
 the 1002 version differs from it. Any other name is offered again every
 session.
 
-Storage. The stored form is the DNAS-encrypted blob, so a patch can only be
-installed over the network, not written into a save. The save is
+Storage. The stored form is the DNAS-personalized blob, so retail v1/v2 take
+neither a server-authored patch nor one written into a save. The save is
 0x3fcc8 bytes: `u16 0x5963, u16 seed, u16 sum, u16 0`, then 0x1fe5c words
 XORed with a key stream (`k = seed`; per word: `w ^= k; k = k or 1;
 k = k * 176 % 0xff53`; `sum` is the 16-bit sum of the plain words). In the
