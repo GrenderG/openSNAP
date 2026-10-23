@@ -6,8 +6,8 @@ downloads up to two files of at most 8 KB (NA `0x001f9740`, pointers
 shows for each and the rules its rooms play by. `netwk.bin` keeps it in
 6012-byte slots (`0x005f48d8`), so the file is exactly that long. File 1 is
 only copied along on a refresh (`0x00607fc0`) and is sent small. The layout
-and every reader below are in `tasks/re_outbreak2_rules.md`; addresses are
-NA, EU runs the same code (`0x005c2a40..`).
+follows, with the address of each field's reader; addresses are NA, EU runs
+the same code (`0x005c2a40..`).
 
     10 x 484-byte Area records, then at 4840 a 20-byte trailer, then at 4860
     4 x 288-byte custom rule entries
@@ -78,7 +78,9 @@ STORY_SCENARIOS = 0x1F
 ALL_SCENARIOS = 0x7FF
 AREA_OPEN = 3
 NAME_AND_PASSWORD_EDITABLE = 0x03
-# File#1's team-level thresholds (`tasks/re_outbreak.md`).
+# File#1's team-level thresholds (`opensnap_app.capcom.outbreak.netbio`): the
+# same scheme, a level per threshold every member's per-scenario count
+# reaches.
 AUTO_DIFFICULTY_THRESHOLDS = (0, 6, 31)
 
 # Built-in rule table rows (`0x00625bd0`).

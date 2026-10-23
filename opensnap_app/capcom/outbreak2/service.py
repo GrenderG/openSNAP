@@ -4,8 +4,8 @@ The File#2 client (`SLUS_209.84` NA, `SLES_533.19` EU) runs the Monster
 Hunter family of the Capcom APP client (NA `0x001f7b90..0x001fef40`, EU
 `0x001c2da0..0x001ca570`), not File#1's. It answers the server's 1002 with
 build 4 (NA, `0x001f8fd8`) or 6 (EU, `0x001c41f4`), waits for the 6001 patch
-offer, and then drives one of seven connection kinds (`tasks/re_outbreak2_app.md`
-§5). Addresses are NA unless marked EU.
+offer, and then drives one of seven connection kinds. Addresses are NA unless
+marked EU.
 
 - Information (account menu, `netwk.bin` `0x00618ca8`): 6110, EU 6220, 6210,
   6101/6102 information page, 6401, 6403, 6105, 1004. A repeat (mode 7) skips

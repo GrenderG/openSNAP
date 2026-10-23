@@ -1,16 +1,17 @@
 """Scenario result reports uploaded by Resident Evil Outbreak File#2 (APP 6301).
 
-The report has File#1's layout (`opensnap_app.capcom.outbreak.scenario_report`). The
-File#2 client builds it at NA `0x001fd530` (EU `0x001c8b60`) from the
-156-byte scenario summary `0x0064dfc4` that `netwk.bin` fills on the return
-from a scenario (`0x005938d0`); `tasks/re_outbreak2_results.md` traces each
-field to the game: File#1's free-mode byte is the room rule "rank kind", a
-ranking category the server defines per Area (`opensnap.plugins.outbreak2.records`),
-and the two words File#1 left at zero are the peak of a one-second message
-counter (`0x001f2384`) and a `game.bin` flag word (`0x00300770`), kept with
-the other network diagnostics. The client zeroes the clear, its time and its
-points when Friendly Fire, NIGHTMARE, INFINITY or a Point Multiplier is on
-(`0x005938d0`), so those runs reach the points board with 0 points only.
+The report has File#1's layout
+(`opensnap_app.capcom.outbreak.scenario_report`). The File#2 client builds it
+at NA `0x001fd530` (EU `0x001c8b60`) from the 156-byte scenario summary
+`0x0064dfc4` that `netwk.bin` fills on the return from a scenario
+(`0x005938d0`). Traced to the game, File#1's free-mode byte is the room rule
+"rank kind", a ranking category the server defines per Area
+(`opensnap.plugins.outbreak2.records`), and the two words File#1 left at zero
+are the peak of a one-second message counter (`0x001f2384`) and a `game.bin`
+flag word (`0x00300770`), kept with the other network diagnostics. The client
+zeroes the clear, its time and its points when Friendly Fire, NIGHTMARE,
+INFINITY or a Point Multiplier is on (`0x005938d0`), so those runs reach the
+points board with 0 points only.
 """
 
 from opensnap.core.accounts import Account

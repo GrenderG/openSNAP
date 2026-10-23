@@ -2,9 +2,9 @@
 
 The Capcom APP service fills these boards from the 6301 result reports
 (`opensnap_app.capcom.outbreak2.results`); the DATABASE pages and the web
-Notice Board rank them (`opensnap.plugins.outbreak.scenario_rankings`). Addresses are
-`SLUS_209.84`; `SLES_533.19` holds the same tables in its language overlays
-(`tasks/re_outbreak2_results.md`).
+Notice Board rank them (`opensnap.plugins.outbreak.scenario_rankings`).
+Addresses are `SLUS_209.84`; `SLES_533.19` holds the same tables in each of
+its language overlays (10..14, loaded at `0x00875a00`).
 """
 
 GAME = 'outbreak2'

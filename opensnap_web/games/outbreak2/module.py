@@ -21,7 +21,8 @@ class Outbreak2WebModule:
     """Rankings and account signup for Resident Evil Outbreak File#2 (`SLUS_209.84`, `SLES_533.19`).
 
     The signup shares File#1's `reweb/signup` directory (one account works in
-    both games: File#2 NA reads File#1's NET save, `tasks/re_outbreak2_web_bootstrap.md`).
+    both games: File#2 NA reads and writes File#1's NET save
+    `BASLUS-20765NET`).
     """
 
     name = 'outbreak2'

@@ -9,7 +9,7 @@ EU `- 0x5e30`), so the transport findings of the other Capcom games apply.
 Both regions run the same lobby code with different data addresses and title
 codes (NA `0xCA19` at `0x0059d390`, EU `0xCAF3` at `0x005bd62c`); every
 request and callback payload below is built identically, so NA and EU players
-share one server and one set of Areas (`tasks/re_outbreak2_na_vs_eu.md`).
+share one server and one set of Areas.
 
 Scenario overlay: as in File#1, `game.bin` replaces `netwk.bin` for a scenario
 while the lobby callbacks stay registered, so lobby callbacks only go to

@@ -458,7 +458,7 @@ class Outbreak2AppServiceTests(unittest.TestCase):
 
 
 class Outbreak2NetbioTests(unittest.TestCase):
-    """The data files, read the way `netwk.bin` reads them (`tasks/re_outbreak2_rules.md`)."""
+    """The data files, read the way `netwk.bin` reads them (see `outbreak2.netbio`)."""
 
     def setUp(self) -> None:
         self.directory = build_directory()
