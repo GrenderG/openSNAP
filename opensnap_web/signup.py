@@ -54,7 +54,17 @@ Binary limits:
 - Password: typed in-game at every login, through a 15-character keyboard (AM
   `net_pass_entry` -> `kb_input_init2(.., 15)`, MH
   `Net_kb_input_init2(76, 312, password, 15)`).
+
+Logo: `IMG` takes `SRC/WIDTH/HEIGHT/ALT` (MH main `0x35e330`, AM `0x73a940`,
+Beta1 `0x8d7d70`) and resolves a relative `SRC` against the page. The decoder
+is chosen by the URL extension alone (AM `BsUrlFileExtensionGet` `0x6cf980`):
+`.png` or `.bmp`, no GIF or JPEG. AM only decodes 8-bit RGB PNGs (colour type
+2, no palette or alpha) of at most 256x256 (`plPNGSetContextFromImage`
+`0x6c1150`, Beta1 `0x8d2c40`) and ignores interlacing, so the logo is a plain
+RGB PNG flattened on the page background.
 """
+
+from pathlib import Path
 
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -78,10 +88,16 @@ MAX_PASSWORD_LENGTH = 15
 # Letters, digits and single inner underscores.
 USERNAME_PATTERN = re.compile(r'(?!_)(?!.*__)(?!.*_$)[A-Za-z0-9_]+')
 
-def _page(title: str, body: str, *, title_color: str = TITLE_COLOR) -> str:
-    """One signup page: a centered panel (shared browser page style)."""
+# Served next to every signup page (see the module docstring).
+LOGO_NAME = 'opensnap_logo.png'
+LOGO_PNG = (Path(__file__).resolve().parents[1] / 'data' / 'logo' / 'opensnap_logo_ps2.png').read_bytes()
+LOGO_HTML = f'<img src="{LOGO_NAME}" width="240" height="42" alt="openSN@P"><br>\n<br>\n'
 
-    return document(panel(title, body, title_color=title_color))
+
+def _page(title: str, body: str, *, title_color: str = TITLE_COLOR) -> str:
+    """One signup page: the logo over a centered panel (shared browser page style)."""
+
+    return document(LOGO_HTML + panel(title, body, title_color=title_color))
 
 
 def signup_index_page(max_username_length: int = MAX_USERNAME_LENGTH) -> str:
@@ -203,6 +219,11 @@ def add_signup_routes(
 
     add_routes(blueprint, [f'{directory}create_id.html' for directory in directories], create_id, methods=('GET', 'POST'))
     add_routes(blueprint, [f'{directory}create_id_<username>.html' for directory in directories], create_id)
+    add_routes(
+        blueprint,
+        [f'{directory}{LOGO_NAME}' for directory in directories],
+        lambda **_kwargs: Response(LOGO_PNG, mimetype='image/png'),
+    )
 
 
 def _signup_response(

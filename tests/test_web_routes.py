@@ -210,6 +210,15 @@ class WebRouteTests(unittest.TestCase):
         self.assertIn('action="create_id.html"', text)
         self.assertIn('type="submit"', text)
 
+    def test_signup_pages_show_the_logo_served_next_to_them(self) -> None:
+        for directory in ('/amweb/', '/ftpublicbeta/reg/', '/'):
+            self.assertIn('<img src="opensnap_logo.png"', self._client.get(directory).get_data(as_text=True))
+            response = self._client.get(f'{directory}opensnap_logo.png')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.mimetype, 'image/png')
+            # 8-bit RGB (colour type 2), the only PNG every game browser decodes.
+            self.assertEqual(response.data[24:26], b'\x08\x02')
+
     def test_beta_root_index_route_is_available(self) -> None:
         response = self._client.get('/ftpublicbeta/reg/')
         self.assertEqual(response.status_code, 200)

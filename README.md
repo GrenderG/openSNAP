@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="data/logo/opensnap_logo.svg" alt="openSN@P" width="600">
+</p>
+
 # openSNAP
 
 An open, clean-room server for SEGA's SN@P online middleware, bringing PlayStation 2 online games back.
