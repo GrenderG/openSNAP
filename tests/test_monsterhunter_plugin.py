@@ -76,7 +76,24 @@ EU_STOCK_STAMP = b'0502180939'
 NA_STOCK_STAMP = b'0407251750'
 # The patches the repository ships, as `tools/monsterhunter` built them.
 DATA_DIRECTORY = Path(__file__).resolve().parents[1] / 'data' / 'monsterhunter'
-PATCHES = load_patches(DATA_DIRECTORY)
+
+
+def _copy_patches(data_directory: Path, *, enabled: bool = True) -> None:
+    """Copy the built patches into a test data directory, all set to `enabled`."""
+
+    shutil.copytree(DATA_DIRECTORY / 'patches', data_directory / 'patches')
+    manifest_path = data_directory / 'patches' / 'patches.json'
+    manifest = json.loads(manifest_path.read_text())
+    for entry in manifest.values():
+        entry['enabled'] = enabled
+    manifest_path.write_text(json.dumps(manifest))
+
+
+# The built patches are disabled (they cannot install without a signed DNAS
+# header); the delivery tests serve an enabled copy.
+_ENABLED_PATCHES = tempfile.TemporaryDirectory()
+_copy_patches(Path(_ENABLED_PATCHES.name))
+PATCHES = load_patches(Path(_ENABLED_PATCHES.name))
 EU_PATCH = PATCHES[EU_STOCK_STAMP]
 NA_PATCH = PATCHES[NA_STOCK_STAMP]
 # `PatchExecCS` keeps the decoded EU blob at `0x0039e300`.
@@ -1398,7 +1415,7 @@ class AppServiceTests(unittest.TestCase):
         temp_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temp_directory.cleanup)
         self.data_directory = Path(temp_directory.name)
-        shutil.copytree(DATA_DIRECTORY / 'patches', self.data_directory / 'patches')
+        _copy_patches(self.data_directory)
         connection = SqliteConnection(self.data_directory / 'records.sqlite')
         self.addCleanup(connection.close)
         self.records = SqlRecordStore(connection)
@@ -1698,6 +1715,11 @@ class AppServiceTests(unittest.TestCase):
         self.assertEqual(downloaded, NA_PATCH.blob)
         # NA goes on with its Information page (state 33) after the last chunk.
         self.assertEqual(self._exchange(client, buffer, 0x6401), b'\x00\x00')
+
+    def test_disabled_patches_are_not_loaded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _copy_patches(Path(directory), enabled=False)
+            self.assertEqual(load_patches(Path(directory)), {})
 
     def test_patched_na_gets_no_patch(self) -> None:
         client, buffer = self._connect()

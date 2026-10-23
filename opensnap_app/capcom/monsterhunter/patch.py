@@ -3,10 +3,11 @@
 How a server installs a code patch in every Monster Hunter build openSNAP
 serves, and how to write one. Patches are built by `tools/monsterhunter` into
 `data/monsterhunter/patches` (`patches.json` names each blob, its 6001 name
-and version, and the client versions it is offered to); the service only
-loads and serves them. Builds: retail NA (`SLUS_208.96`), retail EU
-(`SLES_527.07`), the EU demo (`SLED_530.83`), the EU test build
-(`TLES_527.07`) and the NA public beta (`SLUS_291.10`). Integers on the APP
+and version, the client versions it is offered to, whether it is enabled and
+its changelog); the service only loads them and offers the enabled ones.
+Builds: retail NA (`SLUS_208.96`), retail EU (`SLES_527.07`), the EU demo
+(`SLED_530.83`), the EU test build (`TLES_527.07`) and the NA public beta
+(`SLUS_291.10`). Integers on the APP
 wire are big-endian (`protocol.py`), everything inside the patch blob is
 little-endian.
 
@@ -69,6 +70,18 @@ Retail NA and EU, and the EU demo: delivery and install
 4. Load-back: NA when its game save is loaded (`0x2407b0`, `0x242514`), EU
    and the demo only on entering online mode (EU `0x2307c0`, `0x232510`). The
    stored blob is applied only when its name sorts above the version string.
+
+DNAS install header. `InetDNAS2PersonalEncode` (EU `0xaafbd0` in
+`dnas_ins`) only accepts a download that starts with a 0x580-byte DNAS
+install header, whose records are RSA-1024 signatures checked with public
+keys in `dnas_ins` (key 83 first; the worker `0xaa3430`). The private keys
+are not on the client, so openSNAP cannot make the header, and the blobs
+built by `tools/monsterhunter` cannot be distributed as they are: a download
+under 0x580 bytes makes the client poll forever (the "100%" install hang),
+a longer one fails the signature check with a DNAS error. Both outcomes were
+reproduced by emulating the client's own code on retail EU and NA (the
+record check is `c^65537 mod n` with key 83's modulus, then PKCS#1 type-1
+unpadding, `0xaacc48`). Their `patches.json` entries are therefore disabled.
 
 Version string and naming. The version field of the client's 1002 answer is
 its build stamp (`YYMMDDhhmm` of `__DATE__`/`__TIME__`) or the installed patch
@@ -141,7 +154,7 @@ class ClientPatch:
 
 
 def load_patches(data_directory: Path) -> dict[bytes, ClientPatch]:
-    """Read `patches/patches.json` (written by `tools/monsterhunter`) into {client version: patch}."""
+    """Read the enabled patches of `patches/patches.json` into {client version: patch}."""
 
     directory = data_directory / PATCHES_DIRECTORY
     manifest_path = directory / MANIFEST_NAME
@@ -149,6 +162,9 @@ def load_patches(data_directory: Path) -> dict[bytes, ClientPatch]:
         return {}
     by_version: dict[bytes, ClientPatch] = {}
     for build, entry in json.loads(manifest_path.read_text()).items():
+        if not entry['enabled']:
+            _LOGGER.info('Client patch %s (%s) is disabled.', build, entry['name'])
+            continue
         patch = ClientPatch(
             name=entry['name'].encode('ascii'),
             version=entry['version'].encode('ascii'),

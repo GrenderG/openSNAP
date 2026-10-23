@@ -2,8 +2,12 @@
 
 Run `python3 -m tools.monsterhunter.build_na_patch` from the repository root;
 it needs the MIPS binutils (`mipsel-linux-gnu-as`, `-ld`, `-objcopy`, `-nm`)
-and writes `data/monsterhunter/patches/na.bin` and its `patches.json` entry.
-Design and evidence: `tasks/re_mh_na_patches.md`.
+and writes `data/monsterhunter/patches/na_<version>.bin` and its
+`patches.json` entry, disabled: the blob has no signed DNAS install header,
+so retail NA cannot install it (`opensnap_app/capcom/monsterhunter/patch.py`).
+The code is in `na/patch.s`: key-0 pokes plus one resident block (key
+`0xffffffff`) at `0x3d99a0..0x3d9faf` of the NA resident blob, the fold stub
+first, then A. Interpreter-tested only, not run in game.
 
 - A: quest clear time and per-quest kill counts are kept in the resident block
   and sent after 6306 as EU's 6307 (kind 1 counts, kind 2 weapon class and
@@ -25,6 +29,10 @@ NA_STOCK_VERSION = b'0407251750'
 # `YYMMDDhhmm` like the stamp it replaces, so the game's version reads alike.
 PATCH_NAME = b'2610221900'
 PATCH_VERSION = b'1001'
+CHANGELOG = (
+    'Quest clear times and kill counts are sent like EU, for the rankings.',
+    'EU players\' accented text is shown as plain ASCII.',
+)
 NA_RESIDENT_BLOB = 0x003D9980
 SOURCE = Path(__file__).resolve().parent / 'na' / 'patch.s'
 
@@ -124,4 +132,7 @@ def original_words() -> list[tuple[int, int, bytes]]:
 
 
 if __name__ == '__main__':
-    print(write_patch('na', PATCH_NAME, PATCH_VERSION, [NA_STOCK_VERSION], build()))
+    print(write_patch(
+        'na', PATCH_NAME, PATCH_VERSION, [NA_STOCK_VERSION], build(),
+        enabled=False, changelog=CHANGELOG,
+    ))

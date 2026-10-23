@@ -1,18 +1,28 @@
 {
   "eu": {
-    "file": "eu.bin",
+    "file": "eu_1001.bin",
     "name": "2610221800",
     "version": "1001",
     "offered_to": [
       "0502180939"
+    ],
+    "enabled": false,
+    "changelog": [
+      "The Chrome Voucher shows its description in every language.",
+      "The GMR Chrome Heart shows its own description instead of the first Great Sword's."
     ]
   },
   "na": {
-    "file": "na.bin",
+    "file": "na_1001.bin",
     "name": "2610221900",
     "version": "1001",
     "offered_to": [
       "0407251750"
+    ],
+    "enabled": false,
+    "changelog": [
+      "Quest clear times and kill counts are sent like EU, for the rankings.",
+      "EU players' accented text is shown as plain ASCII."
     ]
   }
 }

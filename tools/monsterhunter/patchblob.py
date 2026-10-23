@@ -1,8 +1,11 @@
 """Monster Hunter code patch blobs and the `data/monsterhunter/patches` folder.
 
 The blob format, keys and resident addresses are documented in
-`opensnap_app/capcom/monsterhunter/patch.py`; the server serves what the
-builders write here.
+`opensnap_app/capcom/monsterhunter/patch.py`; the server offers what the
+builders write here when its entry is enabled. A blob is only the plain
+`M-HUNTER` patch: retail NA/EU install it only behind a Sony-signed 0x580 DNAS
+install header, which cannot be made here (see `patch.py`), so these blobs
+cannot be distributed as they are and their entries are written disabled.
 """
 
 from collections.abc import Callable, Sequence
@@ -53,21 +56,35 @@ def text_blob(
     return blob(magic, [entry(RESIDENT_DATA_KEY, 0, data), *(entry(*poke) for poke in pokes(addresses))])
 
 
-def write_patch(build: str, name: bytes, version: bytes, offered_to: Sequence[bytes], data: bytes) -> Path:
-    """Write `<build>.bin` and its `patches.json` entry; return the blob path."""
+def write_patch(
+    build: str,
+    name: bytes,
+    version: bytes,
+    offered_to: Sequence[bytes],
+    data: bytes,
+    *,
+    enabled: bool,
+    changelog: Sequence[str],
+) -> Path:
+    """Write `<build>_<version>.bin` and its `patches.json` entry; return the blob path."""
 
     if len(name) != 10 or len(version) != 4:
         raise ValueError('a patch needs a 10-character name and a 4-character version')
     PATCHES_DIRECTORY.mkdir(parents=True, exist_ok=True)
-    path = PATCHES_DIRECTORY / f'{build}.bin'
+    path = PATCHES_DIRECTORY / f'{build}_{version.decode("ascii")}.bin'
     path.write_bytes(data)
     manifest_path = PATCHES_DIRECTORY / MANIFEST_NAME
     manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
+    previous = manifest.get(build, {}).get('file')
+    if previous is not None and previous != path.name:
+        (PATCHES_DIRECTORY / previous).unlink(missing_ok=True)
     manifest[build] = {
         'file': path.name,
         'name': name.decode('ascii'),
         'version': version.decode('ascii'),
         'offered_to': [stamp.decode('ascii') for stamp in offered_to],
+        'enabled': enabled,
+        'changelog': list(changelog),
     }
     manifest_path.write_text(json.dumps(dict(sorted(manifest.items())), indent=2) + '\n')
     return path

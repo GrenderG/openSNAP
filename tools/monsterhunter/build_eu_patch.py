@@ -1,7 +1,9 @@
 """Build the retail EU (`SLES_527.07`) description patch.
 
 Run `python3 -m tools.monsterhunter.build_eu_patch` from the repository root;
-it writes `data/monsterhunter/patches/eu.bin` and its `patches.json` entry.
+it writes `data/monsterhunter/patches/eu_<version>.bin` and its `patches.json`
+entry, disabled: the blob has no signed DNAS install header, so retail EU
+cannot install it (`opensnap_app/capcom/monsterhunter/patch.py`).
 """
 
 import struct
@@ -26,6 +28,10 @@ EU_STOCK_VERSION = b'0502180939'
 # `YYMMDDhhmm` like the stamp it replaces, so the game's "Media Version" reads alike.
 PATCH_NAME = b'2610221800'
 PATCH_VERSION = b'1001'
+CHANGELOG = (
+    'The Chrome Voucher shows its description in every language.',
+    'The GMR Chrome Heart shows its own description instead of the first Great Sword\'s.',
+)
 EU_RESIDENT_BLOB = 0x0039E300
 # EU applies a loaded patch for key 0 and the loaded overlay of slots 1, 2 and
 # 4, never slot 3, the text overlay (`0x00248858..0x002488bc`, and right after
@@ -84,4 +90,7 @@ def build() -> bytes:
 
 
 if __name__ == '__main__':
-    print(write_patch('eu', PATCH_NAME, PATCH_VERSION, [EU_STOCK_VERSION], build()))
+    print(write_patch(
+        'eu', PATCH_NAME, PATCH_VERSION, [EU_STOCK_VERSION], build(),
+        enabled=False, changelog=CHANGELOG,
+    ))
