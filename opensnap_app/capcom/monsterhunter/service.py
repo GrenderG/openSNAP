@@ -80,7 +80,18 @@ CMD_APP_NETWORK_SETTINGS = 0x6110
 CMD_APP_HUNT_TUNING = 0x6210
 CMD_APP_AUTH_SUFFIX = 0x6220
 CMD_APP_QUEST_RECORD = 0x6307
-# Download lists; EU APP1 asks for them after the TOP_INFOR page.
+# Download lists; EU APP1 asks for them after the TOP_INFOR page. Each is a
+# `u16 count, count x u32 size` reply the client pulls page-by-page; count 0
+# means "nothing", which keeps the client's built-in pages. They are three
+# distinct lists (different buffers, consumers and page caps), not one:
+# - 6401: up to 8 on-screen text pages (<= 1 KB each, `<BR>/<SIZE>/<END>`
+#   markup) shown in the paged notice viewer during the DNAS/online-connect
+#   flow -- the same role as Resident Evil Outbreak's DNAS/SCEA notice pages
+#   (handler NA `0x002aff70`, viewer `0x00245380`; clamps count to 8).
+# - 6403: up to 2 pages (handler NA `0x002b0490`).
+# - 6105: up to 8 pages (handler NA `0x002b1380`).
+# openSNAP answers all three with count 0. (The NA client does not clamp the
+# count it reads for 0x6203/0x6503, so never over-count those in a reply.)
 CMD_APP_DOWNLOAD_LIST = 0x6401
 CMD_APP_DOWNLOAD_LIST_6403 = 0x6403
 CMD_APP_DOWNLOAD_LIST_6105 = 0x6105
