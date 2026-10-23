@@ -367,8 +367,9 @@ class RecordPages:
             + ''.join(lines)
             + f'<br>\n<a href="{BROWSER_CLOSE_LINK}">Close</a><br>\n',
         ) + (
-            # EU uploads quest records (6307); NA only with the openSNAP client patch.
-            f'<br>\n<font color="{NOTE_COLOR}">NA needs the openSNAP patch for quest records.</font><br>\n'
+            # Only the EU build uploads quest records (6307); NA only with the openSNAP client patch.
+            f'<br>\n<font color="{NOTE_COLOR}">Unless patched, only the European release sends<br>\n'
+            'quest and monster records, so those rankings<br>\nlist EU players only.</font><br>\n'
         )
 
     def _hunter_rank_points(self, number: int, links: '_Links') -> str | None:

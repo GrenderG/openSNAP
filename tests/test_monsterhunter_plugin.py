@@ -1953,7 +1953,7 @@ class AppServiceTests(unittest.TestCase):
         self.assertIn('<a href="lbs://lbs/03/04/RANK_HUNT_1.HTM">Hunt quests</a> (1 quest)', text)
         self.assertIn('<a href="lbs://lbs/03/04/RANK_EVNT_1.HTM">Event quests</a> (0 quests)', text)
         self.assertNotIn('Other quests', text)
-        self.assertIn('NA needs the openSNAP patch for quest records.', text)
+        self.assertIn('Unless patched, only the European release sends', text)
         self.assertIn('<a href="AMUSA_MENU_BACK">Close</a>', text)
 
     def test_na_record_pages_link_to_02(self) -> None:
