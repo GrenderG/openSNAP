@@ -513,6 +513,22 @@ class MonsterHunterFlowTests(unittest.TestCase):
         self.assertEqual({arrival.endpoint for arrival in arrivals}, {guest[0], waiting[0]})
         self.assertEqual(set(self._roster(host, quest_id)), {host[1], guest[1], waiting[1]})
 
+    def test_town_select_roster_lists_hunters_away_on_a_quest(self) -> None:
+        # The select screen's Player List uses the Town join's roster request
+        # (`0x006181e0`); only a requester outside the Town gets the listing.
+        town_id = self._town_with_residents()
+        host, guest, waiting = self.players
+        self._join(waiting, town_id)
+        self._publish(host, self._profile(1, departing=True))
+        self._send(host, commands.CMD_LEAVE)
+        quest_id = self._create(host, QUEST_RULES)
+        self._stat(host, QUEST_STARTED_RULES)
+
+        self.assertEqual(self._roster(waiting, town_id), sorted((guest[1], waiting[1])))
+        self._send(waiting, commands.CMD_LEAVE)
+        self.assertEqual(self._roster(waiting, town_id), sorted((host[1], guest[1])))
+        self.assertEqual(self._roster(waiting, quest_id), [host[1]])
+
     def test_preparation_to_another_player_does_not_mark_the_sender(self) -> None:
         town_id = self._town_with_residents()
         host, guest, _ = self.players

@@ -84,10 +84,11 @@ STAT_ATTRIBUTE = b'STAT'
 # client leaves its Town with a plain room leave, and the members drop it
 # from their member table and the Town only on the leave callback
 # (`0x00619590` -> `0x0060f190`). The leave is announced like any other,
-# rosters hold the hunters in the room, and the return is announced as an
-# arrival. Only the Town's counts (directory row and room `USER`) keep the
-# listing, so that the Town select screen joins the Town rather than
-# creating it again (see `_handle_query_attribute`).
+# rosters sent inside the Town hold the hunters in the room, and the return
+# is announced as an arrival. The Town's counts (directory row and room
+# `USER`) keep the listing, so that the Town select screen joins the Town
+# rather than creating it again (see `_handle_query_attribute`), and so does
+# the roster sent to that screen (see `_handle_query_user`).
 # The departure is announced differently by the two sides (`lobby.bin`):
 # - Guests publish profile `+136/+137 = 3/5` (release layout; `0x0061cb64`, step 0 of the
 #   guest machine `0x0061c7a0`) before their room leave (step 4, `0x0061cdd0`).
@@ -410,6 +411,15 @@ class MonsterHunterPlugin(GamePlugin):
         callbacks append each page's `count` records (their indexes are reset
         only by the request, room `0x006182c0`, Area `0x00613d38`), so a
         roster longer than one reply goes out as pages.
+
+        The Town select screen's Player List asks with the same request and
+        callback as the Town join (`0x006181e0` from `0x00604530`), but only
+        a requester in the room (the join `0x00603ea4`, the return from a
+        quest `0x00603f90`) turns each record into a Town slot (`0x006041b0`,
+        loop `0x00604230`). So hunters away on a quest are listed to a
+        requester outside the room only. Their quests stay off its Quest
+        Info: the client keeps only posted or joined profiles (release
+        `+136` 1 or 2, `0x00613d94`), and a departing hunter publishes 3.
         """
 
         session = resolve_session(context, message, _LOGGER)
@@ -420,7 +430,13 @@ class MonsterHunterPlugin(GamePlugin):
         requested_id = get_u32(message.payload, 0)
         if channel_type == FLAG_ROOM:
             room_id = self._server_room_id(session, requested_id)
-            member_ids = sorted(member.session_id for member in context.sessions.list_room_members(room_id))
+            room = context.rooms.get(room_id)
+            # Town select screen: every listed hunter, those away on a quest included.
+            if room is not None and session.room_id != room_id:
+                member_ids = sorted(room.members)
+            # Inside the room: only the hunters physically there.
+            else:
+                member_ids = sorted(member.session_id for member in context.sessions.list_room_members(room_id))
         else:
             # The Area roster feeds the hunter search, whose results can be
             # registered as Friends; its filter (`0x00613f10`) never skips the
