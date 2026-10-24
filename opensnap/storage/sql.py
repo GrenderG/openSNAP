@@ -16,8 +16,9 @@ from typing import Any, Protocol
 from opensnap.core.accounts import (
     Account,
     build_account,
-    normalize_password_record,
-    normalize_seed,
+    encode_password_record,
+    generate_recovery_code,
+    generate_seed,
     open_kage_login_key,
     seal_kage_login_key,
 )
@@ -63,19 +64,6 @@ class SqlConnection(Protocol):
         """Release the connection."""
 
 
-def upgrade_password_records(connection: SqlConnection) -> None:
-    """Encode accounts still stored with legacy cleartext passwords."""
-
-    for row in connection.query_all('SELECT user_id, password, seed FROM users'):
-        seed = normalize_seed(str(row['seed']))
-        password_record = normalize_password_record(str(row['password']), seed)
-        if password_record != str(row['password']) or seed != str(row['seed']):
-            connection.execute(
-                'UPDATE users SET password = ?, seed = ? WHERE user_id = ?',
-                (password_record, seed, int(row['user_id'])),
-            )
-
-
 class SqlAccountStore:
     """Accounts in the shared store.
 
@@ -107,17 +95,39 @@ class SqlAccountStore:
         )
 
     def create_user(self, username: str, password: str) -> Account:
-        seed = normalize_seed('')
-        password_record = normalize_password_record(password, seed)
+        seed = generate_seed()
+        password_record = encode_password_record(password, seed)
+        recovery_code = generate_recovery_code()
         try:
             user_id = self._connection.insert(
-                'INSERT INTO users (username, password, seed, team) VALUES (?, ?, ?, ?)',
-                (username, password_record, seed, ''),
+                'INSERT INTO users (username, password, seed, team, recovery_code) VALUES (?, ?, ?, ?, ?)',
+                (username, password_record, seed, '', recovery_code),
                 key='user_id',
             )
         except self._connection.integrity_error as exc:
             raise DuplicateAccountError(username) from exc
-        return build_account(user_id=user_id, username=username, password_record=password_record, seed=seed, team='')
+        return build_account(
+            user_id=user_id,
+            username=username,
+            password_record=password_record,
+            seed=seed,
+            team='',
+            recovery_code=recovery_code,
+        )
+
+    def recover(self, username: str, recovery_code: str, password: str) -> Account | None:
+        account = self.get_by_name(username)
+        if account is None:
+            return None
+        new_code = generate_recovery_code()
+        # Matching the old code in the update lets only one of two concurrent recoveries change the account.
+        self._connection.execute(
+            'UPDATE users SET password = ?, recovery_code = ?, kage_login_key = NULL '
+            'WHERE user_id = ? AND recovery_code = ?',
+            (encode_password_record(password, account.seed), new_code, account.user_id, recovery_code),
+        )
+        recovered = self.get_by_id(account.user_id)
+        return recovered if recovered is not None and recovered.recovery_code == new_code else None
 
     def _account_from_row(self, row: Row | None) -> Account | None:
         if row is None:
@@ -130,10 +140,11 @@ class SqlAccountStore:
             seed=str(row['seed']),
             team=str(row['team']),
             kage_login_key=open_kage_login_key(self._server_secret, username, row['kage_login_key']),
+            recovery_code=str(row['recovery_code']),
         )
 
 
-_ACCOUNT_COLUMNS = 'user_id, username, password, seed, team, kage_login_key'
+_ACCOUNT_COLUMNS = 'user_id, username, password, seed, team, kage_login_key, recovery_code'
 
 
 class SqlSessionHandoffStore:

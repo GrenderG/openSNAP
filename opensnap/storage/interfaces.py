@@ -37,7 +37,13 @@ class AccountStore(Protocol):
         """Store the password a KAGE-SDK game decrypts its bootstrap login reply with."""
 
     def create_user(self, username: str, password: str) -> Account:
-        """Create an account; raises `DuplicateAccountError` if the name exists."""
+        """Create an account with a new recovery code; raises `DuplicateAccountError` if the name exists."""
+
+    def recover(self, username: str, recovery_code: str, password: str) -> Account | None:
+        """Set a new password and recovery code if `recovery_code` is the account's; `None` otherwise.
+
+        The KAGE login key, the old password, is cleared.
+        """
 
 
 class SessionHandoffStore(Protocol):

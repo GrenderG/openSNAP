@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from opensnap.config import default_app_config
+from opensnap.core.accounts import verify_password
 from opensnap.storage.factory import create_storage
 from tests.support import create_accounts
 
@@ -209,6 +210,51 @@ class WebRouteTests(unittest.TestCase):
         self.assertIn('name="password" size="15" maxlength="15"', text)
         self.assertIn('action="create_id.html"', text)
         self.assertIn('type="submit"', text)
+
+    def test_logged_in_page_shows_the_account_recovery_code(self) -> None:
+        storage = create_storage(default_app_config())
+        self.addCleanup(storage.close)
+        code = storage.accounts.get_by_name('test').recovery_code
+        text = self._client.post('/amweb/create_id.html', data={'username': 'test', 'password': '1111'}).get_data(as_text=True)
+        self.assertIn(f'<td align="center" bgcolor="#000000"><font color="#FFFFFF"><b>{code}</b></font></td>', text)
+        text = self._client.post('/amweb/create_id.html', data={'username': 'newuser', 'password': '1111'}).get_data(as_text=True)
+        self.assertIn(storage.accounts.get_by_name('newuser').recovery_code, text)
+
+    def test_signup_form_has_a_recover_account_form_beside_it(self) -> None:
+        for directory in ('/amweb/', '/ftpublicbeta/reg/', '/'):
+            text = self._client.get(directory).get_data(as_text=True)
+            self.assertIn(
+                '<tr><td align="center"><input type="submit" value="Create / Log in"></form></td>'
+                '<td align="center"><form action="recover.html"><input type="submit" value="Recover account"></form>',
+                text,
+            )
+            text = self._client.get(f'{directory}recover.html').get_data(as_text=True)
+            self.assertIn('action="recover_id.html"', text)
+            self.assertIn('name="recovery_code" size="12" maxlength="12"', text)
+            self.assertIn(f'<a href="{directory}">Back</a>', text)
+        self.assertIn('name="username" size="7" maxlength="7"', self._client.get('/ftpublicbeta/reg/recover.html').get_data(as_text=True))
+
+    def test_recovery_sets_a_new_password_and_logs_in(self) -> None:
+        storage = create_storage(default_app_config())
+        self.addCleanup(storage.close)
+        code = storage.accounts.get_by_name('test').recovery_code
+        form = {'username': 'test', 'recovery_code': code.lower(), 'password': 'newpw'}
+        text = self._client.post('/ftpublicbeta/reg/recover_id.html', data=form).get_data(as_text=True)
+        account = storage.accounts.get_by_name('test')
+        self.assertIn('Password changed', text)
+        self.assertIn(f'<b>{account.recovery_code}</b>', text)
+        self.assertNotEqual(account.recovery_code, code)
+        self.assertTrue(text.endswith('<!--INPUT-IDS-->test<!--INPUT-IDE-->\n'))
+        self.assertTrue(verify_password(account, 'newpw'))
+        # A KAGE prefix stores the new password as the KAGE login key, as a login there does.
+        self.assertEqual(account.kage_login_key, b'newpw')
+
+        # The used code no longer works.
+        text = self._client.post('/ftpublicbeta/reg/recover_id.html', data=form).get_data(as_text=True)
+        self.assertIn('Wrong username or recovery code.', text)
+        self.assertIn('<a href="/ftpublicbeta/reg/recover.html">Try again</a>', text)
+        text = self._client.post('/recover_id.html', data={**form, 'recovery_code': 'short'}).get_data(as_text=True)
+        self.assertIn('Invalid recovery code.', text)
 
     def test_signup_pages_show_the_logo_served_next_to_them(self) -> None:
         for directory in ('/amweb/', '/ftpublicbeta/reg/', '/'):

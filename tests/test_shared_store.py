@@ -51,6 +51,28 @@ class SharedStoreContract:
         accounts.set_team(created.user_id, 'team-a')
         self.assertEqual(accounts.get_by_name('alice').team, 'team-a')
 
+    def test_recovery_code_sets_a_new_password_once(self) -> None:
+        accounts = self.storage.accounts
+        created = accounts.create_user('alice', 'secret')
+        self.assertRegex(created.recovery_code, r'^[A-Z0-9]{12}$')
+        self.assertEqual(accounts.get_by_name('alice').recovery_code, created.recovery_code)
+        accounts.set_kage_login_key(created, b'secret')
+
+        wrong = 'A' * 12 if created.recovery_code != 'A' * 12 else 'B' * 12
+        self.assertIsNone(accounts.recover('alice', wrong, 'other'))
+        self.assertIsNone(accounts.recover('nobody', created.recovery_code, 'other'))
+        self.assertTrue(verify_password(accounts.get_by_name('alice'), 'secret'))
+
+        recovered = accounts.recover('alice', created.recovery_code, 'other')
+        self.assertNotEqual(recovered.recovery_code, created.recovery_code)
+        self.assertEqual(recovered.seed, created.seed)
+        self.assertEqual(recovered.kage_login_key, b'')
+        stored = accounts.get_by_name('alice')
+        self.assertTrue(verify_password(stored, 'other'))
+        self.assertEqual(stored.recovery_code, recovered.recovery_code)
+        # The old code is spent.
+        self.assertIsNone(accounts.recover('alice', created.recovery_code, 'third'))
+
     def test_handoffs_are_issued_replaced_and_removed(self) -> None:
         handoffs = self.storage.handoffs
         account = self.storage.accounts.create_user('test', '1111')

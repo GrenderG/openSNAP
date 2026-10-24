@@ -91,11 +91,11 @@ class MariaDbConnection:
             'username VARCHAR(255) NOT NULL UNIQUE, '
             'password TEXT NOT NULL, '
             'seed TEXT NOT NULL, '
-            "team VARCHAR(255) NOT NULL DEFAULT ''"
+            "team VARCHAR(255) NOT NULL DEFAULT '', "
+            'kage_login_key TEXT NULL, '
+            'recovery_code TEXT NOT NULL'
             ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
         )
-        # Added after the table first shipped; older stores get the column here.
-        self.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS kage_login_key TEXT NULL')
         self.execute(
             'CREATE TABLE IF NOT EXISTS session_handoffs ('
             'serial BIGINT AUTO_INCREMENT PRIMARY KEY, '

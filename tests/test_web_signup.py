@@ -72,21 +72,6 @@ class SignupServiceTests(unittest.TestCase):
                 self.addCleanup(storage.close)
                 self.assertEqual(storage.accounts.get_by_name('alice').kage_login_key, b'')
 
-    def test_existing_store_gains_the_kage_login_key_column(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_directory:
-            database_path = f'{temp_directory}/old.sqlite'
-            with sqlite3.connect(database_path) as connection:
-                connection.execute(
-                    'CREATE TABLE users (user_id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE, '
-                    "password TEXT NOT NULL, seed TEXT NOT NULL, team TEXT NOT NULL DEFAULT '')"
-                )
-                connection.execute("INSERT INTO users (username, password, seed) VALUES ('old', 'pw12', 'seed')")
-            with patch.dict(os.environ, {'OPENSNAP_SQLITE_PATH': database_path}, clear=True):
-                storage = create_storage(default_app_config())
-                self.addCleanup(storage.close)
-                account = storage.accounts.get_by_name('old')
-                self.assertIsNotNone(account)
-                self.assertEqual(account.kage_login_key, b'')
 
 if __name__ == '__main__':
     unittest.main()

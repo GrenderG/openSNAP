@@ -55,6 +55,12 @@ Binary limits:
   `net_pass_entry` -> `kb_input_init2(.., 15)`, MH
   `Net_kb_input_init2(76, 312, password, 15)`).
 
+Forms: `<FORM>` and `</FORM>` each start a new line (MH `lobby.bin`
+`0x00646d50`, AM `tagoutprintf6` `0x006e2d10`), and a submit button sends
+only the fields of the nearest `FORM` before it (MH `0x0063e630`, AM
+`FormHandler` `0x006d74e0`) but not its own name. So the recovery form's
+button shares a line with the signup button only from a cell of its own.
+
 Logo: `IMG` takes `SRC/WIDTH/HEIGHT/ALT` (MH main `0x35e330`, AM `0x73a940`,
 Beta1 `0x8d7d70`) and resolves a relative `SRC` against the page. The decoder
 is chosen by the URL extension alone (AM `BsUrlFileExtensionGet` `0x6cf980`):
@@ -73,7 +79,7 @@ import re
 
 from flask import Blueprint, Response, request
 
-from opensnap.core.accounts import verify_password
+from opensnap.core.accounts import RECOVERY_CODE_ALPHABET, RECOVERY_CODE_LENGTH, verify_password
 from opensnap.core.browser_pages import ERROR_COLOR, NOTE_COLOR, TITLE_COLOR, document, panel
 from opensnap.storage.interfaces import AccountStore, DuplicateAccountError
 from opensnap_web.common import add_routes, html_response, page_view
@@ -87,6 +93,12 @@ MIN_PASSWORD_LENGTH = 4
 MAX_PASSWORD_LENGTH = 15
 # Letters, digits and single inner underscores.
 USERNAME_PATTERN = re.compile(r'(?!_)(?!.*__)(?!.*_$)[A-Za-z0-9_]+')
+RECOVERY_CODE_PATTERN = re.compile(f'[{RECOVERY_CODE_ALPHABET}]{{{RECOVERY_CODE_LENGTH}}}')
+# The recovery code on the logged-in page.
+RECOVERY_CODE_BACKGROUND = '#000000'
+RECOVERY_CODE_COLOR = '#FFFFFF'
+# The recovery form, next to the signup form.
+RECOVER_PAGE = 'recover.html'
 
 # Served next to every signup page (see the module docstring).
 LOGO_NAME = 'opensnap_logo.png'
@@ -94,49 +106,80 @@ LOGO_PNG = (Path(__file__).resolve().parents[1] / 'data' / 'logo' / 'opensnap_lo
 LOGO_HTML = f'<img src="{LOGO_NAME}" width="240" height="42" alt="openSN@P"><br>\n<br>\n'
 
 
-def _page(title: str, body: str, *, title_color: str = TITLE_COLOR) -> str:
+def _page(title: str, body: str, *, title_color: str = TITLE_COLOR, rows: tuple[str, ...] = (), columns: int = 1) -> str:
     """One signup page: the logo over a centered panel (shared browser page style)."""
 
-    return document(LOGO_HTML + panel(title, body, title_color=title_color))
+    return document(LOGO_HTML + panel(title, body, title_color=title_color, rows=rows, columns=columns))
+
+
+def _field(label: str, kind: str, name: str, length: int) -> str:
+    return f'{label}: <input type="{kind}" name="{name}" size="{length}" maxlength="{length}"><br>\n'
 
 
 def signup_index_page(max_username_length: int = MAX_USERNAME_LENGTH) -> str:
     """The signup form, for usernames of at most `max_username_length` characters."""
 
+    # The recovery form sits in the button row's second cell (see the module docstring).
     return _page(
         'openSNAP signup service',
         'Create an account with a new username<br>\n'
         'and password, or log in with an existing one.<br>\n'
         '<br>\n'
         '<form action="create_id.html" method="post">\n'
-        'Username: '
-        f'<input type="text" name="username" size="{max_username_length}" maxlength="{max_username_length}">'
-        '<br>\n'
-        'Password: '
-        f'<input type="password" name="password" size="{MAX_PASSWORD_LENGTH}" maxlength="{MAX_PASSWORD_LENGTH}">'
-        '<br>\n'
-        '<br>\n'
+        + _field('Username', 'text', 'username', max_username_length)
+        + _field('Password', 'password', 'password', MAX_PASSWORD_LENGTH)
+        + '<br>\n'
         f'<font color="{NOTE_COLOR}">'
         f'Username: {MIN_USERNAME_LENGTH}-{max_username_length} letters, digits or _.<br>\n'
+        f'Password: {MIN_PASSWORD_LENGTH}-{MAX_PASSWORD_LENGTH} characters.</font><br>\n',
+        rows=(
+            '<tr><td align="center"><input type="submit" value="Create / Log in"></form></td>'
+            f'<td align="center"><form action="{RECOVER_PAGE}"><input type="submit" value="Recover account"></form>'
+            '</td></tr>',
+        ),
+        columns=2,
+    )
+
+
+def recover_index_page(directory: str, max_username_length: int = MAX_USERNAME_LENGTH) -> str:
+    """The recovery form of the signup `directory`: username, recovery code and a new password."""
+
+    return _page(
+        'Recover account',
+        'Enter your username, your recovery code<br>\n'
+        'and a new password for the account.<br>\n'
+        '<br>\n'
+        '<form action="recover_id.html" method="post">\n'
+        + _field('Username', 'text', 'username', max_username_length)
+        + _field('Recovery code', 'text', 'recovery_code', RECOVERY_CODE_LENGTH)
+        + _field('New password', 'password', 'password', MAX_PASSWORD_LENGTH)
+        + '<br>\n'
+        f'<font color="{NOTE_COLOR}">'
+        f'Recovery code: {RECOVERY_CODE_LENGTH} letters or digits.<br>\n'
         f'Password: {MIN_PASSWORD_LENGTH}-{MAX_PASSWORD_LENGTH} characters.</font><br>\n'
         '<br>\n'
-        '<center><input type="submit" value="Create / Log in"></center>\n'
-        '</form>\n',
+        'Your recovery code changes once it is used.<br>\n'
+        '<br>\n'
+        '<center><input type="submit" value="Recover account"></center>\n'
+        '</form>\n'
+        '<br>\n'
+        f'<center><a href="{directory}">Back</a></center>\n',
     )
 
 
 @dataclass(frozen=True, slots=True)
 class SignupResult:
-    """Outcome of one signup/login request."""
+    """Outcome of one signup, login or recovery request."""
 
     ok: bool
     username: str
     created: bool
     error_message: str = ''
+    recovery_code: str = ''
 
 
 class SignupService:
-    """Create missing accounts or log in existing ones."""
+    """Create missing accounts, log in existing ones or recover them."""
 
     def __init__(self, accounts: AccountStore) -> None:
         self._accounts = accounts
@@ -162,7 +205,21 @@ class SignupService:
         if store_kage_login_key:
             self._accounts.set_kage_login_key(account, password.encode('utf-8'))
         LOGGER.info('%s account via web signup for user %s.', 'Created' if created else 'Accepted', username)
-        return SignupResult(True, username, created)
+        return SignupResult(True, username, created, recovery_code=account.recovery_code)
+
+    def recover(
+        self, *, username: str, recovery_code: str, password: str, store_kage_login_key: bool = False
+    ) -> SignupResult:
+        """Set a new password and recovery code; a success is also a login."""
+
+        account = self._accounts.recover(username, recovery_code, password)
+        if account is None:
+            LOGGER.warning('Rejected web account recovery for user %s.', username)
+            return SignupResult(False, username, False, 'Wrong username or recovery code.')
+        if store_kage_login_key:
+            self._accounts.set_kage_login_key(account, password.encode('utf-8'))
+        LOGGER.info('Recovered account via web signup for user %s.', username)
+        return SignupResult(True, username, False, recovery_code=account.recovery_code)
 
 
 def is_valid_username(username: str, max_length: int = MAX_USERNAME_LENGTH) -> bool:
@@ -173,8 +230,21 @@ def is_valid_password(password: str) -> bool:
     return MIN_PASSWORD_LENGTH <= len(password.encode('utf-8')) <= MAX_PASSWORD_LENGTH
 
 
+def is_valid_recovery_code(recovery_code: str) -> bool:
+    return RECOVERY_CODE_PATTERN.fullmatch(recovery_code) is not None
+
+
 # Return link of the games without their own entry in `return_links`.
 DEFAULT_RETURN_LINK = 'AMUSA_MENU_BACK'
+
+
+@dataclass(frozen=True, slots=True)
+class _Directory:
+    """What one signup directory's pages need."""
+
+    return_link: str
+    store_kage_login_key: bool
+    max_username_length: int
 
 
 def add_signup_routes(
@@ -187,7 +257,7 @@ def add_signup_routes(
     kage_prefixes: tuple[str, ...] = (),
     max_username_lengths: Mapping[str, int] | None = None,
 ) -> None:
-    """Serve the signup index and create-id pages under each prefix.
+    """Serve the signup and recovery pages under each prefix.
 
     `return_links` maps a prefix to its game's browser exit link when that
     game lacks `DEFAULT_RETURN_LINK` (see the module docstring). Logins on
@@ -195,30 +265,46 @@ def add_signup_routes(
     `max_username_lengths` maps a prefix to a shorter username limit.
     """
 
-    # The form posts to the relative `create_id.html`, so every directory that
-    # serves the form also serves the create-id pages.
+    # The forms post to relative pages, so every directory that serves the
+    # forms also serves the pages they post to.
     max_username_lengths = max_username_lengths or {}
     directories = [f'/{prefix}/' for prefix in prefixes]
     for prefix in prefixes:
-        page = signup_index_page(max_username_lengths.get(prefix, MAX_USERNAME_LENGTH))
-        add_routes(blueprint, [f'/{prefix}/', f'/{prefix}/index.jsp'], page_view(page))
+        max_username_length = max_username_lengths.get(prefix, MAX_USERNAME_LENGTH)
+        add_routes(blueprint, [f'/{prefix}/', f'/{prefix}/index.jsp'], page_view(signup_index_page(max_username_length)))
+        add_routes(blueprint, [f'/{prefix}/{RECOVER_PAGE}'], page_view(recover_index_page(f'/{prefix}/', max_username_length)))
     if root_aliases:
         directories.append('/')
         add_routes(blueprint, ['/', '/login.php'], page_view(signup_index_page()))
+        add_routes(blueprint, [f'/{RECOVER_PAGE}'], page_view(recover_index_page('/')))
+
+    def current_directory() -> _Directory:
+        prefix = request.path.rsplit('/', 1)[0].strip('/')
+        return _Directory(
+            (return_links or {}).get(prefix, DEFAULT_RETURN_LINK),
+            prefix in kage_prefixes,
+            max_username_lengths.get(prefix, MAX_USERNAME_LENGTH),
+        )
 
     def create_id(username: str | None = None, **_kwargs: str) -> Response:
         if username is None:
             username = request.values.get('username') or ''
         password = (request.values.get('password') or '').strip()
-        prefix = request.path.rsplit('/', 1)[0].strip('/')
-        return_link = (return_links or {}).get(prefix, DEFAULT_RETURN_LINK)
-        max_username_length = max_username_lengths.get(prefix, MAX_USERNAME_LENGTH)
-        return _signup_response(
-            service, username.strip(), password, return_link, prefix in kage_prefixes, max_username_length
+        return _signup_response(service, current_directory(), username.strip(), password)
+
+    def recover_id() -> Response:
+        return _recover_response(
+            service,
+            current_directory(),
+            (request.values.get('username') or '').strip(),
+            # The code is upper case; the browser keyboard may type it in lower case.
+            (request.values.get('recovery_code') or '').strip().upper(),
+            (request.values.get('password') or '').strip(),
         )
 
     add_routes(blueprint, [f'{directory}create_id.html' for directory in directories], create_id, methods=('GET', 'POST'))
     add_routes(blueprint, [f'{directory}create_id_<username>.html' for directory in directories], create_id)
+    add_routes(blueprint, [f'{directory}recover_id.html' for directory in directories], recover_id, methods=('GET', 'POST'))
     add_routes(
         blueprint,
         [f'{directory}{LOGO_NAME}' for directory in directories],
@@ -226,39 +312,83 @@ def add_signup_routes(
     )
 
 
-def _signup_response(
-    service: SignupService,
-    username: str,
-    password: str,
-    return_link: str,
-    store_kage_login_key: bool,
-    max_username_length: int,
-) -> Response:
-    if not is_valid_username(username, max_username_length):
+def _signup_response(service: SignupService, directory: _Directory, username: str, password: str) -> Response:
+    if not is_valid_username(username, directory.max_username_length):
         return _error_page('Invalid username.')
     if not is_valid_password(password):
         return _error_page('Invalid password.')
-    result = service.create_or_login(username=username, password=password, store_kage_login_key=store_kage_login_key)
+    result = service.create_or_login(
+        username=username, password=password, store_kage_login_key=directory.store_kage_login_key
+    )
     if not result.ok:
         return _error_page(result.error_message)
+    return _account_ready(
+        'Account ready',
+        f'Welcome, <b>{result.username}</b>!<br>\n'
+        '<br>\n'
+        'Note down your recovery code and keep it<br>\n'
+        'safe: it sets a new password if you forget<br>\n'
+        'yours.<br>\n',
+        result,
+        directory,
+    )
+
+
+def _recover_response(
+    service: SignupService, directory: _Directory, username: str, recovery_code: str, password: str
+) -> Response:
+    if not is_valid_username(username, directory.max_username_length):
+        return _error_page('Invalid username.', RECOVER_PAGE)
+    if not is_valid_recovery_code(recovery_code):
+        return _error_page('Invalid recovery code.', RECOVER_PAGE)
+    if not is_valid_password(password):
+        return _error_page('Invalid password.', RECOVER_PAGE)
+    result = service.recover(
+        username=username,
+        recovery_code=recovery_code,
+        password=password,
+        store_kage_login_key=directory.store_kage_login_key,
+    )
+    if not result.ok:
+        return _error_page(result.error_message, RECOVER_PAGE)
+    return _account_ready(
+        'Password changed',
+        f'Welcome back, <b>{result.username}</b>!<br>\n'
+        '<br>\n'
+        'Your recovery code has changed. Note down<br>\n'
+        'the new one and keep it safe: the old one<br>\n'
+        'no longer works.<br>\n',
+        result,
+        directory,
+    )
+
+
+def _account_ready(title: str, body: str, result: SignupResult, directory: _Directory) -> Response:
+    """The logged-in page: `body`, the recovery code, and the ID the browser saves."""
+
     return html_response(
         _page(
-            'Account ready',
-            f'Welcome, <b>{result.username}</b>!<br>\n'
-            '<br>\n'
-            'Return to the game to save your username<br>\n'
-            'to the memory card.<br>\n'
-            '<br>\n'
-            f'<center><a href="{return_link}">Return to the game</a></center>\n',
+            title,
+            body,
+            rows=(
+                f'<tr><td align="center" bgcolor="{RECOVERY_CODE_BACKGROUND}">'
+                f'<font color="{RECOVERY_CODE_COLOR}"><b>{result.recovery_code}</b></font></td></tr>',
+                '<tr><td>\n'
+                'Return to the game to save your username<br>\n'
+                'to the memory card.<br>\n'
+                '<br>\n'
+                f'<center><a href="{directory.return_link}">Return to the game</a></center>\n'
+                '</td></tr>',
+            ),
         )
         + '<!--AM-USA-COMP-SIGNUP-->\n'
         f'<!--INPUT-IDS-->{result.username}<!--INPUT-IDE-->\n'
     )
 
 
-def _error_page(message: str) -> Response:
-    # Back to the signup form of the same directory (`/<prefix>/create_id*.html` -> `/<prefix>/`).
-    retry = request.path.rsplit('/', 1)[0] + '/'
+def _error_page(message: str, retry_page: str = '') -> Response:
+    # Back to a form of the same directory (`/<prefix>/create_id*.html` -> `/<prefix>/`).
+    retry = request.path.rsplit('/', 1)[0] + '/' + retry_page
     return html_response(
         _page(
             'Login error',

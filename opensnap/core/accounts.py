@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import secrets
+import string
 from dataclasses import dataclass
 
 from cryptography.exceptions import InvalidTag
@@ -12,6 +13,8 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 PASSWORD_RECORD_PREFIX = 'v1'
 PASSWORD_RECORD_SEPARATOR = '$'
+RECOVERY_CODE_LENGTH = 12
+RECOVERY_CODE_ALPHABET = string.ascii_uppercase + string.digits
 
 
 @dataclass(slots=True)
@@ -27,6 +30,9 @@ class Account:
     # The password as typed in a KAGE-SDK game, which decrypts its bootstrap
     # login reply (`0x2d`) with it; empty until stored by a signup-page login.
     kage_login_key: bytes = b''
+    # Sets a new password on the signup page's recovery form. Kept readable
+    # because every signup-page login shows it again.
+    recovery_code: str = ''
 
     @property
     def session_material(self) -> str:
@@ -43,67 +49,47 @@ def build_account(
     seed: str,
     team: str,
     kage_login_key: bytes = b'',
+    recovery_code: str = '',
 ) -> Account:
     """Build account model from serialized storage fields."""
 
-    account_seed = normalize_seed(seed)
-    encoded_record = normalize_password_record(password_record, account_seed)
-    verifier, magic_key = parse_password_record(encoded_record, account_seed)
+    verifier, magic_key = parse_password_record(password_record)
     return Account(
         user_id=user_id,
         username=username,
         password_verifier=verifier,
         bootstrap_magic_key=magic_key,
-        seed=account_seed,
+        seed=seed,
         team=team,
         kage_login_key=kage_login_key,
+        recovery_code=recovery_code,
     )
 
 
-def normalize_seed(seed: str) -> str:
-    """Return configured seed or generate one when missing."""
+def generate_recovery_code() -> str:
+    """Return a new random recovery code."""
 
-    cleaned = seed.strip()
-    if cleaned:
-        return cleaned
+    return ''.join(secrets.choice(RECOVERY_CODE_ALPHABET) for _ in range(RECOVERY_CODE_LENGTH))
+
+
+def generate_seed() -> str:
+    """Return a new random account seed."""
+
     return secrets.token_hex(16)
 
 
-def normalize_password_record(password_record: str, seed: str) -> str:
-    """Convert cleartext credentials to encoded form when needed."""
+def encode_password_record(password: str, seed: str) -> str:
+    """Return the stored form of a password: `v1$<verifier>$<bootstrap key hex>`."""
 
-    if is_encoded_password_record(password_record):
-        return password_record
-
-    verifier, magic_key = derive_password_material(password_record, seed)
-    return (
-        f'{PASSWORD_RECORD_PREFIX}{PASSWORD_RECORD_SEPARATOR}'
-        f'{verifier}{PASSWORD_RECORD_SEPARATOR}{magic_key.hex()}'
-    )
+    verifier, magic_key = derive_password_material(password, seed)
+    return PASSWORD_RECORD_SEPARATOR.join((PASSWORD_RECORD_PREFIX, verifier, magic_key.hex()))
 
 
-def parse_password_record(password_record: str, seed: str) -> tuple[str, bytes]:
-    """Parse encoded password record or derive from plain value."""
+def parse_password_record(password_record: str) -> tuple[str, bytes]:
+    """Return the verifier and bootstrap key of a stored password record."""
 
-    if is_encoded_password_record(password_record):
-        _, verifier, magic_key_hex = password_record.split(PASSWORD_RECORD_SEPARATOR, maxsplit=2)
-        return verifier, bytes.fromhex(magic_key_hex)
-
-    return derive_password_material(password_record, seed)
-
-
-def is_encoded_password_record(password_record: str) -> bool:
-    """Check whether password record already uses encoded format."""
-
-    parts = password_record.split(PASSWORD_RECORD_SEPARATOR)
-    if len(parts) != 3:
-        return False
-
-    if parts[0] != PASSWORD_RECORD_PREFIX:
-        return False
-
-    verifier, magic_key_hex = parts[1], parts[2]
-    return _is_hex(verifier, 64) and _is_hex(magic_key_hex, 40)
+    _, verifier, magic_key_hex = password_record.split(PASSWORD_RECORD_SEPARATOR, maxsplit=2)
+    return verifier, bytes.fromhex(magic_key_hex)
 
 
 def derive_password_material(password: str, seed: str) -> tuple[str, bytes]:
@@ -122,19 +108,6 @@ def verify_password(account: Account, password: str) -> bool:
 
     verifier, _ = derive_password_material(password, account.seed)
     return verifier == account.password_verifier
-
-
-def _is_hex(value: str, expected_length: int) -> bool:
-    """Return whether value has expected hex shape."""
-
-    if len(value) != expected_length:
-        return False
-
-    try:
-        int(value, 16)
-    except ValueError:
-        return False
-    return True
 
 
 def seal_kage_login_key(server_secret: str, username: str, key: bytes) -> str:

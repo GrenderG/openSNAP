@@ -17,7 +17,6 @@ from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.protocol import commands
 from opensnap.protocol.constants import FLAG_CHANNEL_BITS, FLAG_RELIABLE
 from opensnap.protocol.models import Endpoint, SnapMessage
-from opensnap.storage.sqlite import SqliteConnection
 from tests.support import create_accounts, login_client_payload, serving
 
 
@@ -105,12 +104,9 @@ class SqliteBackendTests(unittest.TestCase):
             self.assertTrue(str(row[1]).startswith('v1$'))
             self.assertNotEqual(row[1], '1111')
 
-    def test_legacy_runtime_tables_are_dropped(self) -> None:
+    def test_store_keeps_only_shared_tables(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             database_path = f'{temp_directory}/opensnap.sqlite'
-            with sqlite3.connect(database_path) as connection:
-                for table in ('lobbies', 'sessions', 'rooms', 'room_members'):
-                    connection.execute(f'CREATE TABLE {table} (id INTEGER)')
             config = replace(
                 serving(default_app_config(), 'automodellista'),
                 storage=StorageConfig(backend='sqlite', sqlite_path=database_path),

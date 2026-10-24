@@ -58,13 +58,11 @@ class SqliteConnection:
             'username TEXT NOT NULL UNIQUE, '
             'password TEXT NOT NULL, '
             'seed TEXT NOT NULL, '
-            "team TEXT NOT NULL DEFAULT ''"
+            "team TEXT NOT NULL DEFAULT '', "
+            'kage_login_key TEXT, '
+            'recovery_code TEXT NOT NULL'
             ')'
         )
-        # Added after the table first shipped; older stores get the column here.
-        columns = {str(row['name']) for row in self.query_all('PRAGMA table_info(users)')}
-        if 'kage_login_key' not in columns:
-            self.execute('ALTER TABLE users ADD COLUMN kage_login_key TEXT')
         self.execute(
             'CREATE TABLE IF NOT EXISTS session_handoffs ('
             'serial INTEGER PRIMARY KEY AUTOINCREMENT, '
@@ -107,7 +105,3 @@ class SqliteConnection:
             ')'
         )
         self.execute('CREATE INDEX IF NOT EXISTS online_players_game ON online_players (game, login_serial)')
-        # Runtime state (sessions, rooms, lobbies) now lives in each server
-        # process; drop the tables older versions kept here.
-        for table in ('room_members', 'rooms', 'sessions', 'lobbies'):
-            self.execute(f'DROP TABLE IF EXISTS {table}')

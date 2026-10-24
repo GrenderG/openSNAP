@@ -32,14 +32,18 @@ def document(content: str) -> str:
     )
 
 
-def panel(title: str, body: str, *, title_color: str = TITLE_COLOR) -> str:
-    """One panel: a title bar over a body cell."""
+def panel(
+    title: str, body: str, *, title_color: str = TITLE_COLOR, rows: tuple[str, ...] = (), columns: int = 1
+) -> str:
+    """One panel: a title bar over a body cell, then `rows` (whole `<tr>` rows of `columns` cells)."""
 
+    span = f' colspan="{columns}"' if columns > 1 else ''
     return (
         f'{_table_open(cellpadding=8)}\n'
-        f'{_title_row(title, title_color)}\n'
-        f'<tr><td>\n{body}</td></tr>\n'
-        '</table>\n'
+        f'{_title_row(title, title_color, columns=columns)}\n'
+        f'<tr><td{span}>\n{body}</td></tr>\n'
+        + ''.join(f'{row}\n' for row in rows)
+        + '</table>\n'
     )
 
 

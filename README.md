@@ -92,7 +92,8 @@ Serves account signup for every game, plus game pages and rankings.
 
 Signup creates the account on first use and logs in afterwards. Usernames are 2-15 letters, digits and single inner
 `_` (the longest ID the game browsers keep; 7 on the Auto Modellista Beta1 page, whose login breaks longer IDs).
-Passwords are 4-15 characters (the in-game keyboard limit).
+Passwords are 4-15 characters (the in-game keyboard limit). Every login shows the account's 12-character recovery
+code; Recover account sets a new password with it and issues a new code.
 
 Requests to unknown paths are logged in full, to help with reverse engineering.
 
