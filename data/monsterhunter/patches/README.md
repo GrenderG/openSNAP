@@ -61,15 +61,16 @@ decrypts its own code at run time; the scheme is described in
 it. The tool cannot generate a header: without `--header` it stops with an
 error.
 
-Two open points before this can work:
+This cannot carry a custom payload. Capcom's EU patch as stored on the
+memory card (0x1f70 bytes) shows the whole format: the 0x580 header, the
+encrypted payload from 0x580, and one more RSA-signed record at 0x1ef0. That
+record holds a SHA-1 digest of the encrypted patch (0x13f0..0x1ee0 once the
+console layer is removed, the data the patch is decrypted from), and the
+client compares all 20 bytes with its own digest (`dnas_ins` 0xaa20f0). So a genuine header
+only works with the payload it was signed with. Changing any byte of the patch
+needs a new signature from Sony's private keys. Only the 128-byte session
+header at 0x180 depends on the console, which is why a genuine blob can be
+moved from one console to another but not changed.
 
-- **No genuine header is available.** No retail Monster Hunter install
-  download has been captured.
-- **A header may not carry a different payload.** The install also checks
-  more RSA signatures while it processes the payload. If they cover the
-  payload itself, a genuine header only works with the payload it was signed
-  with.
-
-Until both are settled, keep these entries disabled. A patch only works
-on these clients if the client itself is patched to skip the DNAS install
-step.
+A custom patch therefore only works on clients that are themselves patched to
+skip the DNAS install step. Keep these entries disabled.
