@@ -10,7 +10,7 @@ from dataclasses import replace
 from opensnap.plugins.outbreak.records import (
     CLEAR_TICKS_PER_SECOND,
     GAME,
-    POINTS_BOARD_PREFIX,
+    POINTS_BOARD,
     PUBLIC_BETA_GAME,
     PUBLIC_BETA_SCENARIO_NAMES,
     SCENARIO_NAMES,
@@ -35,7 +35,7 @@ BOARDS = ScenarioBoards(
     game=GAME,
     scenario_names=SCENARIO_NAMES,
     clear_boards=_clear_boards,
-    points_board_prefix=POINTS_BOARD_PREFIX,
+    points_board=POINTS_BOARD,
     character_name=character_name,
     clear_ticks_per_second=CLEAR_TICKS_PER_SECOND,
 )

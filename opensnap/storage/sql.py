@@ -1,9 +1,10 @@
-"""Shared stores (accounts, session handoffs, records, standings, online players) over any SQL backend.
+"""Shared stores (accounts, session handoffs, records, online players) over any SQL backend.
 
 Backends provide a `SqlConnection`: `?` placeholders, rows readable by column
-name, their own schema and integrity-error type, and the two statements whose
-syntax differs between databases (an insert returning its generated key, and
-an insert that skips rows clashing with a unique key).
+name, their own schema and integrity-error type, and the three statements
+whose syntax differs between databases (an insert returning its generated key,
+an insert that skips rows clashing with a unique key, and an insert that
+changes the row it clashes with).
 """
 
 from collections.abc import Mapping
@@ -21,7 +22,7 @@ from opensnap.core.accounts import (
     seal_kage_login_key,
 )
 from opensnap.core.online import OnlinePlayer
-from opensnap.core.records import PlayerTotal, Record, Standing
+from opensnap.core.records import RankedRecord, Ranking, Record
 from opensnap.core.sessions import Session, SessionHandoff, create_session_id
 from opensnap.protocol.models import Endpoint
 from opensnap.storage.interfaces import DuplicateAccountError
@@ -42,6 +43,15 @@ class SqlConnection(Protocol):
 
     def insert_or_ignore(self, query: str, parameters: tuple[object, ...] = ()) -> None:
         """Run one `INSERT`, skipping rows that clash with a unique key."""
+
+    def upsert(self, query: str, parameters: tuple[object, ...] = (), *, key: str, update: str) -> None:
+        """Run one `INSERT`; a row clashing with the unique columns `key` is changed by the `SET` list `update`.
+
+        In `update`, `excluded.<column>` is the inserted value and
+        `<table>.<column>` the stored one. Assignments run left to right on
+        MariaDB, each seeing the earlier ones, so a column is assigned only
+        after every assignment that reads it.
+        """
 
     def query_one(self, query: str, parameters: tuple[object, ...] = ()) -> Row | None:
         """Run one query and return its first row."""
@@ -237,143 +247,101 @@ class SqlOnlinePlayerStore:
 
 
 class SqlRecordStore:
-    """Game records in the shared store, one row per submission."""
+    """Game records in the shared store, one row per game, board and player.
+
+    `sort_key` is the score for lowest-first boards and its negation for the
+    others, so one ascending index (`records_rank`) ranks every board.
+    """
 
     def __init__(self, connection: SqlConnection) -> None:
         self._connection = connection
 
-    def add(
+    def submit(
         self,
         *,
         game: str,
         board: str,
+        ranking: Ranking,
         user_id: int,
         player: str,
         score: int,
-        details: Mapping[str, object],
-    ) -> Record:
-        details_text = json.dumps(dict(details), sort_keys=True)
-        recorded_at = datetime.now(UTC).isoformat(timespec='seconds')
-        record_id = self._connection.insert(
-            (
-                'INSERT INTO records (game, board, user_id, player, score, details, recorded_at) '
-                'VALUES (?, ?, ?, ?, ?, ?, ?)'
-            ),
-            (game, board, user_id, player, score, details_text, recorded_at),
-            key='record_id',
-        )
-        return Record(
-            record_id=record_id,
-            game=game,
-            board=board,
-            user_id=user_id,
-            player=player,
-            score=score,
-            details=json.loads(details_text),
-            recorded_at=recorded_at,
-        )
-
-    def best_by_board(self, game: str, limit: int, *, highest: bool = False) -> dict[str, list[Record]]:
-        best, order = ('MAX', 'DESC') if highest else ('MIN', 'ASC')
-        rows = self._connection.query_all(
-            (
-                'SELECT r.* FROM records r JOIN ('
-                f'SELECT board, user_id, {best}(score) AS best FROM records WHERE game = ? GROUP BY board, user_id'
-                ') b ON r.board = b.board AND r.user_id = b.user_id AND r.score = b.best '
-                f'WHERE r.game = ? ORDER BY r.board, r.score {order}, r.record_id'
-            ),
-            (game, game),
-        )
-        boards: dict[str, list[Record]] = {}
-        seen: set[tuple[str, int]] = set()
-        for row in rows:
-            record = _record_from_row(row)
-            # A player's best score may appear more than once; keep the earliest.
-            if (record.board, record.user_id) in seen:
-                continue
-            seen.add((record.board, record.user_id))
-            board = boards.setdefault(record.board, [])
-            if len(board) < limit:
-                board.append(record)
-        return boards
-
-    def totals(self, game: str, board_prefix: str, limit: int) -> list[PlayerTotal]:
-        rows = self._connection.query_all(
-            (
-                'SELECT user_id, MAX(player) AS player, SUM(score) AS total FROM records '
-                'WHERE game = ? AND SUBSTR(board, 1, ?) = ? '
-                'GROUP BY user_id ORDER BY total DESC, user_id LIMIT ?'
-            ),
-            (game, len(board_prefix), board_prefix, limit),
-        )
-        return [PlayerTotal(int(row['user_id']), str(row['player']), int(row['total'])) for row in rows]
-
-
-class SqlStandingStore:
-    """Current-value rankings in the shared store, one row per game, board and player."""
-
-    def __init__(self, connection: SqlConnection) -> None:
-        self._connection = connection
-
-    def set(self, *, game: str, board: str, user_id: int, player: str, score: int) -> Standing:
+        details: Mapping[str, object] | None = None,
+    ) -> None:
         # Microseconds so that players reaching the same score in one second keep their order.
         now = datetime.now(UTC).isoformat(timespec='microseconds')
-        key = (game, board, user_id)
-        row = self._connection.query_one(
-            'SELECT score, reached_at FROM standings WHERE game = ? AND board = ? AND user_id = ?', key
-        )
-        if row is None:
-            self._connection.execute(
-                (
-                    'INSERT INTO standings (game, board, user_id, player, score, reached_at, updated_at) '
-                    'VALUES (?, ?, ?, ?, ?, ?, ?)'
-                ),
-                (*key, player, score, now, now),
-            )
-            reached_at = now
-        else:
-            reached_at = str(row['reached_at']) if int(row['score']) == score else now
-            self._connection.execute(
-                (
-                    'UPDATE standings SET player = ?, score = ?, reached_at = ?, updated_at = ? '
-                    'WHERE game = ? AND board = ? AND user_id = ?'
-                ),
-                (player, score, reached_at, now, *key),
-            )
-        return Standing(game, board, user_id, player, score, reached_at, now)
-
-    def top(self, game: str, board: str, limit: int) -> list[Standing]:
-        rows = self._connection.query_all(
+        sort_key = score if ranking is Ranking.LOWEST else -score
+        self._connection.upsert(
             (
-                'SELECT * FROM standings WHERE game = ? AND board = ? '
-                'ORDER BY score DESC, reached_at, user_id LIMIT ?'
+                'INSERT INTO records (game, board, user_id, player, score, sort_key, reached_at, details) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
             ),
+            (game, board, user_id, player, score, sort_key, now, json.dumps(dict(details or {}), sort_keys=True)),
+            key='game, board, user_id',
+            update=_RECORD_UPDATES[ranking],
+        )
+        self._connection.insert_or_ignore('INSERT INTO boards (game, board) VALUES (?, ?)', (game, board))
+
+    def top(self, game: str, board: str, limit: int) -> list[Record]:
+        rows = self._connection.query_all(
+            'SELECT * FROM records WHERE game = ? AND board = ? ORDER BY sort_key, reached_at, user_id LIMIT ?',
             (game, board, limit),
         )
-        return [
-            Standing(
-                game=str(row['game']),
-                board=str(row['board']),
-                user_id=int(row['user_id']),
-                player=str(row['player']),
-                score=int(row['score']),
-                reached_at=str(row['reached_at']),
-                updated_at=str(row['updated_at']),
-            )
-            for row in rows
-        ]
+        return [_record_from_row(row) for row in rows]
+
+    def entry(self, game: str, board: str, user_id: int) -> RankedRecord | None:
+        # The rank counts the records ahead in `records_rank` order.
+        row = self._connection.query_one(
+            (
+                'SELECT r.*, (SELECT COUNT(*) FROM records a WHERE a.game = r.game AND a.board = r.board '
+                'AND a.sort_key <= r.sort_key AND (a.sort_key < r.sort_key OR a.reached_at < r.reached_at '
+                'OR (a.reached_at = r.reached_at AND a.user_id < r.user_id))) AS ahead '
+                'FROM records r WHERE r.game = ? AND r.board = ? AND r.user_id = ?'
+            ),
+            (game, board, user_id),
+        )
+        return None if row is None else RankedRecord(int(row['ahead']) + 1, _record_from_row(row))
+
+    def boards(self, game: str) -> list[str]:
+        rows = self._connection.query_all('SELECT board FROM boards WHERE game = ? ORDER BY board', (game,))
+        return [str(row['board']) for row in rows]
+
+
+# Per ranking, how a submission changes the stored record. `reached_at` changes
+# only when the shown score does; the best kinds keep the winning
+# submission's details.
+_IMPROVES = 'excluded.sort_key < records.sort_key'
+_BEST_UPDATE = (
+    'player = excluded.player, '
+    f'score = CASE WHEN {_IMPROVES} THEN excluded.score ELSE records.score END, '
+    f'reached_at = CASE WHEN {_IMPROVES} THEN excluded.reached_at ELSE records.reached_at END, '
+    f'details = CASE WHEN {_IMPROVES} THEN excluded.details ELSE records.details END, '
+    f'sort_key = CASE WHEN {_IMPROVES} THEN excluded.sort_key ELSE records.sort_key END'
+)
+_RECORD_UPDATES = {
+    Ranking.LATEST: (
+        'player = excluded.player, details = excluded.details, '
+        'reached_at = CASE WHEN excluded.score = records.score THEN records.reached_at ELSE excluded.reached_at END, '
+        'score = excluded.score, sort_key = excluded.sort_key'
+    ),
+    Ranking.LOWEST: _BEST_UPDATE,
+    Ranking.HIGHEST: _BEST_UPDATE,
+    Ranking.TOTAL: (
+        'player = excluded.player, details = excluded.details, '
+        'reached_at = CASE WHEN excluded.score = 0 THEN records.reached_at ELSE excluded.reached_at END, '
+        'score = records.score + excluded.score, sort_key = records.sort_key + excluded.sort_key'
+    ),
+}
 
 
 def _record_from_row(row: Row) -> Record:
     return Record(
-        record_id=int(row['record_id']),
         game=str(row['game']),
         board=str(row['board']),
         user_id=int(row['user_id']),
         player=str(row['player']),
         score=int(row['score']),
         details=json.loads(str(row['details'])),
-        recorded_at=str(row['recorded_at']),
+        reached_at=str(row['reached_at']),
     )
 
 

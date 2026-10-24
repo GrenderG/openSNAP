@@ -13,7 +13,7 @@ the same server for crossplay.
 
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 import os
 from pathlib import Path
@@ -53,9 +53,10 @@ from opensnap_app.capcom.monsterhunter.records import (
     store_test_build_quest_record,
 )
 from opensnap.core.online import OnlinePlayer
+from opensnap.core.records import Ranking
 from opensnap.plugins.monsterhunter.directory import Directory
 from opensnap.plugins.monsterhunter.profile import MonsterHunterProfile
-from opensnap.storage.interfaces import OnlinePlayerStore, RecordStore, StandingStore
+from opensnap.storage.interfaces import OnlinePlayerStore, RecordStore
 
 _LOGGER = logging.getLogger('opensnap_app.capcom.monsterhunter')
 
@@ -222,20 +223,16 @@ class AppService:
         directory: Directory,
         online_players: OnlinePlayerStore,
         records: RecordStore,
-        standings: StandingStore,
     ) -> None:
         self._config = config
         self._flows = flows
         self._directory = directory
         self._online_players = online_players
         self._records = records
-        self._standings = standings
         self._market = MarketState()
         self._events = EventCatalog(config.data_directory)
         self._information = InformationPages(config.data_directory)
-        self._record_pages = RecordPages(
-            records, standings, config.profile.identifier, load_quests(config.data_directory)
-        )
+        self._record_pages = RecordPages(records, config.profile.identifier, load_quests(config.data_directory))
         self._files = NamedFiles(config.data_directory, self._record_pages.render)
         self._patches = load_patches(config.data_directory)
 
@@ -412,9 +409,12 @@ class AppService:
             self._store_hunter_summary(payload, client, decode_field)
             return b''
         if command == CMD_APP_FILE_INFO:
-            return self._files.info(payload, decode_field, encode_field)
+            player = self._player(client)
+            return self._files.info(
+                payload, decode_field, encode_field, client.pages, None if player is None else player.user_id
+            )
         if command == CMD_APP_FILE_CHUNK:
-            return self._files.download(payload, decode_field, encode_field)
+            return self._files.download(payload, decode_field, encode_field, client.pages)
         if command in (CMD_APP_DOWNLOAD_LIST, CMD_APP_DOWNLOAD_LIST_6403, CMD_APP_DOWNLOAD_LIST_6105):
             # `u16 count`; nothing to download.
             return b'\x00\x00'
@@ -476,7 +476,7 @@ class AppService:
     def _store_hunter_summary(
         self, payload: bytes, client: '_MhClient', decode_field: Callable[[bytes], tuple[bytes, int]]
     ) -> None:
-        """Keep the Hunter Rank Points of a 6321 hunter summary as the player's `hrp` standing.
+        """Keep the Hunter Rank Points of a 6321 hunter summary as the player's `hrp` record.
 
         It is acknowledged whatever it holds: the ranking is optional and the
         client's quest return must go on.
@@ -499,9 +499,10 @@ class AppService:
             _LOGGER.info('Hunter summary from %s login %r has no logged-in player; HRP %d not stored.',
                          client.app.host, client.login, points)
             return
-        self._standings.set(
+        self._records.submit(
             game=self._config.profile.identifier,
             board=HRP_BOARD,
+            ranking=Ranking.LATEST,
             user_id=player.user_id,
             player=player.username,
             score=points,
@@ -635,3 +636,5 @@ class _MhClient:
     login: str = ''
     # The client patch offered on this connection.
     patch: ClientPatch | None = None
+    # Pages as published by this connection's 6101, so its 6102 chunks match.
+    pages: dict[bytes, bytes] = field(default_factory=dict)

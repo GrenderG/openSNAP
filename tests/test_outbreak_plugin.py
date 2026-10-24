@@ -489,6 +489,11 @@ class OutbreakAppServiceTests(unittest.TestCase):
             self.records, account,
             ScenarioResult(3, False, True, 6, 23339, 15525, (), 32, 8, 0, 0, 286, 2027),
         )
+        # A slower clear keeps the best time; points add up over every scenario.
+        store_scenario_result(
+            self.records, account,
+            ScenarioResult(3, False, True, 6, 30000, 475, (), 32, 8, 0, 0, 286, 2027),
+        )
         client, buffer = self._connect()
         self._open(client, buffer)
         index = self._download(client, buffer, b'01/DATABASE.HTM', 1)
@@ -498,7 +503,7 @@ class OutbreakAppServiceTests(unittest.TestCase):
         self.assertIn(b'<td>jill0</td><td>YOKO</td><td>12\'57"</td>', clears)
         self.assertIn(b'<a href="lbs://lbs/01/DATABASE.HTM">Database</a>', clears)
         points = self._download(client, buffer, b'01/RANK_POINTS.HTM', 20)
-        self.assertIn(b'<td>jill0</td><td>15525</td>', points)
+        self.assertIn(b'<td>jill0</td><td>16000</td>', points)
 
     def _download(self, client, buffer, name: bytes, sequence: int) -> bytes:
         """Fetch one page like the client does: 6101 for its size, then 6102 chunks."""
@@ -539,19 +544,11 @@ class OutbreakAppServiceTests(unittest.TestCase):
         self.assertEqual(self._request(client, buffer, 0x6301, 1, report), b'')
         self.assertEqual(self._request(client, buffer, 0x1004, 2), b'')
 
-        boards = self.records.best_by_board('outbreak', 10)
+        self.assertEqual(self.records.boards('outbreak'), ['clear-3-1', 'points'])
         team = [{'name': 'kevin', 'alive': True, 'character': 0}, {'name': 'yoko', 'alive': False, 'character': 124}]
-        [points] = boards['points-3']
+        [points] = self.records.top('outbreak', 'points', 10)
         self.assertEqual((points.user_id, points.player, points.score), (account.user_id, 'jill0', 15525))
-        self.assertEqual(
-            dict(points.details),
-            {
-                'free_mode': True, 'cleared': True, 'clear_ticks': 23339, 'character': 3, 'teammates': team,
-                'echo_ticks': 32, 'echo_replies': 8, 'echo_losses': 0, 'network_error': 0,
-                'peak_queue': 286, 'peak_location': 2027,
-            },
-        )
-        [clear] = boards['clear-3-1']
+        [clear] = self.records.top('outbreak', 'clear-3-1', 10)
         self.assertEqual((clear.player, clear.score, dict(clear.details)), ('jill0', 23339, {'character': 3, 'teammates': team}))
 
     def test_failed_scenario_is_kept_off_the_clear_board(self) -> None:
@@ -560,14 +557,14 @@ class OutbreakAppServiceTests(unittest.TestCase):
         self._open(client, buffer)
         self.assertEqual(self._request(client, buffer, 0x6301, 1, _scenario_report(2, sequence=1, clear_ticks=0, points=614)), b'')
         self.assertEqual(self._request(client, buffer, 0x1004, 2), b'')
-        boards = self.records.best_by_board('outbreak', 10)
-        self.assertEqual((set(boards), boards['points-2'][0].score), ({'points-2'}, 614))
+        self.assertEqual(self.records.boards('outbreak'), ['points'])
+        self.assertEqual(self.records.top('outbreak', 'points', 10)[0].score, 614)
 
     def test_scenario_result_of_an_unknown_login_is_acknowledged_only(self) -> None:
         client, buffer = self._connect()
         self._open(client, buffer)
         self.assertEqual(self._request(client, buffer, 0x6301, 1, _scenario_report(0, sequence=1)), b'')
-        self.assertEqual(self.records.best_by_board('outbreak', 10), {})
+        self.assertEqual(self.records.boards('outbreak'), [])
 
 
 class OutbreakNetbioTests(unittest.TestCase):

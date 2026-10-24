@@ -209,10 +209,7 @@ class AppService:
         if account is None:
             _LOGGER.warning('Scenario result from unknown login %r; not stored.', login)
             return
-        store_scenario_result(
-            self._records, account, result,
-            game=PUBLIC_BETA_GAME if self._public_beta else GAME, network_test=not self._public_beta,
-        )
+        store_scenario_result(self._records, account, result, game=PUBLIC_BETA_GAME if self._public_beta else GAME)
         _LOGGER.info(
             'Scenario result from %s stored: scenario %d (%s mode), cleared %s, %d ticks, %d points.',
             account.username, result.scenario, 'free' if result.mode else 'scenario', result.cleared,

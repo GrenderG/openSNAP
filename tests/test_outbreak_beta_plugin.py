@@ -156,9 +156,7 @@ class OutbreakBetaAppServiceTests(unittest.TestCase):
         account = self.accounts.create_user('jill0', 'secret')
         self._open()
         self._request(0x6301, 1, _scenario_report(1, sequence=1, network=(5, 0, 0, 0, 0, 0)))
-        self.assertEqual(self.records.best_by_board('outbreak', 10), {})
-        boards = self.records.best_by_board('outbreak_beta', 10)
-        self.assertEqual(set(boards), {'points-1', 'clear-1-1'})
-        [points] = boards['points-1']
+        self.assertEqual(self.records.boards('outbreak'), [])
+        self.assertEqual(self.records.boards('outbreak_beta'), ['clear-1-1', 'points'])
+        [points] = self.records.top('outbreak_beta', 'points', 10)
         self.assertEqual((points.user_id, points.score), (account.user_id, 4000))
-        self.assertNotIn('echo_replies', points.details)

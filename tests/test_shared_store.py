@@ -14,6 +14,7 @@ import unittest
 
 from opensnap.config import StorageConfig, default_app_config
 from opensnap.core.accounts import verify_password
+from opensnap.core.records import Ranking
 from opensnap.core.sessions import Session
 from opensnap.protocol.models import Endpoint
 from opensnap.storage.factory import create_storage, open_connection
@@ -106,37 +107,72 @@ class SharedStoreContract:
         self.assertEqual([player.session_id for player in online.list('outbreak')], [3])
         online.clear('outbreak')
 
-    def test_records_rank_each_players_best_per_board(self) -> None:
+    def test_lowest_records_keep_each_players_best(self) -> None:
         records = self.storage.records
-        records.add(game='am', board='A', user_id=1, player='test', score=900, details={'team': 'x'})
-        records.add(game='am', board='A', user_id=2, player='alice', score=800, details={})
-        records.add(game='am', board='A', user_id=1, player='test', score=700, details={'team': 'y'})
-        records.add(game='am', board='A', user_id=1, player='test', score=700, details={'team': 'z'})
-        records.add(game='am', board='B', user_id=2, player='alice', score=5, details={})
-        records.add(game='other', board='A', user_id=3, player='bob', score=1, details={})
+        lowest = Ranking.LOWEST
+        records.submit(game='am', board='A', ranking=lowest, user_id=1, player='test', score=900, details={'team': 'x'})
+        records.submit(game='am', board='A', ranking=lowest, user_id=2, player='alice', score=800)
+        records.submit(game='am', board='A', ranking=lowest, user_id=1, player='test', score=700, details={'team': 'y'})
+        # A repeated or worse score keeps the record and its details.
+        records.submit(game='am', board='A', ranking=lowest, user_id=1, player='test', score=700, details={'team': 'z'})
+        records.submit(game='am', board='A', ranking=lowest, user_id=1, player='test', score=950, details={'team': 'w'})
+        records.submit(game='am', board='B', ranking=lowest, user_id=2, player='alice', score=5)
+        records.submit(game='other', board='A', ranking=lowest, user_id=3, player='bob', score=1)
 
-        boards = records.best_by_board('am', 10)
         self.assertEqual(
-            [(record.player, record.score, dict(record.details)) for record in boards['A']],
-            # A repeated best keeps its first submission.
+            [(record.player, record.score, dict(record.details)) for record in records.top('am', 'A', 10)],
             [('test', 700, {'team': 'y'}), ('alice', 800, {})],
         )
-        self.assertEqual([record.player for record in boards['B']], ['alice'])
-        self.assertEqual(set(boards), {'A', 'B'})
-        self.assertEqual(len(records.best_by_board('am', 1)['A']), 1)
+        self.assertEqual([record.player for record in records.top('am', 'A', 1)], ['test'])
+        self.assertEqual(records.top('am', 'C', 10), [])
+        self.assertEqual(records.boards('am'), ['A', 'B'])
 
-    def test_records_total_per_player_over_board_prefix(self) -> None:
+    def test_highest_and_total_records_rank_highest_first(self) -> None:
         records = self.storage.records
-        records.add(game='mh', board='hunts-1', user_id=1, player='a', score=3, details={})
-        records.add(game='mh', board='hunts-2', user_id=1, player='a', score=4, details={})
-        records.add(game='mh', board='hunts-1', user_id=2, player='b', score=5, details={})
-        records.add(game='mh', board='clear-1', user_id=2, player='b', score=999, details={})
-        records.add(game='am', board='hunts-1', user_id=3, player='c', score=100, details={})
+        for user_id, score in ((1, 5), (2, 9), (1, 7), (2, 3)):
+            records.submit(game='mh', board='best', ranking=Ranking.HIGHEST, user_id=user_id, player=f'p{user_id}',
+                           score=score)
+            records.submit(game='mh', board='sum', ranking=Ranking.TOTAL, user_id=user_id, player=f'p{user_id}',
+                           score=score)
+        self.assertEqual([(record.user_id, record.score) for record in records.top('mh', 'best', 10)], [(2, 9), (1, 7)])
+        self.assertEqual([(record.user_id, record.score) for record in records.top('mh', 'sum', 10)],
+                         [(1, 12), (2, 12)])
+        # Adding nothing keeps when the total was reached.
+        records.submit(game='mh', board='sum', ranking=Ranking.TOTAL, user_id=1, player='p1', score=0)
+        self.assertEqual([record.user_id for record in records.top('mh', 'sum', 10)], [1, 2])
+
+    def test_latest_records_keep_the_time_a_score_was_first_reached(self) -> None:
+        records = self.storage.records
+
+        def submit(user_id: int, score: int) -> None:
+            records.submit(game='g', board='b', ranking=Ranking.LATEST, user_id=user_id, player=f'p{user_id}',
+                           score=score)
+
+        submit(1, 5)
+        first = records.top('g', 'b', 1)[0]
+        # The same score again keeps when it was reached; another score resets it.
+        submit(1, 5)
+        self.assertEqual(records.top('g', 'b', 1)[0].reached_at, first.reached_at)
+        submit(2, 5)
+        self.assertEqual([record.user_id for record in records.top('g', 'b', 10)], [1, 2])
+        # A lower score replaces the record; reaching 5 again ranks after player 2.
+        submit(1, 4)
+        self.assertEqual([record.score for record in records.top('g', 'b', 10)], [5, 4])
+        submit(1, 5)
+        self.assertEqual([record.user_id for record in records.top('g', 'b', 10)], [2, 1])
+
+    def test_entry_ranks_the_players_record(self) -> None:
+        records = self.storage.records
+        for user_id, score in ((1, 30), (2, 10), (3, 20), (4, 20)):
+            records.submit(game='g', board='b', ranking=Ranking.LOWEST, user_id=user_id, player=f'p{user_id}',
+                           score=score)
         self.assertEqual(
-            [(total.player, total.total) for total in records.totals('mh', 'hunts-', 10)],
-            [('a', 7), ('b', 5)],
+            [(entry.rank, entry.record.score) for entry in (records.entry('g', 'b', user) for user in (1, 2, 3, 4))],
+            # Equal scores rank by who reached them first.
+            [(4, 30), (1, 10), (2, 20), (3, 20)],
         )
-        self.assertEqual(len(records.totals('mh', 'hunts-', 1)), 1)
+        self.assertIsNone(records.entry('g', 'b', 5))
+        self.assertIsNone(records.entry('g', 'other', 1))
 
 
 class SqliteSharedStoreTests(SharedStoreContract, unittest.TestCase):

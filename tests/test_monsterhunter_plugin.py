@@ -34,7 +34,8 @@ from opensnap.protocol.constants import (
     FLAG_ROOM,
 )
 from opensnap.protocol.models import Endpoint, SnapMessage
-from opensnap.storage.sql import SqlOnlinePlayerStore, SqlRecordStore, SqlStandingStore
+from opensnap.core.records import Ranking
+from opensnap.storage.sql import SqlOnlinePlayerStore, SqlRecordStore
 from opensnap.storage.sqlite import SqliteConnection
 from opensnap_app.capcom.monsterhunter.content import EventCatalog, InformationPages, MarketState
 from opensnap_app.capcom.monsterhunter.flows import AppFlowTracker, AppPhase
@@ -1435,7 +1436,6 @@ class AppServiceTests(unittest.TestCase):
         connection = SqliteConnection(self.data_directory / 'records.sqlite')
         self.addCleanup(connection.close)
         self.records = SqlRecordStore(connection)
-        self.standings = SqlStandingStore(connection)
         self.online = SqlOnlinePlayerStore(connection)
         self.sessions = {
             1: Session(session_id=1, user_id=7, username='hunter', endpoint=Endpoint('127.0.0.1', 4000)),
@@ -1461,7 +1461,6 @@ class AppServiceTests(unittest.TestCase):
             directory=self.directory,
             online_players=self.online,
             records=self.records,
-            standings=self.standings,
         )
         # The NA public beta: its own service, chosen by its build stamp.
         self.beta_service = AppService(
@@ -1472,7 +1471,6 @@ class AppServiceTests(unittest.TestCase):
             directory=self.directory,
             online_players=self.online,
             records=self.records,
-            standings=self.standings,
         )
         server = CapcomAppServer(
             host='127.0.0.1',
@@ -1698,7 +1696,7 @@ class AppServiceTests(unittest.TestCase):
         self.assertEqual(self._exchange(client, buffer, 0x6321, self._hunter_summary(5000)), b'')
         self.assertEqual(self._exchange(client, buffer, 0x1004), b'')
         # APP1 comes before the KICS login: no player to rank yet.
-        self.assertEqual(self.standings.top('monsterhunter', 'hrp', 10), [])
+        self.assertEqual(self.records.top('monsterhunter', 'hrp', 10), [])
         # APP1 does not advance any online flow.
         self.assertEqual(self.flows.claim('127.0.0.1'), (None, AppPhase.APP1))
 
@@ -1813,12 +1811,12 @@ class AppServiceTests(unittest.TestCase):
         self.assertEqual(self._exchange(client, buffer, 0x6307, struct.pack('>BBHBL', 1, 5, 0x0105, 3, 7)), b'')
         self.assertEqual(self._exchange(client, buffer, 0x6307, struct.pack('>BBH', 1, 5, 0x0105)), b'')
 
-        boards = self.records.best_by_board('monsterhunter', 10)
         self.assertEqual(
-            [(record.player, record.score, dict(record.details)) for record in boards['tles-kills-20']],
+            [(record.player, record.score, dict(record.details))
+             for record in self.records.top('monsterhunter', 'tles-kills-20', 10)],
             [('hunter', 7, {'quest': 261, 'hunter_rank': 5})],
         )
-        self.assertEqual(set(boards), {'tles-kills-20'})
+        self.assertEqual(self.records.boards('monsterhunter'), ['tles-kills-20'])
         # Its resource upload is not traced: nothing is asked for.
         self.assertEqual(self._exchange(client, buffer, 0x6320, struct.pack('>BL', 1, 20)), b'\x00')
 
@@ -1841,25 +1839,21 @@ class AppServiceTests(unittest.TestCase):
         self.assertEqual(self._exchange(client, buffer, 0x6320, struct.pack('>BL', 1, 20)), b'\x01')
         self.assertEqual(self._exchange(client, buffer, 0x6321, self._hunter_summary(150000)), b'')
         self.assertEqual(
-            [(standing.player, standing.score) for standing in self.standings.top('monsterhunter', 'hrp', 10)],
+            [(record.player, record.score) for record in self.records.top('monsterhunter', 'hrp', 10)],
             [('hunter', 150000)],
         )
 
-        boards = self.records.best_by_board('monsterhunter', 10)
         self.assertEqual(
-            [(record.player, record.score, dict(record.details)) for record in boards['hunts-261']],
-            [('hunter', 10, {'hunter_rank': 12, 'monsters': {'3': 2, '9': 4, '10': 1, '17': 1, '31': 2}})],
-        )
-        self.assertEqual(
-            [(record.player, record.score, dict(record.details)) for record in boards['clear-261']],
+            [(record.player, record.score, dict(record.details))
+             for record in self.records.top('monsterhunter', 'clear-261', 10)],
             [('hunter', 754, {'weapon_class': 4})],
         )
-        # Record index k counts monster k + 1: Mosswine (4) and Rathalos (11).
-        self.assertEqual([(record.score, dict(record.details)) for record in boards['kills-04']], [(2, {'quest': 261})])
-        self.assertEqual([record.score for record in boards['kills-11']], [1])
-        self.assertNotIn('kills-10', boards)
-        self.assertNotIn('kills-18', boards)
-        self.assertNotIn('kills-32', boards)
+        # Record index k counts monster k + 1: Mosswine (4) and Rathalos (11); the same hunt again adds up.
+        self.assertEqual(self._exchange(client, buffer, 0x6307, hunts), b'')
+        self.assertEqual([record.score for record in self.records.top('monsterhunter', 'kills-04', 10)], [4])
+        self.assertEqual([record.score for record in self.records.top('monsterhunter', 'kills-11', 10)], [2])
+        # Veggie Elder (10), Cart (18) and Poogie (32) have no board.
+        self.assertEqual(self.records.boards('monsterhunter'), ['clear-261', 'hrp', 'kills-04', 'kills-11'])
 
     def test_quest_records_go_to_the_login_that_sent_them(self) -> None:
         # Two players behind one address: only the connection's 1002 login tells them apart.
@@ -1872,8 +1866,7 @@ class AppServiceTests(unittest.TestCase):
             self.assertEqual(self._exchange(client, buffer, 0x6307, clear), b'')
             client.close()
 
-        boards = self.records.best_by_board('monsterhunter', 10)
-        self.assertEqual([record.player for record in boards['clear-261']], ['other'])
+        self.assertEqual([record.player for record in self.records.top('monsterhunter', 'clear-261', 10)], ['other'])
 
     def _download_page(self, name: bytes, *, eu: bool) -> str:
         client, buffer = self._connect()
@@ -1915,7 +1908,7 @@ class AppServiceTests(unittest.TestCase):
         # A failed quest lowers it again.
         self.assertEqual(self._exchange(client, buffer, 0x6321, self._hunter_summary(9_999_900)), b'')
         self.assertEqual(
-            [(standing.player, standing.score) for standing in self.standings.top('monsterhunter', 'hrp', 10)],
+            [(record.player, record.score) for record in self.records.top('monsterhunter', 'hrp', 10)],
             [('hunter', 9_999_900)],
         )
 
@@ -1926,14 +1919,14 @@ class AppServiceTests(unittest.TestCase):
         self._open(client, buffer)
         for payload in (b'\x01', self._hunter_summary(10_000_000), self._hunter_summary(10, size=16)):
             self.assertEqual(self._exchange(client, buffer, 0x6321, payload), b'')
-        self.assertEqual(self.standings.top('monsterhunter', 'hrp', 10), [])
+        self.assertEqual(self.records.top('monsterhunter', 'hrp', 10), [])
 
     def test_hunter_rank_points_page_ranks_ties_at_the_maximum_by_who_reached_it_first(self) -> None:
         for user_id, player, points in ((1, 'Aiko', 9_999_999), (2, 'Cato', 1200), (3, 'Bren', 9_999_999)):
-            self.standings.set(game='monsterhunter', board='hrp', user_id=user_id, player=player, score=points)
+            self._submit('hrp', Ranking.LATEST, user_id, player, points)
         # Aiko drops below the maximum and climbs back: now behind Bren.
-        self.standings.set(game='monsterhunter', board='hrp', user_id=1, player='Aiko', score=9_999_000)
-        self.standings.set(game='monsterhunter', board='hrp', user_id=1, player='Aiko', score=9_999_999)
+        self._submit('hrp', Ranking.LATEST, 1, 'Aiko', 9_999_000)
+        self._submit('hrp', Ranking.LATEST, 1, 'Aiko', 9_999_999)
         text = self._pages().render(b'02/RANK_HRP_1.HTM').decode()
         self.assertLess(text.index('Bren'), text.index('Aiko'))
         self.assertLess(text.index('Aiko'), text.index('Cato'))
@@ -1942,7 +1935,7 @@ class AppServiceTests(unittest.TestCase):
 
     def test_hunter_rank_points_list_the_top_hundred_on_four_pages(self) -> None:
         for user in range(130):
-            self.standings.set(game='monsterhunter', board='hrp', user_id=user, player=f'H{user:03d}', score=user)
+            self._submit('hrp', Ranking.LATEST, user, f'H{user:03d}', user)
         pages = self._pages()
         second = pages.render(b'02/RANK_HRP_2.HTM').decode()
         # Ranks continue across pages: rank 26 is the 26th highest (HRP 104).
@@ -1952,8 +1945,51 @@ class AppServiceTests(unittest.TestCase):
         self.assertNotIn('H029', pages.render(b'02/RANK_HRP_4.HTM').decode())
         self.assertIsNone(pages.render(b'02/RANK_HRP_5.HTM'))
 
+    def test_viewer_rows_are_yellow_and_added_below_the_top_list(self) -> None:
+        for user in range(6):
+            self._submit('kills-11', Ranking.TOTAL, user, f'p{user}', 10 - user)
+        pages = self._pages()
+        own = '<tr>' + ''.join(f'<td><font color="#FFFF00">{cell}</font></td>' for cell in ('5', 'p4', '6')) + '</tr>'
+        # Rank 5 is below the top three: listed after them with its own rank.
+        text = pages.render(b'02/RANK_MON_1.HTM', 4).decode()
+        self.assertLess(text.index('<td>p2</td>'), text.index(own))
+        self.assertNotIn('p3', text)
+        # Rank 2 is in the top three: highlighted in place, not repeated.
+        text = pages.render(b'02/RANK_MON_1.HTM', 1).decode()
+        self.assertEqual(text.count('p1'), 1)
+        self.assertLess(text.index('<td>p0</td>'), text.index('#FFFF00">p1</font>'))
+        self.assertLess(text.index('#FFFF00">p1</font>'), text.index('<td>p2</td>'))
+        # No logged-in player, or one without a record: the top three only.
+        for viewer in (None, 99):
+            self.assertNotIn('#FFFF00', pages.render(b'02/RANK_MON_1.HTM', viewer).decode())
+
+    def test_hunter_rank_points_pages_add_the_viewer_beyond_the_top_hundred(self) -> None:
+        for user in range(130):
+            self._submit('hrp', Ranking.LATEST, user, f'H{user:03d}', user)
+        pages = self._pages()
+        for number in range(1, 5):
+            text = pages.render(f'02/RANK_HRP_{number}.HTM'.encode(), 0).decode()
+            # Last row of the page's table.
+            self.assertIn(
+                '<tr><td><font color="#FFFF00">130</font></td><td><font color="#FFFF00">H000</font></td>'
+                '<td><font color="#FFFF00">0</font></td></tr>\n</table>', text
+            )
+        # Rank 30 is listed in place on page 2 and added below page 1.
+        self.assertEqual(pages.render(b'02/RANK_HRP_2.HTM', 100).decode().count('H100'), 1)
+        self.assertIn('<font color="#FFFF00">30</font>', pages.render(b'02/RANK_HRP_1.HTM', 100).decode())
+
+    def test_record_page_download_shows_the_logged_in_players_rows(self) -> None:
+        self._login(self.sessions[1])
+        self._submit('clear-27', Ranking.LOWEST, 7, 'hunter', 60)
+        self.assertIn('#FFFF00">hunter</font>', self._download_page(b'02/RANK_OTHR_1.HTM', eu=False))
+
+    def _submit(self, board: str, ranking: Ranking, user_id: int, player: str, score: int) -> None:
+        self.records.submit(
+            game='monsterhunter', board=board, ranking=ranking, user_id=user_id, player=player, score=score
+        )
+
     def _pages(self) -> RecordPages:
-        return RecordPages(self.records, self.standings, 'monsterhunter', load_quests(self.data_directory))
+        return RecordPages(self.records, 'monsterhunter', load_quests(self.data_directory))
 
     def test_eu_record_index_links_to_its_own_directory(self) -> None:
         text = self._download_page(b'03/04/DATABASE.HTM', eu=True)
@@ -1964,7 +2000,7 @@ class AppServiceTests(unittest.TestCase):
 
     def test_record_index_counts_ranked_quests_per_category(self) -> None:
         self._write_quests({27: ('Slay the Rathian!', 'hunt'), 201: ('Gathering - Forest and Hills', 'event')})
-        self.records.add(game='monsterhunter', board='clear-27', user_id=7, player='hunter', score=60, details={})
+        self._submit('clear-27', Ranking.LOWEST, 7, 'hunter', 60)
         text = self._pages().render(b'03/04/DATABASE.HTM').decode()
         self.assertIn('<a href="lbs://lbs/03/04/RANK_HUNT_1.HTM">Hunt quests</a> (1 quest)', text)
         self.assertIn('<a href="lbs://lbs/03/04/RANK_EVNT_1.HTM">Event quests</a> (0 quests)', text)
@@ -1973,7 +2009,7 @@ class AppServiceTests(unittest.TestCase):
         self.assertIn('<a href="AMUSA_MENU_BACK">Close</a>', text)
 
     def test_na_record_pages_link_to_02(self) -> None:
-        self.records.add(game='monsterhunter', board='clear-261', user_id=7, player='hunter', score=754, details={})
+        self._submit('clear-261', Ranking.LOWEST, 7, 'hunter', 754)
         text = self._download_page(b'02/DATABASE.HTM', eu=False)
         self.assertIn('<a href="lbs://lbs/02/RANK_OTHR_1.HTM">Other quests</a> (1 quest)', text)
         page = self._download_page(b'02/RANK_OTHR_1.HTM', eu=False)
@@ -1986,10 +2022,7 @@ class AppServiceTests(unittest.TestCase):
         self.assertNotIn('TLES_KILLS.HTM', pages.render(b'03/DATABASE.HTM').decode())
         for user, totals in ((1, (3, 7)), (2, (5,))):
             for total in totals:
-                self.records.add(
-                    game='monsterhunter', board='tles-kills-20', user_id=user, player=f'p{user}', score=total,
-                    details={},
-                )
+                self._submit('tles-kills-20', Ranking.HIGHEST, user, f'p{user}', total)
         self.assertIn('<a href="lbs://lbs/03/TLES_KILLS.HTM">', pages.render(b'03/DATABASE.HTM').decode())
         page = pages.render(b'03/TLES_KILLS.HTM').decode()
         self.assertIn('Gypceros', page)
@@ -1997,34 +2030,30 @@ class AppServiceTests(unittest.TestCase):
         self.assertLess(page.index('<td>p1</td><td>7</td>'), page.index('<td>p2</td><td>5</td>'))
         self.assertNotIn('<td>3</td>', page)
 
-    def test_category_pages_hold_eight_quests_in_quest_order(self) -> None:
+    def test_category_pages_hold_six_quests_in_quest_order(self) -> None:
         self._write_quests({quest: (f'Hunt {quest}', 'hunt') for quest in range(1, 11)})
         for quest in range(10, 0, -1):
             for user in range(6):
-                self.records.add(
-                    game='monsterhunter', board=f'clear-{quest}', user_id=user, player=f'p{user}', score=60 + user,
-                    details={},
-                )
+                self._submit(f'clear-{quest}', Ranking.LOWEST, user, f'p{user}', 60 + user)
         pages = self._pages()
         first = pages.render(b'03/01/RANK_HUNT_1.HTM').decode()
         self.assertIn('Page 1 of 2', first)
-        self.assertEqual(re.findall(r'#(\d+) Hunt', first), [str(quest) for quest in range(1, 9)])
+        self.assertEqual(re.findall(r'#(\d+) Hunt', first), [str(quest) for quest in range(1, 7)])
         # Top 4 per quest.
         self.assertIn('<td>p3</td>', first)
         self.assertNotIn('<td>p4</td>', first)
         self.assertIn('<a href="lbs://lbs/03/01/RANK_HUNT_2.HTM">Next</a>', first)
         self.assertNotIn('Previous', first)
         second = pages.render(b'03/01/RANK_HUNT_2.HTM').decode()
-        self.assertEqual(re.findall(r'#(\d+) Hunt', second), ['9', '10'])
+        self.assertEqual(re.findall(r'#(\d+) Hunt', second), ['7', '8', '9', '10'])
         self.assertIn('<a href="lbs://lbs/03/01/RANK_HUNT_1.HTM">Previous</a>', second)
         self.assertNotIn('Next', second)
         self.assertIsNone(pages.render(b'03/01/RANK_HUNT_3.HTM'))
 
     def test_monster_page_shows_the_top_three_per_monster(self) -> None:
         for user, kills in enumerate((5, 9, 1, 7)):
-            self.records.add(game='monsterhunter', board='kills-11', user_id=user, player=f'p<{user}>', score=kills,
-                             details={})
-        self.records.add(game='monsterhunter', board='kills-11', user_id=0, player='p<0>', score=6, details={})
+            self._submit('kills-11', Ranking.TOTAL, user, f'p<{user}>', kills)
+        self._submit('kills-11', Ranking.TOTAL, 0, 'p<0>', 6)
         text = self._pages().render(b'02/RANK_MON_1.HTM').decode()
         self.assertIn('Rathalos', text)
         self.assertNotIn('Rathian', text)
@@ -2034,19 +2063,18 @@ class AppServiceTests(unittest.TestCase):
         )
         self.assertIn('<a href="lbs://lbs/02/DATABASE.HTM">Index</a>', text)
 
-    def test_monster_pages_hold_ten_monsters_in_id_order(self) -> None:
+    def test_monster_pages_hold_eight_monsters_in_id_order(self) -> None:
         # Monsters 1-12 without Veggie Elder (10): 11 tracked monsters.
         for monster in range(1, 13):
-            self.records.add(game='monsterhunter', board=f'kills-{monster:02d}', user_id=1, player='p', score=1,
-                             details={})
+            self._submit(f'kills-{monster:02d}', Ranking.TOTAL, 1, 'p', 1)
         pages = self._pages()
         first = pages.render(b'02/RANK_MON_1.HTM').decode()
         self.assertIn('Page 1 of 2', first)
-        self.assertEqual(first.count('>Rank</font>'), 10)
+        self.assertEqual(first.count('>Rank</font>'), 8)
         self.assertIn('Rathian', first)
         self.assertIn('<a href="lbs://lbs/02/RANK_MON_2.HTM">Next</a>', first)
         second = pages.render(b'02/RANK_MON_2.HTM').decode()
-        self.assertIn('Aptonoth', second)
+        self.assertIn('Rathalos', second)
         self.assertNotIn('Veggie Elder', first + second)
         self.assertIsNone(pages.render(b'02/RANK_MON_3.HTM'))
 
@@ -2057,26 +2085,26 @@ class AppServiceTests(unittest.TestCase):
             self.assertIsNone(pages.render(name), name)
 
     def test_record_pages_stay_within_what_the_browser_draws(self) -> None:
-        # Longest quest names, 10-character usernames, every quest and monster ranked.
+        # Longest quest names, 15-character usernames (the signup maximum), every quest and monster ranked,
+        # and a viewer (user 5) below every top list, whose own rows are added.
         longest = 'The GMR Heavy Metal Crusade!'
         self._write_quests({quest: (longest, 'hunt') for quest in range(100, 400)})
-        for user in range(5):
-            player = f'Hunter_{user:03d}'
+        for user in range(6):
+            player = f'Hunter_name_{user:03d}'
             for quest in range(100, 400):
-                self.records.add(game='monsterhunter', board=f'clear-{quest}', user_id=user, player=player,
-                                 score=59999, details={})
+                self._submit(f'clear-{quest}', Ranking.LOWEST, user, player, 59999 + user // 5)
             for monster in range(1, 35):
-                self.records.add(game='monsterhunter', board=f'kills-{monster:02d}', user_id=user, player=player,
-                                 score=999999, details={})
-        for user in range(60):
-            self.standings.set(game='monsterhunter', board='hrp', user_id=user, player=f'Hunter_{user:03d}',
-                               score=9_999_999)
+                self._submit(f'kills-{monster:02d}', Ranking.TOTAL, user, player, 999999 - user // 5)
+        for user in range(150):
+            self._submit('hrp', Ranking.LATEST, user, f'Hunter_name_{user:03d}', 9_999_999 - user // 140)
         pages = self._pages()
         for name in (
             b'03/05/DATABASE.HTM', b'03/05/RANK_HUNT_1.HTM', b'03/05/RANK_MON_1.HTM', b'03/05/RANK_MON_4.HTM',
-            b'03/05/RANK_HRP_1.HTM',
+            b'03/05/RANK_HRP_1.HTM', b'03/05/RANK_HRP_4.HTM',
         ):
-            page = pages.render(name)
+            page = pages.render(name, 140 if b'HRP' in name else 5)
+            if b'RANK_' in name:
+                self.assertIn(b'#FFFF00">Hunter_', page, name)
             self.assertLessEqual(len(page), RECORD_PAGE_SAFE_SIZE, name)
             self.assertLessEqual(page.count(b'<td'), RECORD_PAGE_SAFE_CELLS, name)
 

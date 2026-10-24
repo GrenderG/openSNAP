@@ -20,8 +20,8 @@ PUBLIC_BETA_SCENARIO_NAMES = SCENARIO_NAMES[:2]
 # per scenario and mode: the save keeps its best times per mode too (submain
 # `0x0037c560` indexes them by the report's free-mode byte).
 CLEAR_BOARD_PREFIX = 'clear-'
-# Every run, scored by its result points (summed per player).
-POINTS_BOARD_PREFIX = 'points-'
+# Every run's result points, summed per player over all scenarios.
+POINTS_BOARD = 'points'
 # The clear time counts game frames at 30 per second (see the results module).
 CLEAR_TICKS_PER_SECOND = 30
 
@@ -50,10 +50,6 @@ NPC_CHARACTERS = {
 
 def clear_board(scenario: int, free_mode: bool) -> str:
     return f'{CLEAR_BOARD_PREFIX}{scenario}-{int(free_mode)}'
-
-
-def points_board(scenario: int) -> str:
-    return f'{POINTS_BOARD_PREFIX}{scenario}'
 
 
 def character_name(code: int) -> str:

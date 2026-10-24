@@ -29,6 +29,10 @@ class SqliteConnection:
     def insert_or_ignore(self, query: str, parameters: tuple[object, ...] = ()) -> None:
         self._write(query.replace('INSERT INTO', 'INSERT OR IGNORE INTO', 1), parameters)
 
+    def upsert(self, query: str, parameters: tuple[object, ...] = (), *, key: str, update: str) -> None:
+        # SQLite 3.24+.
+        self._write(f'{query} ON CONFLICT ({key}) DO UPDATE SET {update}', parameters)
+
     def query_one(self, query: str, parameters: tuple[object, ...] = ()) -> Row | None:
         with self._lock:
             return self._connection.execute(query, parameters).fetchone()
@@ -76,28 +80,20 @@ class SqliteConnection:
         self.execute('CREATE INDEX IF NOT EXISTS session_handoffs_endpoint ON session_handoffs (host, port)')
         self.execute(
             'CREATE TABLE IF NOT EXISTS records ('
-            'record_id INTEGER PRIMARY KEY AUTOINCREMENT, '
             'game TEXT NOT NULL, '
             'board TEXT NOT NULL, '
             'user_id INTEGER NOT NULL, '
             'player TEXT NOT NULL, '
             'score INTEGER NOT NULL, '
-            'details TEXT NOT NULL, '
-            'recorded_at TEXT NOT NULL'
-            ')'
-        )
-        self.execute('CREATE INDEX IF NOT EXISTS records_board ON records (game, board, score)')
-        self.execute(
-            'CREATE TABLE IF NOT EXISTS standings ('
-            'game TEXT NOT NULL, '
-            'board TEXT NOT NULL, '
-            'user_id INTEGER NOT NULL, '
-            'player TEXT NOT NULL, '
-            'score INTEGER NOT NULL, '
+            'sort_key INTEGER NOT NULL, '
             'reached_at TEXT NOT NULL, '
-            'updated_at TEXT NOT NULL, '
+            'details TEXT NOT NULL, '
             'PRIMARY KEY (game, board, user_id)'
             ')'
+        )
+        self.execute('CREATE INDEX IF NOT EXISTS records_rank ON records (game, board, sort_key, reached_at, user_id)')
+        self.execute(
+            'CREATE TABLE IF NOT EXISTS boards (game TEXT NOT NULL, board TEXT NOT NULL, PRIMARY KEY (game, board))'
         )
         self.execute(
             'CREATE TABLE IF NOT EXISTS online_players ('

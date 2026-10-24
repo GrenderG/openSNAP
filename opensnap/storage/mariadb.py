@@ -3,6 +3,7 @@
 Requires the optional `PyMySQL` package (`pip install PyMySQL`).
 """
 
+import re
 import threading
 
 from opensnap.config import StorageConfig
@@ -50,6 +51,11 @@ class MariaDbConnection:
 
     def insert_or_ignore(self, query: str, parameters: tuple[object, ...] = ()) -> None:
         self._write(query.replace('INSERT INTO', 'INSERT IGNORE INTO', 1), parameters)
+
+    def upsert(self, query: str, parameters: tuple[object, ...] = (), *, key: str, update: str) -> None:
+        # The clashing key is the table's own; `VALUES(x)` is the inserted value.
+        del key
+        self._write(f'{query} ON DUPLICATE KEY UPDATE ' + _EXCLUDED.sub(r'VALUES(\1)', update), parameters)
 
     def query_one(self, query: str, parameters: tuple[object, ...] = ()) -> Row | None:
         with self._lock, self._cursor() as cursor:
@@ -105,27 +111,21 @@ class MariaDbConnection:
         )
         self.execute(
             'CREATE TABLE IF NOT EXISTS records ('
-            'record_id BIGINT AUTO_INCREMENT PRIMARY KEY, '
             'game VARCHAR(64) NOT NULL, '
             'board VARCHAR(64) NOT NULL, '
             'user_id INT NOT NULL, '
             'player VARCHAR(255) NOT NULL, '
             'score BIGINT NOT NULL, '
+            'sort_key BIGINT NOT NULL, '
+            'reached_at VARCHAR(32) NOT NULL, '
             'details TEXT NOT NULL, '
-            'recorded_at VARCHAR(32) NOT NULL, '
-            'INDEX records_board (game, board, score)'
+            'PRIMARY KEY (game, board, user_id), '
+            'INDEX records_rank (game, board, sort_key, reached_at, user_id)'
             ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
         )
         self.execute(
-            'CREATE TABLE IF NOT EXISTS standings ('
-            'game VARCHAR(64) NOT NULL, '
-            'board VARCHAR(64) NOT NULL, '
-            'user_id INT NOT NULL, '
-            'player VARCHAR(255) NOT NULL, '
-            'score BIGINT NOT NULL, '
-            'reached_at VARCHAR(32) NOT NULL, '
-            'updated_at VARCHAR(32) NOT NULL, '
-            'PRIMARY KEY (game, board, user_id)'
+            'CREATE TABLE IF NOT EXISTS boards ('
+            'game VARCHAR(64) NOT NULL, board VARCHAR(64) NOT NULL, PRIMARY KEY (game, board)'
             ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
         )
         self.execute(
@@ -140,6 +140,9 @@ class MariaDbConnection:
             'INDEX online_players_game (game, login_serial)'
             ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
         )
+
+
+_EXCLUDED = re.compile(r'\bexcluded\.(\w+)')
 
 
 def _placeholders(query: str) -> str:

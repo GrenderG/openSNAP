@@ -25,8 +25,8 @@ SCENARIO_NAMES = (
 # Cleared runs, scored by clear time in game frames (lowest first), one board
 # per scenario and rank kind.
 CLEAR_BOARD_PREFIX = 'clear-'
-# Every run, scored by its result points (summed per player).
-POINTS_BOARD_PREFIX = 'points-'
+# Every run's result points, summed per player over all scenarios.
+POINTS_BOARD = 'points'
 # `game.bin` adds one tick per game step (`0x00619a10`), 30 per second; the EU
 # build runs an extra step every five PAL frames to keep that rate.
 CLEAR_TICKS_PER_SECOND = 30
@@ -56,10 +56,6 @@ NPC_CHARACTERS = {
 
 def clear_board(scenario: int, rank_kind: int) -> str:
     return f'{CLEAR_BOARD_PREFIX}{scenario}-{rank_kind}'
-
-
-def points_board(scenario: int) -> str:
-    return f'{POINTS_BOARD_PREFIX}{scenario}'
 
 
 def character_name(code: int) -> str:

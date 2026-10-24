@@ -151,18 +151,22 @@ class NamedFiles:
     an error (`0x002a06a0`).
     """
 
-    def __init__(self, data_directory: Path, generated: Callable[[bytes], bytes | None] | None = None) -> None:
+    def __init__(
+        self, data_directory: Path, generated: Callable[[bytes, int | None], bytes | None] | None = None
+    ) -> None:
         self._root = data_directory / FILES_DIRECTORY
-        # Server-generated pages (the Record page); a 6101 renders one and its
-        # 6102 chunks are cut from that same snapshot.
+        # Server-generated pages (the Record page), rendered for the viewer's
+        # user id; a 6101 renders one into its connection's `pages` and that
+        # connection's 6102 chunks are cut from it.
         self._generated = generated
-        self._snapshots: dict[bytes, bytes] = {}
 
     def info(
         self,
         request: bytes,
         decode_field: Callable[[bytes], tuple[bytes, int]],
         encode_field: Callable[[bytes], bytes],
+        pages: dict[bytes, bytes],
+        viewer: int | None,
     ) -> bytes:
         """Answer 6101 `u32, field name` with `u8 1, u32, field name, u32 size`.
 
@@ -172,9 +176,9 @@ class NamedFiles:
         if len(request) < 4:
             raise ValueError('File request is truncated.')
         name, _ = decode_field(request[4:])
-        content = self._generated(name) if self._generated is not None else None
+        content = self._generated(name, viewer) if self._generated is not None else None
         if content is not None:
-            self._snapshots[name] = content
+            pages[name] = content
         else:
             content = self._read(name)
         _LOGGER.info('APP file %r requested; %s.', name, 'missing' if content is None else f'{len(content)} bytes')
@@ -185,6 +189,7 @@ class NamedFiles:
         request: bytes,
         decode_field: Callable[[bytes], tuple[bytes, int]],
         encode_field: Callable[[bytes], bytes],
+        pages: dict[bytes, bytes],
     ) -> bytes:
         """Answer 6102 `field name, u32 offset, u16 size` with `field name, u32 offset, field chunk`."""
 
@@ -192,7 +197,7 @@ class NamedFiles:
         if len(request) != size + 6:
             raise ValueError('Invalid file chunk request size.')
         offset, requested = struct.unpack_from('>LH', request, size)
-        content = self._snapshots.get(name) or self._read(name)
+        content = pages.get(name) or self._read(name)
         if content is None or requested != FILE_CHUNK_SIZE or offset % FILE_CHUNK_SIZE or offset >= len(content):
             raise ValueError('Invalid file name, offset, or chunk size.')
         return encode_field(name) + struct.pack('>L', offset) + encode_field(content[offset:offset + FILE_CHUNK_SIZE])

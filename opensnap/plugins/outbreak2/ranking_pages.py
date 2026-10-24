@@ -4,7 +4,7 @@ from opensnap.plugins.outbreak2.directory import Directory
 from opensnap.plugins.outbreak2.records import (
     CLEAR_TICKS_PER_SECOND,
     GAME,
-    POINTS_BOARD_PREFIX,
+    POINTS_BOARD,
     SCENARIO_NAMES,
     character_name,
     clear_board,
@@ -27,7 +27,7 @@ def boards(directory: Directory) -> ScenarioBoards:
         game=GAME,
         scenario_names=SCENARIO_NAMES,
         clear_boards=clear_boards,
-        points_board_prefix=POINTS_BOARD_PREFIX,
+        points_board=POINTS_BOARD,
         character_name=character_name,
         clear_ticks_per_second=CLEAR_TICKS_PER_SECOND,
         hide_empty_boards=True,

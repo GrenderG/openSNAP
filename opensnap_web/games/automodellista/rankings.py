@@ -3,7 +3,7 @@
 from collections.abc import Mapping, Sequence
 import logging
 
-from opensnap.core.records import Record
+from opensnap.core.records import Ranking, Record
 from opensnap.storage.interfaces import AccountStore, RecordStore
 
 # Ranking page contract (`/amusa/am_rank.html`, Beta1 `/amusa/rank.html`).
@@ -228,7 +228,7 @@ class AutoModellistaRankings:
         self._logger = logging.getLogger('opensnap.web.rankings')
 
     def submit(self, course: str, utl: str) -> None:
-        """Keep one upload's best lap on its course board.
+        """Keep one upload's lap on its course board when it is the player's best.
 
         Only boards the ranking page shows are kept: the club meeting upload
         (`S`) carries a literal 0 instead of a lap, and 0 is never a lap time.
@@ -243,9 +243,10 @@ class AutoModellistaRankings:
         if account is None:
             self._logger.warning('Ignoring ranking upload for unknown login ID %r.', utl[:15])
             return
-        self._records.add(
+        self._records.submit(
             game=self._game,
             board=course,
+            ranking=Ranking.LOWEST,
             user_id=account.user_id,
             player=account.username,
             score=int(lap),
@@ -256,5 +257,7 @@ class AutoModellistaRankings:
     def page(self) -> str:
         """Render the current boards."""
 
-        limit = max(self._rows_by_board.values())
-        return build_am_rank_page(self._records.best_by_board(self._game, limit), self._rows_by_board)
+        return build_am_rank_page(
+            {board: self._records.top(self._game, board, limit) for board, limit in self._rows_by_board.items()},
+            self._rows_by_board,
+        )

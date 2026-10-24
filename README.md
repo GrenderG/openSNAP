@@ -31,7 +31,7 @@ were never captured.
 
 ## Install
 
-Requirements: `git` and Python 3.11 or newer.
+Requirements: `git` and Python 3.12 or newer.
 
 ```bash
 git clone https://github.com/GrenderG/openSNAP

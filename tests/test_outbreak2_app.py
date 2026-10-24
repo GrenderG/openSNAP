@@ -376,20 +376,11 @@ class Outbreak2AppServiceTests(unittest.TestCase):
         self.assertEqual(self._request(client, buffer, 0x6301, 3, report), b'')
         self.assertEqual(self._request(client, buffer, 0x1004, 4), b'')
 
-        boards = self.records.best_by_board('outbreak2', 10)
-        self.assertEqual(set(boards), {'points-3', 'clear-3-2'})
+        self.assertEqual(self.records.boards('outbreak2'), ['clear-3-2', 'points'])
         team = [{'name': 'kevin', 'alive': True, 'character': 0}, {'name': 'yoko', 'alive': False, 'character': 6}]
-        [points] = boards['points-3']
+        [points] = self.records.top('outbreak2', 'points', 10)
         self.assertEqual((points.user_id, points.player, points.score), (account.user_id, 'jill0', 15525))
-        self.assertEqual(
-            dict(points.details),
-            {
-                'rank_kind': 2, 'cleared': True, 'clear_ticks': 23339, 'character': 57, 'teammates': team,
-                'echo_ticks': 32, 'echo_replies': 8, 'echo_losses': 0, 'network_error': 0,
-                'peak_queue': 286, 'peak_location': 2027, 'peak_messages': 41, 'flags': 0x80000001,
-            },
-        )
-        [clear] = boards['clear-3-2']
+        [clear] = self.records.top('outbreak2', 'clear-3-2', 10)
         self.assertEqual(
             (clear.player, clear.score, dict(clear.details)), ('jill0', 23339, {'character': 57, 'teammates': team})
         )
@@ -400,14 +391,14 @@ class Outbreak2AppServiceTests(unittest.TestCase):
         report = _scenario_report(5, sequence=1, rank_kind=4, clear_ticks=0, points=614)
         self.assertEqual(self._request(client, buffer, 0x6301, 1, report), b'')
         self.assertEqual(self._request(client, buffer, 0x1004, 2), b'')
-        boards = self.records.best_by_board('outbreak2', 10)
-        self.assertEqual((set(boards), boards['points-5'][0].score), ({'points-5'}, 614))
+        self.assertEqual(self.records.boards('outbreak2'), ['points'])
+        self.assertEqual(self.records.top('outbreak2', 'points', 10)[0].score, 614)
 
     def test_scenario_result_of_an_unknown_login_is_acknowledged_only(self) -> None:
         client, buffer = self._open()
         self.assertEqual(self._request(client, buffer, 0x6301, 1, _scenario_report(0, sequence=1)), b'')
         self.assertEqual(self._request(client, buffer, 0x1004, 2), b'')
-        self.assertEqual(self.records.best_by_board('outbreak2', 10), {})
+        self.assertEqual(self.records.boards('outbreak2'), [])
 
     # Browser pages (mode 3).
 

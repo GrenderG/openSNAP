@@ -1,5 +1,6 @@
 """Quest records (APP 6307) and Hunter Rank Points (APP 6321) uploaded after a quest, and the Record pages."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import html
 import json
@@ -9,7 +10,8 @@ import struct
 
 from opensnap.core.browser_pages import NOTE_COLOR, data_table, document, panel
 from opensnap.core.online import OnlinePlayer
-from opensnap.storage.interfaces import RecordStore, StandingStore
+from opensnap.core.records import RankedRecord, Ranking, Record
+from opensnap.storage.interfaces import RecordStore
 
 _LOGGER = logging.getLogger('opensnap_app.capcom.monsterhunter')
 
@@ -21,7 +23,6 @@ QUEST_RECORD_CLEAR = 2
 QUEST_RECORD_MONSTERS = 34
 # Hunt counts are capped by the client.
 QUEST_RECORD_MAX_COUNT = 9999
-HUNTS_BOARD_PREFIX = 'hunts-'
 CLEAR_BOARD_PREFIX = 'clear-'
 
 KILLS_BOARD_PREFIX = 'kills-'
@@ -88,9 +89,13 @@ RECORD_PAGE_SAFE_CELLS = 156
 MONSTER_PAGE_CODE = 'MON'
 RECORD_PAGE_CLEARS_PER_QUEST = 4
 RECORD_PAGE_KILLS_PER_MONSTER = 3
-RECORD_PAGE_QUESTS_PER_PAGE = 8
-# 10 tables of 13 cells: 132 cells, within RECORD_PAGE_SAFE_CELLS.
-RECORD_PAGE_MONSTERS_PER_PAGE = 10
+# Each board lists the viewer's own row in this color, below the others with
+# its rank when the viewer is not among them. With that row, 6 quest tables
+# of 19 cells and 8 monster tables of 16 cells keep a page within
+# RECORD_PAGE_SAFE_SIZE and RECORD_PAGE_SAFE_CELLS.
+OWN_RECORD_COLOR = '#FFFF00'
+RECORD_PAGE_QUESTS_PER_PAGE = 6
+RECORD_PAGE_MONSTERS_PER_PAGE = 8
 # `{"<quest number>": {"name": "...", "category": "..."}}`. The 6307 quest is
 # the quest file's number (EU quest start copies quest information +0x1e into
 # the uploaded word, `lobby.bin` `0x00577558`); EU uploads records, and NA
@@ -184,40 +189,30 @@ def decode_hunter_summary(block: bytes) -> int:
 def store_quest_record(records: RecordStore, game: str, player: OnlinePlayer, record: QuestRecord) -> None:
     """Keep one quest record.
 
-    Clear times go on `clear-<quest>`. Hunts go on `hunts-<quest>` (the whole
-    upload) and on `kills-<monster>` (one row per hunted monster).
+    A clear time is kept on `clear-<quest>` when it is the player's fastest;
+    hunted monsters add to the player's `kills-<monster>` totals.
     """
 
     if record.kind == QUEST_RECORD_CLEAR:
-        records.add(
+        records.submit(
             game=game,
             board=f'{CLEAR_BOARD_PREFIX}{record.quest_id}',
+            ranking=Ranking.LOWEST,
             user_id=player.user_id,
             player=player.username,
             score=record.clear_seconds,
             details={'weapon_class': record.weapon_class},
         )
         return
-    records.add(
-        game=game,
-        board=f'{HUNTS_BOARD_PREFIX}{record.quest_id}',
-        user_id=player.user_id,
-        player=player.username,
-        score=sum(record.counts),
-        details={
-            'hunter_rank': record.hunter_rank,
-            'monsters': {str(index): count for index, count in enumerate(record.counts) if count},
-        },
-    )
     for index, count in enumerate(record.counts):
         if count and index + 1 not in UNTRACKED_MONSTERS:
-            records.add(
+            records.submit(
                 game=game,
                 board=_kills_board(index + 1),
+                ranking=Ranking.TOTAL,
                 user_id=player.user_id,
                 player=player.username,
                 score=count,
-                details={'quest': record.quest_id},
             )
 
 
@@ -263,18 +258,19 @@ def decode_test_build_quest_record(payload: bytes) -> TestBuildQuestRecord:
 def store_test_build_quest_record(
     records: RecordStore, game: str, player: OnlinePlayer, record: TestBuildQuestRecord
 ) -> None:
-    """Keep a TLES lifetime kill total on `tles-kills-<monster>`.
+    """Keep a TLES lifetime kill total on `tles-kills-<monster>`, the player's highest.
 
     A Rathian report carries no total, so it is not stored. These totals are
     the client's own saved counts, unlike EU's per-quest counts, so they stay
-    off the Record pages.
+    off the other Record pages.
     """
 
     if record.total is None:
         return
-    records.add(
+    records.submit(
         game=game,
-        board=f'{TEST_BUILD_KILLS_BOARD_PREFIX}{record.monster:02d}',
+        board=_test_build_kills_board(record.monster),
+        ranking=Ranking.HIGHEST,
         user_id=player.user_id,
         player=player.username,
         score=record.total,
@@ -312,19 +308,20 @@ class RecordPages:
     """The Record pages: an index, then paged monster and quest category pages.
 
     Pages are named inside the directory the lobby asked for (NA `02/`, EU
-    `03/<language>/`), and their links point back into it.
+    `03/<language>/`), and their links point back into it. Each page reads
+    only the boards it shows: their top records and the viewer's own.
     """
 
-    def __init__(
-        self, records: RecordStore, standings: StandingStore, game: str, quests: dict[int, QuestInfo]
-    ) -> None:
+    def __init__(self, records: RecordStore, game: str, quests: dict[int, QuestInfo]) -> None:
         self._records = records
-        self._standings = standings
         self._game = game
         self._quests = quests
 
-    def render(self, name: bytes) -> bytes | None:
-        """Return the page `name` asks for, or None when it is not a Record page."""
+    def render(self, name: bytes, viewer: int | None = None) -> bytes | None:
+        """Return the page `name` asks for, or None when it is not a Record page.
+
+        `viewer` is the user id of the player whose own rows are shown.
+        """
 
         directory, _, page = name.decode('ascii', errors='replace').rpartition('/')
         if not _is_record_directory(directory):
@@ -333,21 +330,22 @@ class RecordPages:
         if page == RECORD_PAGE_NAME:
             return document(self._index(links)).encode()
         if page == TEST_BUILD_KILLS_PAGE_NAME:
-            return document(self._test_build_kills(links)).encode()
+            return document(self._test_build_kills(links, viewer)).encode()
         parsed = _parse_paged_name(page)
         if parsed is None:
             return None
         code, number = parsed
         if code == MONSTER_PAGE_CODE:
-            content = self._monsters(number, links)
+            content = self._monsters(number, links, viewer)
         elif code == HRP_PAGE_CODE:
-            content = self._hunter_rank_points(number, links)
+            content = self._hunter_rank_points(number, links, viewer)
         else:
-            content = self._category(_CATEGORY_BY_CODE[code], number, links)
+            content = self._category(_CATEGORY_BY_CODE[code], number, links, viewer)
         return None if content is None else document(content).encode()
 
     def _index(self, links: '_Links') -> str:
-        clears = self._clears_by_category()
+        boards = self._records.boards(self._game)
+        clears = self._ranked_quests(boards)
         lines = [
             f'<a href="{links.page(HRP_PAGE_CODE, 1)}">Hunter Rank Points</a><br>\n',
             f'<a href="{links.page(MONSTER_PAGE_CODE, 1)}">Most monsters hunted</a><br>\n',
@@ -358,12 +356,11 @@ class RecordPages:
                 continue
             ranked = f'{count} quest{"s" if count != 1 else ""}'
             lines.append(f'<a href="{links.page(code, 1)}">{title}</a> ({ranked})<br>\n')
-        if self._test_build_totals():
+        if self._test_build_monsters(boards):
             lines.append(f'<a href="{links.named(TEST_BUILD_KILLS_PAGE_NAME)}">EU test build kill totals</a><br>\n')
         return panel(
             'Hunter Records',
-            'Hunter Rank Points, the fastest clears of each<br>\nquest and the hunters with the most kills<br>\n'
-            'of each monster.<br>\n<br>\n'
+            f'Your own records are shown in <font color="{OWN_RECORD_COLOR}">yellow</font>.<br>\n<br>\n'
             + ''.join(lines)
             + f'<br>\n<a href="{BROWSER_CLOSE_LINK}">Close</a><br>\n',
         ) + (
@@ -372,38 +369,27 @@ class RecordPages:
             'quest and monster records, so those rankings<br>\nlist EU players only.</font><br>\n'
         )
 
-    def _hunter_rank_points(self, number: int, links: '_Links') -> str | None:
+    def _hunter_rank_points(self, number: int, links: '_Links', viewer: int | None) -> str | None:
         """Current HRP, highest first; hunters at the maximum rank by who reached it first."""
 
-        standings = self._standings.top(self._game, HRP_BOARD, HRP_PAGES * HRP_PAGE_HUNTERS)
-        boards = [
-            _board(
-                'Hunters', 'HRP',
-                [(standing.player, str(standing.score)) for standing in standings[start:start + HRP_PAGE_HUNTERS]],
-                first_rank=start + 1,
-            )
-            for start in range(0, len(standings), HRP_PAGE_HUNTERS)
-        ]
+        top = self._records.top(self._game, HRP_BOARD, HRP_PAGES * HRP_PAGE_HUNTERS)
+        own = self._own(HRP_BOARD, viewer)
         return _paged(
-            'Hunter Rank Points', boards, number, 1, HRP_PAGE_CODE, links, empty=_board('Hunters', 'HRP', [])
+            'Hunter Rank Points', list(range(0, len(top), HRP_PAGE_HUNTERS)), number, 1, HRP_PAGE_CODE, links,
+            lambda start: _board(
+                'Hunters', 'HRP', top[start:start + HRP_PAGE_HUNTERS], own, str, first_rank=start + 1
+            ),
+            empty=_board('Hunters', 'HRP', []),
         )
 
-    def _test_build_totals(self) -> dict[int, list]:
-        """Stored TLES lifetime totals by monster, highest per hunter first."""
-
-        boards = self._records.best_by_board(self._game, TEST_BUILD_KILLS_PER_MONSTER, highest=True)
-        totals = {}
-        for monster in TEST_BUILD_RECORD_MONSTERS.values():
-            rows = boards.get(f'{TEST_BUILD_KILLS_BOARD_PREFIX}{monster:02d}')
-            if rows:
-                totals[monster] = rows
-        return totals
-
-    def _test_build_kills(self, links: '_Links') -> str:
+    def _test_build_kills(self, links: '_Links', viewer: int | None) -> str:
         bar = f'<a href="{links.index}">Index</a><br>\n'
         boards = [
-            _board(MONSTER_NAMES[monster], 'Kills', [(record.player, str(record.score)) for record in rows])
-            for monster, rows in self._test_build_totals().items()
+            self._ranked_board(
+                MONSTER_NAMES[monster], 'Kills', _test_build_kills_board(monster), TEST_BUILD_KILLS_PER_MONSTER,
+                viewer, str,
+            )
+            for monster in self._test_build_monsters(self._records.boards(self._game))
         ] or [_board('Monsters', 'Kills', [])]
         return (
             panel(
@@ -415,40 +401,54 @@ class RecordPages:
             + f'<br>\n{bar}'
         )
 
-    def _monsters(self, number: int, links: '_Links') -> str | None:
-        boards = []
-        for monster, name in MONSTER_NAMES.items():
-            totals = self._records.totals(self._game, _kills_board(monster), RECORD_PAGE_KILLS_PER_MONSTER)
-            if totals:
-                boards.append(_board(name, 'Kills', [(total.player, str(total.total)) for total in totals]))
+    def _monsters(self, number: int, links: '_Links', viewer: int | None) -> str | None:
+        boards = set(self._records.boards(self._game))
+        monsters = [monster for monster in MONSTER_NAMES if _kills_board(monster) in boards]
         return _paged(
-            'Most Monsters Hunted', boards, number, RECORD_PAGE_MONSTERS_PER_PAGE, MONSTER_PAGE_CODE, links,
+            'Most Monsters Hunted', monsters, number, RECORD_PAGE_MONSTERS_PER_PAGE, MONSTER_PAGE_CODE, links,
+            lambda monster: self._ranked_board(
+                MONSTER_NAMES[monster], 'Kills', _kills_board(monster), RECORD_PAGE_KILLS_PER_MONSTER, viewer, str
+            ),
             empty=_board('Monsters', 'Kills', []),
         )
 
-    def _category(self, category: str, number: int, links: '_Links') -> str | None:
-        boards = [
-            _board(self._quest_title(quest_id), 'Time', [(record.player, _clear_time(record.score)) for record in rows])
-            for quest_id, rows in self._clears_by_category().get(category, [])
-        ]
+    def _category(self, category: str, number: int, links: '_Links', viewer: int | None) -> str | None:
         code, title = QUEST_CATEGORIES[category]
         return _paged(
-            title, boards, number, RECORD_PAGE_QUESTS_PER_PAGE, code, links,
+            title, self._ranked_quests(self._records.boards(self._game)).get(category, []), number,
+            RECORD_PAGE_QUESTS_PER_PAGE, code, links,
+            lambda quest_id: self._ranked_board(
+                self._quest_title(quest_id), 'Time', f'{CLEAR_BOARD_PREFIX}{quest_id}', RECORD_PAGE_CLEARS_PER_QUEST,
+                viewer, _clear_time,
+            ),
             empty=_board('Fastest clears', 'Time', []),
         )
 
-    def _clears_by_category(self) -> dict[str, list[tuple[int, list]]]:
-        boards = self._records.best_by_board(self._game, RECORD_PAGE_CLEARS_PER_QUEST)
-        by_category: dict[str, list[tuple[int, list]]] = {}
-        for board, rows in boards.items():
-            if not board.startswith(CLEAR_BOARD_PREFIX):
-                continue
-            quest_id = int(board[len(CLEAR_BOARD_PREFIX):])
+    def _ranked_board(
+        self, title: str, value: str, board: str, count: int, viewer: int | None, show: Callable[[int], str]
+    ) -> str:
+        return _board(title, value, self._records.top(self._game, board, count), self._own(board, viewer), show)
+
+    def _own(self, board: str, viewer: int | None) -> RankedRecord | None:
+        return None if viewer is None else self._records.entry(self._game, board, viewer)
+
+    def _ranked_quests(self, boards: list[str]) -> dict[str, list[int]]:
+        """Quests with a clear time, in quest order, by category."""
+
+        quest_ids = sorted(
+            int(board[len(CLEAR_BOARD_PREFIX):]) for board in boards if board.startswith(CLEAR_BOARD_PREFIX)
+        )
+        by_category: dict[str, list[int]] = {}
+        for quest_id in quest_ids:
             quest = self._quests.get(quest_id)
-            by_category.setdefault(quest.category if quest else 'other', []).append((quest_id, rows))
-        for quests in by_category.values():
-            quests.sort(key=lambda item: item[0])
+            by_category.setdefault(quest.category if quest else 'other', []).append(quest_id)
         return by_category
+
+    @staticmethod
+    def _test_build_monsters(boards: list[str]) -> list[int]:
+        return [
+            monster for monster in TEST_BUILD_RECORD_MONSTERS.values() if _test_build_kills_board(monster) in boards
+        ]
 
     def _quest_title(self, quest_id: int) -> str:
         quest = self._quests.get(quest_id)
@@ -473,12 +473,16 @@ class _Links:
         return f'lbs://lbs/{self.directory}/{page}'
 
 
-def _paged(
-    title: str, boards: list[str], number: int, per_page: int, code: str, links: _Links, *, empty: str
+def _paged[T](
+    title: str, items: list[T], number: int, per_page: int, code: str, links: _Links,
+    render: Callable[[T], str], *, empty: str,
 ) -> str | None:
-    """Page `number` of `boards`: a title panel with Previous / Index / Next, the boards, the links again."""
+    """Page `number` of `items`, each rendered as a board by `render`.
 
-    pages = max(1, -(-len(boards) // per_page))
+    A title panel with Previous / Index / Next, the page's boards, the links again.
+    """
+
+    pages = max(1, -(-len(items) // per_page))
     if number > pages:
         return None
     navigation = [f'<a href="{links.index}">Index</a>']
@@ -487,7 +491,7 @@ def _paged(
     if number < pages:
         navigation.append(f'<a href="{links.page(code, number + 1)}">Next</a>')
     bar = ' | '.join(navigation) + '<br>\n'
-    shown = boards[(number - 1) * per_page:number * per_page] or [empty]
+    shown = [render(item) for item in items[(number - 1) * per_page:number * per_page]] or [empty]
     return (
         panel(title, f'Page {number} of {pages}<br>\n{bar}')
         + ''.join(f'<br>\n{board}' for board in shown)
@@ -521,13 +525,30 @@ def _kills_board(monster: int) -> str:
     return f'{KILLS_BOARD_PREFIX}{monster:02d}'
 
 
-def _board(title: str, value: str, rows: list[tuple[str, str]], *, first_rank: int = 1) -> str:
-    return data_table(
-        title,
-        ('Rank', 'Hunter', value),
-        [(str(rank), html.escape(name, quote=False), score) for rank, (name, score) in enumerate(rows, start=first_rank)],
-        empty='No records yet',
-    )
+def _test_build_kills_board(monster: int) -> str:
+    return f'{TEST_BUILD_KILLS_BOARD_PREFIX}{monster:02d}'
+
+
+def _board(
+    title: str, value: str, records: list[Record], own: RankedRecord | None = None,
+    show: Callable[[int], str] = str, *, first_rank: int = 1,
+) -> str:
+    """`records` ranked from `first_rank`, with `show` formatting scores.
+
+    The viewer's `own` record is drawn in OWN_RECORD_COLOR, and added below
+    the others with its rank when it is not among them.
+    """
+
+    rows = list(enumerate(records, start=first_rank))
+    if own is not None and all(record.user_id != own.record.user_id for _, record in rows):
+        rows.append((own.rank, own.record))
+    cells = []
+    for rank, record in rows:
+        row = (str(rank), html.escape(record.player, quote=False), show(record.score))
+        if own is not None and record.user_id == own.record.user_id:
+            row = tuple(f'<font color="{OWN_RECORD_COLOR}">{cell}</font>' for cell in row)
+        cells.append(row)
+    return data_table(title, ('Rank', 'Hunter', value), cells, empty='No records yet')
 
 
 def _clear_time(seconds: int) -> str:

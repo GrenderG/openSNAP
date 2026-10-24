@@ -17,7 +17,6 @@ from opensnap.plugins.automodellista import AutoModellistaPlugin
 from opensnap.protocol import commands
 from opensnap.protocol.constants import FLAG_CHANNEL_BITS, FLAG_RELIABLE
 from opensnap.protocol.models import Endpoint, SnapMessage
-from opensnap.storage.sql import SqlStandingStore
 from opensnap.storage.sqlite import SqliteConnection
 from tests.support import create_accounts, login_client_payload, serving
 
@@ -121,25 +120,8 @@ class SqliteBackendTests(unittest.TestCase):
             with sqlite3.connect(database_path) as connection:
                 tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
             self.assertEqual(
-                tables - {'sqlite_sequence'}, {'users', 'session_handoffs', 'records', 'standings', 'online_players'}
+                tables - {'sqlite_sequence'}, {'users', 'session_handoffs', 'records', 'boards', 'online_players'}
             )
-
-    def test_standings_keep_the_time_a_score_was_first_reached(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_directory:
-            connection = SqliteConnection(f'{temp_directory}/opensnap.sqlite')
-            self.addCleanup(connection.close)
-            standings = SqlStandingStore(connection)
-            first = standings.set(game='g', board='b', user_id=1, player='a', score=5)
-            # The same score again keeps when it was reached; another score resets it.
-            self.assertEqual(standings.set(game='g', board='b', user_id=1, player='a', score=5).reached_at,
-                             first.reached_at)
-            other = standings.set(game='g', board='b', user_id=2, player='b', score=5)
-            self.assertEqual([standing.user_id for standing in standings.top('g', 'b', 10)], [1, 2])
-            standings.set(game='g', board='b', user_id=1, player='a', score=4)
-            changed = standings.set(game='g', board='b', user_id=1, player='a', score=5)
-            self.assertGreater(changed.reached_at, other.reached_at)
-            self.assertEqual([standing.user_id for standing in standings.top('g', 'b', 1)], [2])
-            self.assertEqual(standings.top('g', 'other', 10), [])
 
     def test_sqlite_generates_non_empty_per_account_seeds(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

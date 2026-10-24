@@ -1,6 +1,6 @@
 """Storage backend protocols.
 
-Shared stores (accounts, session handoffs, records, standings, online players) live in the configured
+Shared stores (accounts, session handoffs, records, online players) live in the configured
 backend and may be shared by the web, bootstrap and game servers across
 machines. Runtime
 stores (sessions with transport counters, lobbies, rooms) belong to one
@@ -15,7 +15,7 @@ from typing import Protocol
 from opensnap.core.accounts import Account
 from opensnap.core.lobbies import Lobby
 from opensnap.core.online import OnlinePlayer
-from opensnap.core.records import PlayerTotal, Record, Standing
+from opensnap.core.records import RankedRecord, Ranking, Record
 from opensnap.core.rooms import GameRoom
 from opensnap.core.sessions import ReliableReceipt, Session, SessionHandoff
 from opensnap.protocol.models import Endpoint
@@ -63,35 +63,29 @@ class SessionHandoffStore(Protocol):
 
 
 class RecordStore(Protocol):
-    """Shared game records interface; every submission is kept."""
+    """Shared game records interface: one record per game, board and player."""
 
-    def add(
+    def submit(
         self,
         *,
         game: str,
         board: str,
+        ranking: Ranking,
         user_id: int,
         player: str,
         score: int,
-        details: Mapping[str, object],
-    ) -> Record:
-        """Store one submitted record."""
+        details: Mapping[str, object] | None = None,
+    ) -> None:
+        """Create the player's record, or change it as `ranking` says (a better score, a sum, the latest)."""
 
-    def best_by_board(self, game: str, limit: int, *, highest: bool = False) -> dict[str, list[Record]]:
-        """Return each board's lowest (or `highest`) score per player, best first, at most `limit` players."""
+    def top(self, game: str, board: str, limit: int) -> list[Record]:
+        """Return the board's best `limit` records, best first; equal scores by earliest `reached_at`."""
 
-    def totals(self, game: str, board_prefix: str, limit: int) -> list[PlayerTotal]:
-        """Return players by summed score over the boards starting with `board_prefix`, highest first."""
+    def entry(self, game: str, board: str, user_id: int) -> RankedRecord | None:
+        """Return the player's record with its rank, or None when the player has none."""
 
-
-class StandingStore(Protocol):
-    """Shared current-value rankings; one row per game, board and player."""
-
-    def set(self, *, game: str, board: str, user_id: int, player: str, score: int) -> Standing:
-        """Store a player's current score; `reached_at` changes only when the score does."""
-
-    def top(self, game: str, board: str, limit: int) -> list[Standing]:
-        """Return the board highest score first, ties by earliest `reached_at`."""
+    def boards(self, game: str) -> list[str]:
+        """Return the game's boards that hold records, by name."""
 
 
 class OnlinePlayerStore(Protocol):
@@ -220,7 +214,6 @@ class StorageBundle:
     accounts: AccountStore
     handoffs: SessionHandoffStore
     records: RecordStore
-    standings: StandingStore
     online_players: OnlinePlayerStore
     _close: Callable[[], None]
 

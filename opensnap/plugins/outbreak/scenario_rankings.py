@@ -35,7 +35,7 @@ class ScenarioBoards:
     scenario_names: tuple[str, ...]
     # One scenario's clear boards as `(table title, board name)`.
     clear_boards: Callable[[int], tuple[tuple[str, str], ...]]
-    points_board_prefix: str
+    points_board: str
     character_name: Callable[[int], str]
     clear_ticks_per_second: int
     # Leave out clear boards without records (keeping the first one when all are empty).
@@ -78,10 +78,10 @@ class RankingPages:
         names = self._boards.scenario_names
         if not 0 <= scenario < len(names):
             return None
-        boards = self._records.best_by_board(self._boards.game, CLEAR_RANKING_ROWS)
         clear_boards = list(self._boards.clear_boards(scenario))
         if self._boards.hide_empty_boards:
-            clear_boards = [(title, board) for title, board in clear_boards if boards.get(board)] or clear_boards[:1]
+            ranked = set(self._records.boards(self._boards.game))
+            clear_boards = [(title, board) for title, board in clear_boards if board in ranked] or clear_boards[:1]
         tables = [
             data_table(
                 title,
@@ -93,7 +93,9 @@ class RankingPages:
                         _name(self._boards.character_name(int(record.details['character']))),
                         self._clear_time(record.score),
                     )
-                    for rank, record in enumerate(boards.get(board, []), start=1)
+                    for rank, record in enumerate(
+                        self._records.top(self._boards.game, board, CLEAR_RANKING_ROWS), start=1
+                    )
                 ],
                 empty='No clears yet',
             )
@@ -104,11 +106,11 @@ class RankingPages:
     def points_page(self) -> str:
         """Every player's result points over all scenarios."""
 
-        totals = self._records.totals(self._boards.game, self._boards.points_board_prefix, POINTS_RANKING_ROWS)
+        totals = self._records.top(self._boards.game, self._boards.points_board, POINTS_RANKING_ROWS)
         table = data_table(
             'All scenarios',
             ('Rank', 'Player', 'Points'),
-            [(str(rank), _name(total.player), str(total.total)) for rank, total in enumerate(totals, start=1)],
+            [(str(rank), _name(total.player), str(total.score)) for rank, total in enumerate(totals, start=1)],
             empty='No results yet',
         )
         return self._page('Total Result Points', table)
