@@ -13,7 +13,7 @@ The header's records are RSA-1024 signatures. Record 1 at header +0x300 is
 checked with key 83 by `0xaacc48`: `c^65537 mod n`, PKCS#1 type-1 unpadding
 (error 524 on failure), then the token `791253d95296b82c` at plaintext +0x20
 (else -10201). Its first 32 bytes are the key and IV of a 16-byte-block CBC
-cipher (`0xaaf3d0`, likely AES-128) that decrypts header +0x500, whose bytes 4
+cipher (`0xaaf3d0`, RC6-32/20/16 in CBC mode) that decrypts header +0x500, whose bytes 4
 and 5 select the keys of records 2 (+0x280) and 3 (+0x000). The public keys
 sit in the overlay key table at `0xab5be0`; the private keys are not on the
 client, so a header cannot be made here: `build_install_packet` only frames a
@@ -24,7 +24,7 @@ Data checks five more signatures while it processes the payload (`0xaa45b0`,
 
 The overlay decrypts its own code at run time, so a dump from the disc must be
 decrypted first. Each guarded block has an inline descriptor
-`{flag, d4, d8, d12}` passed to a decryptor (`0xaa6d18` / `0xaaf018`): length
+`{flag, d4, d8, d12}` passed to a decryptor (`0xaa6d18` / `0xaaf018` / `0xa88a28`): length
 `d4 ^ d12`, key id `d8 >> 1` (a list of words to skip), `(d4 >> 28) & 7`
 passes (0 means 5), and each pass applies the word op chosen by a nibble of
 `d4`: xor `0x09f8ed17`, xor `0xa95128c3`, rotate right 13, rotate right 8,

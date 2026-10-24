@@ -1,21 +1,37 @@
 {
-  "eu": {
-    "file": "eu_1001.bin",
-    "name": "2610221800",
+  "eu_custom": {
+    "file": "eu_custom_1002.bin",
+    "name": "2610241800",
+    "version": "1002",
+    "offered_to": [
+      "0502180939",
+      "0509261742"
+    ],
+    "enabled": false,
+    "changelog": [
+      "An unlock that needs Hunter Rank 20 and 50 hunts of two monsters counts Rathian and Rathalos hunts instead of Fatalis and Aptonoth.",
+      "That unlock is checked again as soon as a quest's hunts are counted.",
+      "The Chrome Voucher shows its description in every language.",
+      "The GMR Chrome Heart shows its own description instead of the first Great Sword's."
+    ]
+  },
+  "eu_official": {
+    "file": "eu_official_1001.bin",
+    "name": "0509261742",
     "version": "1001",
     "offered_to": [
       "0502180939"
     ],
     "enabled": false,
     "changelog": [
-      "The Chrome Voucher shows its description in every language.",
-      "The GMR Chrome Heart shows its own description instead of the first Great Sword's."
+      "An unlock that needs Hunter Rank 20 and 50 hunts of two monsters counts Rathian and Rathalos hunts instead of Fatalis and Aptonoth.",
+      "That unlock is checked again as soon as a quest's hunts are counted."
     ]
   },
-  "na": {
-    "file": "na_1001.bin",
-    "name": "2610221900",
-    "version": "1001",
+  "na_custom": {
+    "file": "na_custom_1002.bin",
+    "name": "2610241900",
+    "version": "1002",
     "offered_to": [
       "0407251750"
     ],

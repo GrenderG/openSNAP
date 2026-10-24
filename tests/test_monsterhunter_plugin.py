@@ -80,13 +80,13 @@ DATA_DIRECTORY = Path(__file__).resolve().parents[1] / 'data' / 'monsterhunter'
 
 
 def _copy_patches(data_directory: Path, *, enabled: bool = True) -> None:
-    """Copy the built patches into a test data directory, all set to `enabled`."""
+    """Copy the built patches into a test data directory, ours set to `enabled` (Capcom's stays disabled)."""
 
     shutil.copytree(DATA_DIRECTORY / 'patches', data_directory / 'patches')
     manifest_path = data_directory / 'patches' / 'patches.json'
     manifest = json.loads(manifest_path.read_text())
-    for entry in manifest.values():
-        entry['enabled'] = enabled
+    for build, entry in manifest.items():
+        entry['enabled'] = enabled and build != 'eu_official'
     manifest_path.write_text(json.dumps(manifest))
 
 
@@ -2164,9 +2164,19 @@ class EuDescriptionsPatchTests(unittest.TestCase):
         return blob[start:blob.index(b'\x00', start)].decode('utf-8')
 
     def test_key_0_applies_the_text_overlay_slot(self) -> None:
-        pokes = [(dest, data) for key, dest, data in self._entries() if key == 0]
+        pokes = [(dest, data) for key, dest, data in self._entries() if key == 0][1:]
         li_a0_3 = struct.pack('<I', 0x24040003)
         self.assertEqual(pokes, [(dest, li_a0_3) for dest in (0x002488A4, 0x002488BC, 0x00246C34, 0x00246C4C)])
+
+    def test_capcom_fixes_jump_to_resident_copies_of_its_functions(self) -> None:
+        official = (DATA_DIRECTORY / 'patches' / 'eu_official_1001.bin').read_bytes()
+        hooks = [(key, dest, data) for key, dest, data in self._entries()[1:3]]
+        self.assertEqual([(key, dest) for key, dest, _data in hooks], [(0x23, 0x005784D0), (0x00, 0x002A4050)])
+        for (_key, _dest, data), source in zip(hooks, (0x40, 0xE0)):
+            word, nop = struct.unpack('<2I', data)
+            self.assertEqual((word >> 26, nop), (2, 0))  # j target; nop
+            start = ((word & 0x03FFFFFF) << 2 | EU_RESIDENT_BLOB & 0xF0000000) - EU_RESIDENT_BLOB
+            self.assertEqual(EU_PATCH.blob[start:start + 0xA0], official[source:source + 0xA0])
 
     def test_each_language_points_both_descriptions_at_resident_text(self) -> None:
         entries = self._entries()

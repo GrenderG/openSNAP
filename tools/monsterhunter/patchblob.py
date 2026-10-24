@@ -44,12 +44,14 @@ def text_blob(
     resident: int,
     texts: Sequence[bytes],
     pokes: Callable[[list[int]], list[tuple[int, int, bytes]]],
+    *,
+    code: bytes = b'',
 ) -> bytes:
-    """A blob whose first entry keeps `texts` (NUL-terminated) resident, followed by `pokes(addresses)`."""
+    """A blob whose first entry keeps `code` then `texts` (NUL-terminated) resident, followed by `pokes(addresses)`."""
 
-    data = b''.join(text + b'\x00' for text in texts)
+    data = code + b''.join(text + b'\x00' for text in texts)
     addresses = []
-    offset = 0
+    offset = len(code)
     for text in texts:
         addresses.append(resident_address(resident, offset))
         offset += len(text) + 1

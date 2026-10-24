@@ -8,9 +8,16 @@ and its `changelog`. The blobs are written by
 and install flow are documented in
 `opensnap_app/capcom/monsterhunter/patch.py`.
 
+`eu_official_1001.bin` is Capcom's own EU patch 1001 (name `0509261742`),
+decrypted from a retail game save: viciousShadow's original save data, thanks
+to whom it could be extracted. It is kept for reference and as the source
+of its two fixes, which `build_eu_patch.py` copies into `eu_custom_1002.bin`. EU 1002
+is also offered to clients that report `0509261742`, the clients with Capcom's
+patch installed.
+
 ## The current blobs do not work
 
-`eu_1001.bin` and `na_1001.bin` are raw `M-HUNTER` patches with no DNAS
+`eu_custom_1002.bin` and `na_custom_1002.bin` are raw `M-HUNTER` patches with no DNAS
 install header, so retail EU (`SLES_527.07`) and NA (`SLUS_208.96`) cannot
 install them. Their entries are therefore `"enabled": false` and the server
 does not offer them. They are kept because the patch content itself is correct
@@ -46,7 +53,7 @@ same limit.
 genuine signed header, for example one taken from a retail install download:
 
     python3 -m tools.dnas.install_packet --overlay dnas_ins.dec.bin \
-        --header header.bin --payload eu_1001.bin -o eu_1001.signed.bin
+        --header header.bin --payload eu_custom_1002.bin -o eu_custom_1002.signed.bin
 
 `--overlay` is the title's `dnas_ins` overlay, decrypted first (the overlay
 decrypts its own code at run time; the scheme is described in

@@ -214,8 +214,8 @@ Behaviour:
   HRP (no client patch needed). The Record pages rank hunters by their current HRP; hunters at the maximum
   (9,999,999) rank by who reached it first, and one who drops below it loses that place.
 - Client patches: retail clients still on their original version are offered an openSNAP patch on their first
-  APP connection, which they save in their game save (it needs the client's DNAS install step). EU fixes the Chrome
-  Voucher and The GMR Chrome Heart descriptions in all five languages; NA sends quest records like EU and shows EU
+  APP connection, which they save in their game save (it needs the client's DNAS install step). EU carries Capcom's
+  own 1001 fixes and fixes the Chrome Voucher and The GMR Chrome Heart descriptions in all five languages; NA sends quest records like EU and shows EU
   players' accented text as plain letters. The patches are built by `tools/monsterhunter` (`python3 -m
   tools.monsterhunter.build_eu_patch`, `build_na_patch`, the latter with the MIPS binutils) into
   `data/monsterhunter/patches`; `opensnap_app/capcom/monsterhunter/patch.py` documents the mechanism.
