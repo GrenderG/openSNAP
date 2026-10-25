@@ -512,8 +512,12 @@ class NaRamPatchPlanTests(unittest.TestCase):
         self.assertEqual(decoded[8][0], NA_LOGIN_BLOCK)
         description = decoded[8][3]
         self.assertEqual(len(description), NA_DESCRIPTION_FIELD_SIZE)
-        self.assertEqual(NA_DESCRIPTION_LENGTH, 93)
-        self.assertEqual(NA_DESCRIPTION_FIELD_SIZE, 255)
+        # The primed globals end at the write base's four bytes
+        # (`NA_DESCRIPTION_LENGTH`); the rest up to the frame header is padding.
+        self.assertEqual(
+            description[NA_DESCRIPTION_LENGTH:NA_DESCRIPTION_FRAME_HEADER],
+            bytes(NA_DESCRIPTION_FRAME_HEADER - NA_DESCRIPTION_LENGTH),
+        )
         self.assertEqual(description[:NA_DESCRIPTION_TABLE], bytes(NA_DESCRIPTION_TABLE))
         guard_offset = (NA_GUARD - NA_DOWNLOAD_BASE) & 0xFFFFFFFF
         self.assertEqual(
