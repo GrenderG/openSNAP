@@ -397,12 +397,10 @@ class AppService:
                 # The burst owes two 6502 requests.  The first, the priming
                 # page's world status, is answered: its reply is written after
                 # the burst, so the hijacked handler runs the shellcode.  The
-                # second, the handler/trigger page's duplicate, stays
-                # unanswered so the shellcode does not run again.
-                if client.ram_patch_6502_pending == 2:
-                    client.ram_patch_6502_pending = 1
-                else:
-                    client.ram_patch_6502_pending = 0
+                # second, the handler/trigger page's duplicate, is dropped so
+                # the shellcode does not run again.
+                client.ram_patch_6502_pending -= 1
+                if not client.ram_patch_6502_pending:
                     _LOGGER.debug('Skipping the duplicate 6502 the RAM patch burst causes.')
                     continue
             if client.ram_patch_6503_skips and command == CMD_APP_WORLD_LIST:
