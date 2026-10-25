@@ -13,7 +13,7 @@ the same server for crossplay.
 
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import logging
 import os
 from pathlib import Path
@@ -40,6 +40,19 @@ from opensnap_app.capcom.protocol import (
 from opensnap_app.capcom.monsterhunter.content import EventCatalog, InformationPages, MarketState, NamedFiles
 from opensnap_app.capcom.monsterhunter.flows import AppFlowTracker, AppPhase
 from opensnap_app.capcom.monsterhunter.patch import ClientPatch, load_patches
+from opensnap_app.capcom.monsterhunter.ram_patch import (
+    EU_OFFICIAL_1001_VERSION,
+    EU_STOCK_VERSION,
+    FINAL_PAGE_START,
+    NA_RAM_PATCH_ENVIRONMENT_KEY,
+    NA_STOCK_VERSION,
+    RAM_PATCH_ENVIRONMENT_KEY,
+    RamPatchPageTooLarge,
+    RamPatchPlan,
+    build_na_ram_patch,
+    build_ram_patch,
+    load_ram_patch,
+)
 from opensnap_app.capcom.monsterhunter.records import (
     HRP_BOARD,
     HUNTER_SUMMARY,
@@ -198,6 +211,13 @@ class AppServiceConfig:
     # Host of the Monster Hunter game server; `0.0.0.0` means this machine,
     # advertised by its address towards each client.
     game_host: str
+    # `OPENSNAP_MH_RAM_PATCH`: a raw `M-HUNTER` blob delivered to retail EU
+    # clients in RAM (`ram_patch.py`). `None` keeps the DNAS patch offer.
+    ram_patch: bytes | None = None
+    # `OPENSNAP_MH_RAM_PATCH_NA`: the same for the stock NA client
+    # (`SLUS_208.96`, `0407251750`).  The two blobs have different keys and
+    # destinations, so one instance serves both builds from separate files.
+    ram_patch_na: bytes | None = None
 
 
 def read_app_service_config(config: AppConfig, profile: MonsterHunterProfile) -> AppServiceConfig:
@@ -205,10 +225,17 @@ def read_app_service_config(config: AppConfig, profile: MonsterHunterProfile) ->
 
     data_root = os.getenv('OPENSNAP_DATA_DIR', '').strip() or DEFAULT_DATA_DIRECTORY
     target = config.server.resolve_game_target(profile.identifier)
+    patch_path = os.getenv(RAM_PATCH_ENVIRONMENT_KEY, '').strip()
+    patch_na_path = os.getenv(NA_RAM_PATCH_ENVIRONMENT_KEY, '').strip()
     return AppServiceConfig(
         data_directory=Path(data_root) / profile.data_directory,
         profile=profile,
         game_host=target.host if target is not None else config.server.game.host,
+        ram_patch=load_ram_patch(patch_path) if patch_path else None,
+        ram_patch_na=(
+            load_ram_patch(patch_na_path, environment_key=NA_RAM_PATCH_ENVIRONMENT_KEY)
+            if patch_na_path else None
+        ),
     )
 
 
@@ -235,6 +262,8 @@ class AppService:
         self._record_pages = RecordPages(records, config.profile.identifier, load_quests(config.data_directory))
         self._files = NamedFiles(config.data_directory, self._record_pages.render)
         self._patches = load_patches(config.data_directory)
+        self._ram_patch = config.ram_patch
+        self._ram_patch_na = config.ram_patch_na
 
     def serve(self, connection: AppConnection, answer: ConnectAnswer) -> None:
         host = connection.host
@@ -245,7 +274,42 @@ class AppService:
             connection, phase, owner, APP_BUILD_NA if test_build else answer.build, test_build,
             login=answer.login.split(b'\x00', 1)[0].decode('ascii', errors='replace'),
         )
-        client.patch = self._patches.get(answer.version.split(b'\x00', 1)[0])
+        version = answer.version.split(b'\x00', 1)[0]
+        client.patch = self._patches.get(version)
+        # RAM delivery replaces the DNAS patch offer for retail EU. The gate is
+        # the exact runtime build stamp: stock 1000 and Capcom's official 1001.
+        # The demo, TLES, a later revision and any already patched process keep
+        # the normal flow.  NA is exact too: only the stock build.
+        # Once the burst has run, the applier copies the header name over the
+        # client's runtime stamp (`0x0035d160` EU, `0x003a2760` NA), so its next
+        # 1002 answer says `M-HUNTER`; that is not a stock stamp, so the exact
+        # check already excludes it and this process is not patched again.
+        ram_patch = None
+        variant = ''
+        if (
+            self._ram_patch is not None
+            and client.build == APP_BUILD_EU
+            and not test_build
+            and version in (EU_STOCK_VERSION, EU_OFFICIAL_1001_VERSION)
+        ):
+            ram_patch = self._ram_patch
+            variant = 'EU'
+        elif (
+            self._ram_patch_na is not None
+            and client.build == APP_BUILD_NA
+            and not test_build
+            and version == NA_STOCK_VERSION
+        ):
+            ram_patch = self._ram_patch_na
+            variant = 'NA'
+        client.ram_patch = ram_patch
+        if ram_patch is not None:
+            client.patch = None
+            _LOGGER.info(
+                'RAM patch delivery enabled for %s version %s.',
+                variant,
+                version.decode('ascii', errors='replace'),
+            )
         language = answer.flags & APP_LANGUAGE_MASK if client.build == APP_BUILD_EU else 0
         _LOGGER.info(
             'APP connection from %s:%d build %s%s phase=%s owner=%s.',
@@ -322,6 +386,40 @@ class AppService:
         while True:
             request = client.app.receive()
             command = frame_command(request)
+            if client.ram_patch_6211_skips and command == CMD_APP_MARKET:
+                # An injected 6204 download completes into state 20, whose
+                # handler asks for the Market.  Answering would change the
+                # state again before the next injected frame is processed.
+                client.ram_patch_6211_skips -= 1
+                _LOGGER.debug('Ignoring a 6211 request caused by the RAM patch burst.')
+                continue
+            if client.ram_patch_6502_skips and command == CMD_APP_WORLD_STATUS:
+                # Earlier final pages put the list back in state 8, whose
+                # automatic 6502 request is a duplicate of the one the last
+                # page sends after the handler table is armed.  Answer only it.
+                client.ram_patch_6502_skips -= 1
+                _LOGGER.debug('Skipping a 6502 request while the RAM patch burst settles.')
+                continue
+            if client.ram_patch_6503_skips and command == CMD_APP_WORLD_LIST:
+                # The injected prelude puts the list back in state 6, whose
+                # automatic 6503 request is a duplicate of the next injected
+                # page; answering it would replace that page.
+                client.ram_patch_6503_skips -= 1
+                _LOGGER.debug('Skipping a 6503 request caused by the RAM patch burst.')
+                continue
+            if client.ram_patch_6403_skips and command == CMD_APP_DOWNLOAD_LIST_6403:
+                # NA's handler and guard pages complete with the guard clear,
+                # whose state 54 asks for the download list before the next
+                # injected page is due.  Answering would reset that state.
+                client.ram_patch_6403_skips -= 1
+                _LOGGER.debug('Skipping a 6403 request caused by the NA RAM patch burst.')
+                continue
+            if client.ram_patch_6002_skips and command == CMD_APP_PATCH_CHUNK:
+                # Every injected 6002 leaves NA in state 23, which asks for the
+                # next chunk.  The burst already sent it, so stay silent.
+                client.ram_patch_6002_skips -= 1
+                _LOGGER.debug('Skipping a 6002 request caused by the NA RAM patch burst.')
+                continue
             if command == CMD_APP_WORLD:
                 client.phase = AppPhase.WORLD
                 self._flows.advance(host, owner, AppPhase.WORLD)
@@ -343,15 +441,50 @@ class AppService:
 
             sequence = frame_sequence(request)
             try:
-                reply = self._reply(request, client, advertise_host)
+                injection = self._ram_patch_plan(client, request, advertise_host)
+                if injection is not None:
+                    reply = injection.reply
+                else:
+                    reply = self._reply(request, client, advertise_host)
             except ValueError as exc:
                 _LOGGER.warning('Rejecting APP command 0x%04x: %s', command, exc)
                 client.app.send(app_frame(APP_DIRECTION_REPLY, command, sequence=sequence, error=0xFF))
                 continue
             if reply is None:
-                _LOGGER.warning('Unexpected APP %s command 0x%04x; not answered.', client.phase, command)
+                if command == CMD_APP_EVENT_DOWNLOAD and client.ram_patch_done:
+                    _LOGGER.debug('Ignoring 6204 after the RAM patch burst.')
+                else:
+                    _LOGGER.warning('Unexpected APP %s command 0x%04x; not answered.', client.phase, command)
                 continue
             client.app.reply(request, reply)
+            if injection is not None:
+                if injection.wait_for_next:
+                    # The first 8-record page moved the client's cursor to 8;
+                    # its next 6503 request (start 8) will carry the final page
+                    # and the burst.
+                    client.ram_patch_prelude_sent = True
+                    _LOGGER.info(
+                        'Sent the %s RAM patch prelude page; waiting for the next World page.',
+                        injection.variant.upper(),
+                    )
+                else:
+                    # The client runs its own applier when the last page's
+                    # 6502 reply reaches the hijacked handler.
+                    for frame in injection.frames:
+                        client.app.send(frame)
+                    client.ram_patch_done = True
+                    client.ram_patch_6502_skips = injection.ignore_6502
+                    client.ram_patch_6503_skips = injection.ignore_6503
+                    client.ram_patch_6211_skips = injection.ignore_6211
+                    client.ram_patch_6403_skips = injection.ignore_6403
+                    client.ram_patch_6002_skips = injection.ignore_6002
+                    _LOGGER.info(
+                        'Sent the %s RAM patch burst: %d bytes, %d frames, shellcode at 0x%08x.',
+                        injection.variant.upper(),
+                        injection.payload_size,
+                        len(injection.frames),
+                        injection.shellcode_address,
+                    )
 
     def _reply(self, request: bytes, client: '_MhClient', advertise_host: str) -> bytes | None:
         command = frame_command(request)
@@ -380,6 +513,12 @@ class AppService:
         if command == CMD_APP_EVENT_CATALOG:
             return self._events.catalog(encode_field)
         if command == CMD_APP_EVENT_DOWNLOAD:
+            if client.ram_patch_done:
+                # The burst already pushed every 6204 chunk.  The client's
+                # requests for the next one must stay unanswered: an error
+                # reply would reset the download state before the shellcode
+                # runs.
+                return None
             return self._events.download(payload, encode_field)
         if command == CMD_APP_MARKET:
             return self._market.native_response()
@@ -525,6 +664,66 @@ class AppService:
             None,
         )
 
+    def _ram_patch_plan(
+        self, client: '_MhClient', request: bytes, advertise_host: str
+    ) -> RamPatchPlan | None:
+        """The World-list reply that starts RAM patch delivery, or `None`.
+
+        The client's first page is answered with a normal 8-record prelude
+        (`total=16`), which advances its record cursor to 8 and makes it ask
+        for the next page.  That start-8 request gets the 9-record final page:
+        it writes records 8..15 and then record 16, whose fields prime the
+        download globals (6204 on EU; 6002 and 6204 on NA).  The final page's
+        `total` is the configured World count, so the client lists only real
+        Worlds; the write index is the cursor, not `total`.  A list longer
+        than 16 Worlds cannot spare record 16, and the client only accepts
+        `total < 17` in WORLD mode, so those keep the normal paged reply.  A
+        page that would not fit the client's 768-byte frame body (long names
+        or descriptions) also falls back to the normal reply.
+        """
+
+        if client.ram_patch is None or client.ram_patch_done:
+            return None
+        if frame_command(request) != CMD_APP_WORLD_LIST:
+            return None
+        payload = frame_payload(request)
+        if len(payload) < 4:
+            return None
+        start, count = struct.unpack_from('>2H', payload)
+        worlds = self._directory.worlds
+        if not 1 <= len(worlds) <= 16:
+            return None
+        entries = [
+            (world.host or advertise_host, world.name, world.description) for world in worlds
+        ]
+        build = build_na_ram_patch if client.build == APP_BUILD_NA else build_ram_patch
+        try:
+            plan = build(client.ram_patch, entries, sequence=frame_sequence(request))
+        except RamPatchPageTooLarge as exc:
+            _LOGGER.warning('Keeping the normal World list: %s', exc)
+            return None
+        if not client.ram_patch_prelude_sent:
+            # First page: a normal 8-record page.  Its completion advances the
+            # client's cursor to 8 and asks for the next page.
+            if start != 0 or count == 0 or plan.prelude is None:
+                return None
+            return replace(
+                plan,
+                reply=plan.prelude,
+                prelude=None,
+                frames=(),
+                wait_for_next=True,
+                ignore_6502=0,
+                ignore_6503=0,
+                ignore_6211=0,
+                ignore_6403=0,
+                ignore_6002=0,
+            )
+        # Second page: start 8, nine records; the ninth is index 16.
+        if start != FINAL_PAGE_START:
+            return None
+        return plan
+
     def _world_list(self, request: bytes, advertise_host: str, encode_field: Callable[[bytes], bytes]) -> bytes:
         """Answer 6503 `u16 start, u16 count` with one page of Worlds.
 
@@ -636,5 +835,23 @@ class _MhClient:
     login: str = ''
     # The client patch offered on this connection.
     patch: ClientPatch | None = None
+    # `OPENSNAP_MH_RAM_PATCH`/`_NA` blob for this retail connection; `None`
+    # when RAM delivery is off or the build/version is unsupported.
+    ram_patch: bytes | None = None
+    # The World list reply that starts the burst was sent.
+    ram_patch_done: bool = False
+    # The first 8-record prelude page was sent; wait for the client's start-8
+    # 6503 request, which carries the final page and the burst.
+    ram_patch_prelude_sent: bool = False
+    # Duplicate 6502 requests from the first final page to ignore.
+    ram_patch_6502_skips: int = 0
+    # Duplicate 6503 requests NA sends after an injected prelude.
+    ram_patch_6503_skips: int = 0
+    # 6211 requests the client sends when an injected 6204 download completes.
+    ram_patch_6211_skips: int = 0
+    # 6403 requests NA sends after each page that leaves the guard clear.
+    ram_patch_6403_skips: int = 0
+    # 6002 requests NA sends after each injected patch chunk.
+    ram_patch_6002_skips: int = 0
     # Pages as published by this connection's 6101, so its 6102 chunks match.
     pages: dict[bytes, bytes] = field(default_factory=dict)

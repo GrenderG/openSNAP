@@ -83,6 +83,20 @@ reproduced by emulating the client's own code on retail EU and NA (the
 record check is `c^65537 mod n` with key 83's modulus, then PKCS#1 type-1
 unpadding, `0xaacc48`). Their `patches.json` entries are therefore disabled.
 
+RAM without an install. `OPENSNAP_MH_RAM_PATCH` (EU) and
+`OPENSNAP_MH_RAM_PATCH_NA` (NA) make the APP service deliver a raw blob during
+the online session instead: `ram_patch.py` uses World-list and download
+handlers as arbitrary RAM writers, plants a small shellcode in the resident
+patch buffer and calls this applier with key 0 and the loaded overlay slots
+(1-4 on EU, 1-3 on NA). Nothing is stored and the patch lasts for the
+game process.
+EU works on a stock client and on one carrying Capcom's official 1001 patch
+(`0509261742`) and replaces the 6001 offer; the EU demo and TLES are excluded.
+NA uses a different route and blob and only reaches the stock stamp
+`0407251750`, never the public beta, TLES or an already patched client. The
+routes, the 1-16 World requirement, the 768-byte priming-page limit and the
+shellcode are documented there.
+
 Version string and naming. The version field of the client's 1002 answer is
 its build stamp (`YYMMDDhhmm` of `__DATE__`/`__TIME__`) or the installed patch
 name: when `count != 0` and the stamp sorts below the name (10 characters),

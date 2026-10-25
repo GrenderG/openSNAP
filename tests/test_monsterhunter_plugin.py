@@ -46,6 +46,7 @@ from opensnap_app.capcom.monsterhunter.records import (
     load_quests,
 )
 from opensnap_app.capcom.monsterhunter.patch import load_patches
+from opensnap_app.capcom.monsterhunter.ram_patch import BLOB_MAGIC, build_na_ram_patch, build_ram_patch
 from opensnap_app.capcom.monsterhunter.service import (
     APP_BUILD_EU,
     APP_BUILD_NA,
@@ -2131,9 +2132,324 @@ class AppServiceTests(unittest.TestCase):
         # The next frame is the reply to the client's first request, not a 6001.
         self.assertEqual(self._exchange(client, buffer, 0x1007), b'\x00')
 
+    def _ram_server(self, directory: Directory | None = None) -> CapcomAppServer:
+        """A second APP server whose EU service delivers the custom blob in RAM."""
 
-if __name__ == '__main__':
-    unittest.main()
+        service = AppService(
+            config=AppServiceConfig(
+                data_directory=self.data_directory,
+                profile=MONSTER_HUNTER_NA,
+                game_host='192.0.2.10',
+                ram_patch=(DATA_DIRECTORY / 'patches' / 'eu_custom_1002.bin').read_bytes(),
+            ),
+            flows=AppFlowTracker(),
+            directory=directory or self.directory,
+            online_players=self.online,
+            records=self.records,
+        )
+        server = CapcomAppServer(
+            host='127.0.0.1',
+            port=0,
+            titles={APP_BUILD_NA: service, APP_BUILD_EU: service},
+        )
+        server.start()
+        self.addCleanup(server.stop)
+        return server
+
+    def _ram_client(self, server: CapcomAppServer) -> tuple[socket.socket, bytearray]:
+        client = socket.create_connection(('127.0.0.1', server.address[1]), timeout=5)
+        self.addCleanup(client.close)
+        return client, bytearray()
+
+    def _ram_open(self, client: socket.socket, buffer: bytearray, version: bytes) -> None:
+        """Answer 1002; RAM delivery replaces the 6001 patch offer with flag 0."""
+
+        opening = self._receive(client, buffer)
+        self.assertEqual((frame_command(opening), frame_payload(opening)), (0x1002, b'\x00\x00'))
+        reply = (
+            encode_app_field(b'hunter', 2)
+            + bytes([APP_BUILD_EU, 0x11])
+            + encode_app_field(version, 2)
+            + bytes(4)
+        )
+        client.sendall(app_frame(2, 0x1002, sequence=2, payload=reply))
+        self.assertEqual(self._receive(client, buffer), app_frame(0x10, 0x6001, payload=b'\x00'))
+
+    def _ram_world_list(self, client: socket.socket, buffer: bytearray, sequence: int) -> bytes:
+        """Open a WORLD connection with 1007, then ask for the first World page."""
+
+        client.sendall(app_frame(1, 0x1007, sequence=sequence))
+        opening = self._receive(client, buffer)
+        self.assertEqual(
+            (frame_command(opening), frame_sequence(opening), frame_payload(opening)),
+            (0x1007, sequence, b'\x00'),
+        )
+        client.sendall(app_frame(1, 0x6503, sequence=sequence + 1, payload=struct.pack('>2H', 0, 16)))
+        page = self._receive(client, buffer)
+        self.assertEqual((frame_command(page), frame_sequence(page)), (0x6503, sequence + 1))
+        return page
+
+    def _ram_final_page(self, client: socket.socket, buffer: bytearray, sequence: int) -> bytes:
+        """Ask for the page at start 8, where the final page holds record 16."""
+
+        client.sendall(app_frame(1, 0x6503, sequence=sequence, payload=struct.pack('>2H', 8, 8)))
+        page = self._receive(client, buffer)
+        self.assertEqual((frame_command(page), frame_sequence(page)), (0x6503, sequence))
+        return page
+
+    def test_ram_patch_burst_delivers_the_custom_blob(self) -> None:
+        server = self._ram_server()
+        client, buffer = self._ram_client(server)
+        self._ram_open(client, buffer, EU_STOCK_STAMP)
+        page = self._ram_world_list(client, buffer, sequence=3)
+        blob = (DATA_DIRECTORY / 'patches' / 'eu_custom_1002.bin').read_bytes()
+        worlds = [
+            ('192.0.2.10', 'Brave World', 'First'),
+            ('sincere.example', 'Sincere World', 'Select a world to login to.'),
+        ]
+        prelude_plan = build_ram_patch(blob, worlds, sequence=4)
+        self.assertEqual(frame_payload(page), prelude_plan.prelude)
+        self.assertEqual(struct.unpack_from('>2HB', prelude_plan.prelude), (16, 0, 8))
+
+        # The 8-record page advances the client's cursor; its next request
+        # starts at 8 and gets the 9-record page ending in record 16.
+        final_page = self._ram_final_page(client, buffer, 5)
+        plan = build_ram_patch(blob, worlds, sequence=5)
+        self.assertEqual(frame_payload(final_page), plan.reply)
+        self.assertEqual(struct.unpack_from('>2HB', plan.reply), (2, 8, 9))
+        for expected in plan.frames:
+            self.assertEqual(self._receive(client, buffer), expected)
+
+        # The burst leaves requests behind: the first final page's world
+        # status, the upload's chunk requests, the payload completion's Market,
+        # and the prelude's next World page.  They stay unanswered; the 6502
+        # the handler page sends after the slot is armed is the one answered
+        # (its reply runs the shellcode on the client).  The handler write's
+        # Market request is ignored too, and later 6502/6503 requests are
+        # normal.
+        client.sendall(app_frame(1, 0x6502, sequence=6, payload=b'\x00'))
+        client.sendall(app_frame(1, 0x6204, sequence=7, payload=b'\x00\x01' + bytes(4)))
+        client.sendall(app_frame(1, 0x6211, sequence=8))
+        client.sendall(app_frame(1, 0x6503, sequence=9, payload=struct.pack('>2H', 8, 8)))
+        client.sendall(app_frame(1, 0x6502, sequence=10, payload=b'\x00'))
+        reply = self._receive(client, buffer)
+        self.assertEqual((frame_command(reply), frame_sequence(reply)), (0x6502, 10))
+        self.assertEqual(frame_payload(reply), b'\x01\x00\x00\x00\x01\x00\x00\x00\x00')
+        client.sendall(app_frame(1, 0x6211, sequence=11))
+        client.sendall(app_frame(1, 0x6502, sequence=12, payload=b'\x00'))
+        self.assertEqual(frame_sequence(self._receive(client, buffer)), 12)
+
+        # The burst runs once per connection; later World pages are normal.
+        client.sendall(app_frame(1, 0x6503, sequence=13, payload=struct.pack('>2H', 0, 16)))
+        later = self._receive(client, buffer)
+        self.assertEqual((frame_command(later), frame_sequence(later)), (0x6503, 13))
+        self.assertEqual(struct.unpack_from('>2HB', frame_payload(later)), (2, 0, 2))
+
+    def test_ram_patch_reaches_an_official_1001_client(self) -> None:
+        server = self._ram_server()
+        client, buffer = self._ram_client(server)
+        self._ram_open(client, buffer, b'0509261742')
+        self._ram_world_list(client, buffer, sequence=3)
+        page = self._ram_final_page(client, buffer, 5)
+        self.assertEqual(struct.unpack_from('>2HB', frame_payload(page)), (2, 8, 9))
+        self.assertEqual(frame_command(self._receive(client, buffer)), 0x6204)
+
+    def test_ram_patch_skips_the_demo_a_patched_client_and_na(self) -> None:
+        # The demo, an unknown EU build, an already patched client and NA never
+        # burst: the World page stays the normal two-record list.
+        for version in (SLED_STAMP, BLOB_MAGIC, b'0501010101'):
+            server = self._ram_server()
+            client, buffer = self._ram_client(server)
+            self._ram_open(client, buffer, version)
+            page = self._ram_world_list(client, buffer, sequence=3)
+            self.assertEqual(struct.unpack_from('>2HB', frame_payload(page)), (2, 0, 2))
+            client.sendall(app_frame(1, 0x6503, sequence=5, payload=struct.pack('>2H', 0, 16)))
+            later = self._receive(client, buffer)
+            self.assertEqual((frame_command(later), frame_sequence(later)), (0x6503, 5))
+
+        # TLES (EU build 3, NA flow) and NA itself answer first and are never
+        # offered the EU RAM patch; NA needs `OPENSNAP_MH_RAM_PATCH_NA`.
+        for build, version in ((APP_BUILD_EU, TLES_STAMP), (APP_BUILD_NA, NA_STOCK_STAMP)):
+            server = self._ram_server()
+            client, buffer = self._na_ram_open(server, version=version, build=build)
+            page = self._na_ram_world_list(client, buffer)
+            self.assertEqual(struct.unpack_from('>2HB', frame_payload(page)), (2, 0, 2))
+
+    def _na_ram_server(self, directory: Directory | None = None) -> CapcomAppServer:
+        """A second APP server whose NA service delivers the custom NA blob in RAM."""
+
+        service = AppService(
+            config=AppServiceConfig(
+                data_directory=self.data_directory,
+                profile=MONSTER_HUNTER_NA,
+                game_host='192.0.2.10',
+                ram_patch_na=(DATA_DIRECTORY / 'patches' / 'na_custom_1002.bin').read_bytes(),
+            ),
+            flows=AppFlowTracker(),
+            directory=directory or self.directory,
+            online_players=self.online,
+            records=self.records,
+        )
+        server = CapcomAppServer(
+            host='127.0.0.1',
+            port=0,
+            titles={APP_BUILD_NA: service, APP_BUILD_EU: service},
+        )
+        server.start()
+        self.addCleanup(server.stop)
+        return server
+
+    def _na_ram_open(
+        self, server: CapcomAppServer, version: bytes = NA_STOCK_STAMP, build: int = APP_BUILD_NA
+    ) -> tuple[socket.socket, bytearray]:
+        """Answer 1002 and open a WORLD connection; an NA-flow client may get 6001 first."""
+
+        client, buffer = self._ram_client(server)
+        opening = self._receive(client, buffer)
+        self.assertEqual((frame_command(opening), frame_payload(opening)), (0x1002, b'\x00\x00'))
+        reply = (
+            encode_app_field(b'hunter', 2)
+            + bytes([build, 0x11])
+            + encode_app_field(version, 2)
+            + bytes(4)
+        )
+        client.sendall(app_frame(2, 0x1002, sequence=2, payload=reply))
+        client.sendall(app_frame(1, 0x1007, sequence=3))
+        opened = self._receive(client, buffer)
+        # An EU client is pushed 6001 first; NA clients open with 1007.
+        while frame_command(opened) == 0x6001:
+            opened = self._receive(client, buffer)
+        self.assertEqual(
+            (frame_command(opened), frame_sequence(opened), frame_payload(opened)),
+            (0x1007, 3, b'\x00'),
+        )
+        return client, buffer
+
+    def _na_ram_world_list(self, client: socket.socket, buffer: bytearray) -> bytes:
+        client.sendall(app_frame(1, 0x6503, sequence=4, payload=struct.pack('>2H', 0, 16)))
+        page = self._receive(client, buffer)
+        self.assertEqual((frame_command(page), frame_sequence(page)), (0x6503, 4))
+        return page
+
+    def _na_ram_final_page(self, client: socket.socket, buffer: bytearray) -> bytes:
+        client.sendall(app_frame(1, 0x6503, sequence=5, payload=struct.pack('>2H', 8, 8)))
+        page = self._receive(client, buffer)
+        self.assertEqual((frame_command(page), frame_sequence(page)), (0x6503, 5))
+        return page
+
+    def test_na_ram_patch_burst_delivers_the_custom_blob(self) -> None:
+        server = self._na_ram_server()
+        client, buffer = self._na_ram_open(server)
+        page = self._na_ram_world_list(client, buffer)
+        blob = (DATA_DIRECTORY / 'patches' / 'na_custom_1002.bin').read_bytes()
+        worlds = [(world.host or '192.0.2.10', world.name, world.description) for world in self.directory.worlds]
+        prelude_plan = build_na_ram_patch(blob, worlds, sequence=4)
+        self.assertEqual(frame_payload(page), prelude_plan.prelude)
+        self.assertEqual(struct.unpack_from('>2HB', prelude_plan.prelude), (16, 0, 8))
+
+        final_page = self._na_ram_final_page(client, buffer)
+        plan = build_na_ram_patch(blob, worlds, sequence=5)
+        self.assertEqual(frame_payload(final_page), plan.reply)
+        self.assertEqual(struct.unpack_from('>2HB', plan.reply), (2, 8, 9))
+        for expected in plan.frames:
+            self.assertEqual(self._receive(client, buffer), expected)
+
+        # Every injected page leaves a request behind: the first final page
+        # asks for the world status, the guard-clearing 6204 asks for the
+        # Market, the uploads ask for the next chunk, the prelude asks for the
+        # next World page, the handler and guard pages ask for the Land list,
+        # and the handler and guard writes ask for another chunk.  Only the
+        # 6502 after the trigger page is answered, and its reply runs the
+        # shellcode on the client.
+        sequence = 6
+        client.sendall(app_frame(1, 0x6502, sequence=sequence, payload=b'\x00'))
+        sequence += 1
+        client.sendall(app_frame(1, 0x6211, sequence=sequence))
+        sequence += 1
+        for _ in range(plan.ignore_6002 - 2):
+            client.sendall(app_frame(1, 0x6002, sequence=sequence))
+            sequence += 1
+        client.sendall(app_frame(1, 0x6503, sequence=sequence, payload=struct.pack('>2H', 8, 8)))
+        sequence += 1
+        client.sendall(app_frame(1, 0x6403, sequence=sequence))
+        sequence += 1
+        client.sendall(app_frame(1, 0x6002, sequence=sequence))
+        sequence += 1
+        client.sendall(app_frame(1, 0x6403, sequence=sequence))
+        sequence += 1
+        client.sendall(app_frame(1, 0x6002, sequence=sequence))
+        sequence += 1
+        client.sendall(app_frame(1, 0x6502, sequence=sequence, payload=b'\x00'))
+        reply = self._receive(client, buffer)
+        self.assertEqual((frame_command(reply), frame_sequence(reply)), (0x6502, sequence))
+        self.assertEqual(frame_payload(reply), b'\x01\x00\x00\x00\x01\x00\x00\x00\x00')
+
+        # The real 6502 handler then asks for the next World's status, so the
+        # service must answer those requests too (the NA plan ignores none).
+        for offset in (1, 2):
+            client.sendall(app_frame(1, 0x6502, sequence=sequence + offset, payload=b'\x00'))
+            extra = self._receive(client, buffer)
+            self.assertEqual(
+                (frame_command(extra), frame_sequence(extra)), (0x6502, sequence + offset)
+            )
+
+        # The burst runs once per connection; later World pages are normal.
+        client.sendall(app_frame(1, 0x6503, sequence=sequence + 3, payload=struct.pack('>2H', 0, 16)))
+        later = self._receive(client, buffer)
+        self.assertEqual((frame_command(later), frame_sequence(later)), (0x6503, sequence + 3))
+        self.assertEqual(struct.unpack_from('>2HB', frame_payload(later)), (2, 0, 2))
+
+    def test_na_ram_patch_skips_the_beta_a_patched_client_tles_and_eu(self) -> None:
+        # Only the stock NA stamp may burst.  The beta and an already patched
+        # client answer normally; TLES and EU never take the NA contract.
+        for build, version in (
+            (APP_BUILD_NA, NA_PUBLIC_BETA_VERSION),
+            (APP_BUILD_NA, BLOB_MAGIC),
+            (APP_BUILD_EU, TLES_STAMP),
+            (APP_BUILD_EU, EU_STOCK_STAMP),
+        ):
+            with self.subTest(version=version):
+                server = self._na_ram_server()
+                client, buffer = self._na_ram_open(server, version=version, build=build)
+                page = self._na_ram_world_list(client, buffer)
+                self.assertEqual(struct.unpack_from('>2HB', frame_payload(page)), (2, 0, 2))
+                client.sendall(app_frame(1, 0x6503, sequence=6, payload=struct.pack('>2H', 0, 16)))
+                later = self._receive(client, buffer)
+                self.assertEqual((frame_command(later), frame_sequence(later)), (0x6503, 6))
+
+    @staticmethod
+    def _long_worlds() -> dict:
+        return {
+            f'Long World {index}': {
+                'host': '' if index == 0 else f'world{index}.example',
+                'description': chr(ord('a') + index) * 255,
+                'lands': [{'key': f'AA{index}', 'name': 'First', 'areas': 1}],
+            }
+            for index in range(3)
+        }
+
+    def test_ram_patch_falls_back_when_the_page_is_too_large(self) -> None:
+        # Three 255-byte World descriptions cannot fit the client's 768-byte
+        # body, so the service keeps the normal paged reply instead of sending
+        # a priming page the client would truncate.
+        with patch.dict('os.environ', {'OPENSNAP_MH_WORLDS': json.dumps(self._long_worlds())}):
+            directory = read_directory(max_players_per_town=8)
+        server = self._ram_server(directory)
+        client, buffer = self._ram_client(server)
+        self._ram_open(client, buffer, EU_STOCK_STAMP)
+        page = self._ram_world_list(client, buffer, sequence=3)
+        self.assertEqual(struct.unpack_from('>2HB', frame_payload(page)), (3, 0, 3))
+
+    def test_na_ram_patch_falls_back_when_the_page_is_too_large(self) -> None:
+        # Three 255-byte World descriptions cannot fit the client's 768-byte
+        # body, so the service keeps the normal paged reply instead of sending
+        # a priming page the client would truncate.
+        with patch.dict('os.environ', {'OPENSNAP_MH_WORLDS': json.dumps(self._long_worlds())}):
+            directory = read_directory(max_players_per_town=8)
+        server = self._na_ram_server(directory)
+        client, buffer = self._na_ram_open(server)
+        page = self._na_ram_world_list(client, buffer)
+        self.assertEqual(struct.unpack_from('>2HB', frame_payload(page)), (3, 0, 3))
 
 
 class EuDescriptionsPatchTests(unittest.TestCase):
@@ -2242,3 +2558,7 @@ class NaPatchTests(unittest.TestCase):
         self.assertEqual(entries[0][0], 0xFFFFFFFF)
         self.assertEqual({key for key, _dest, _data in entries[1:]}, {0x00, 0x11, 0x23})
         self.assertEqual(entries[-1][1:], (0x002B4C4C, struct.pack('<I', 0x29420044)))
+
+
+if __name__ == '__main__':
+    unittest.main()

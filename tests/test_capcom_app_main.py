@@ -74,6 +74,36 @@ class CapcomAppMainTests(unittest.TestCase):
         self.assertEqual(builds, MONSTER_HUNTER_BUILDS | OUTBREAK_BUILDS | OUTBREAK2_BUILDS)
         self.assertEqual(stamped, {outbreak.PUBLIC_BETA_VERSION})
 
+    def test_unreadable_ram_patch_leaves_both_monster_hunter_titles_out(self) -> None:
+        # `OPENSNAP_MH_RAM_PATCH` is process-wide, so both Monster Hunter
+        # deployments build their config from it.
+        with self.assertLogs('opensnap_app.capcom', 'ERROR') as logs:
+            builds, stamped = self._served(OPENSNAP_MH_RAM_PATCH='/nonexistent/patch.bin')
+        self.assertTrue(any(
+            'Monster Hunter is not served: OPENSNAP_MH_RAM_PATCH' in line for line in logs.output
+        ))
+        self.assertTrue(any(
+            'Monster Hunter NA public beta is not served: OPENSNAP_MH_RAM_PATCH' in line
+            for line in logs.output
+        ))
+        self.assertEqual(builds, OUTBREAK_BUILDS | OUTBREAK2_BUILDS)
+        self.assertEqual(stamped, {outbreak.PUBLIC_BETA_VERSION})
+
+    def test_unreadable_na_ram_patch_leaves_both_monster_hunter_titles_out(self) -> None:
+        # `OPENSNAP_MH_RAM_PATCH_NA` is loaded by the same config builder, so
+        # an unreadable NA blob drops the release and the beta as well.
+        with self.assertLogs('opensnap_app.capcom', 'ERROR') as logs:
+            builds, stamped = self._served(OPENSNAP_MH_RAM_PATCH_NA='/nonexistent/na.bin')
+        self.assertTrue(any(
+            'Monster Hunter is not served: OPENSNAP_MH_RAM_PATCH_NA' in line for line in logs.output
+        ))
+        self.assertTrue(any(
+            'Monster Hunter NA public beta is not served: OPENSNAP_MH_RAM_PATCH_NA' in line
+            for line in logs.output
+        ))
+        self.assertEqual(builds, OUTBREAK_BUILDS | OUTBREAK2_BUILDS)
+        self.assertEqual(stamped, {outbreak.PUBLIC_BETA_VERSION})
+
 
 if __name__ == '__main__':
     unittest.main()
