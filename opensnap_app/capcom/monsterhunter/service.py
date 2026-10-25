@@ -393,13 +393,18 @@ class AppService:
                 client.ram_patch_6211_skips -= 1
                 _LOGGER.debug('Ignoring a 6211 request caused by the RAM patch burst.')
                 continue
-            if client.ram_patch_6502_skips and command == CMD_APP_WORLD_STATUS:
-                # Earlier final pages put the list back in state 8, whose
-                # automatic 6502 request is a duplicate of the one the last
-                # page sends after the handler table is armed.  Answer only it.
-                client.ram_patch_6502_skips -= 1
-                _LOGGER.debug('Skipping a 6502 request while the RAM patch burst settles.')
-                continue
+            if client.ram_patch_6502_pending and command == CMD_APP_WORLD_STATUS:
+                # The burst owes two 6502 requests.  The first, the priming
+                # page's world status, is answered: its reply is written after
+                # the burst, so the hijacked handler runs the shellcode.  The
+                # second, the handler/trigger page's duplicate, stays
+                # unanswered so the shellcode does not run again.
+                if client.ram_patch_6502_pending == 2:
+                    client.ram_patch_6502_pending = 1
+                else:
+                    client.ram_patch_6502_pending = 0
+                    _LOGGER.debug('Skipping the duplicate 6502 the RAM patch burst causes.')
+                    continue
             if client.ram_patch_6503_skips and command == CMD_APP_WORLD_LIST:
                 # The injected prelude puts the list back in state 6, whose
                 # automatic 6503 request is a duplicate of the next injected
@@ -473,7 +478,7 @@ class AppService:
                     for frame in injection.frames:
                         client.app.send(frame)
                     client.ram_patch_done = True
-                    client.ram_patch_6502_skips = injection.ignore_6502
+                    client.ram_patch_6502_pending = 2
                     client.ram_patch_6503_skips = injection.ignore_6503
                     client.ram_patch_6211_skips = injection.ignore_6211
                     client.ram_patch_6403_skips = injection.ignore_6403
@@ -713,7 +718,6 @@ class AppService:
                 prelude=None,
                 frames=(),
                 wait_for_next=True,
-                ignore_6502=0,
                 ignore_6503=0,
                 ignore_6211=0,
                 ignore_6403=0,
@@ -843,8 +847,11 @@ class _MhClient:
     # The first 8-record prelude page was sent; wait for the client's start-8
     # 6503 request, which carries the final page and the burst.
     ram_patch_prelude_sent: bool = False
-    # Duplicate 6502 requests from the first final page to ignore.
-    ram_patch_6502_skips: int = 0
+    # 6502 requests the burst owes the client: 2.  The first (the priming
+    # page's world status) is answered; its reply follows the burst, so the
+    # hijacked handler runs the shellcode.  The second (the handler/trigger
+    # page's duplicate) is left unanswered.  0 once both are handled.
+    ram_patch_6502_pending: int = 0
     # Duplicate 6503 requests NA sends after an injected prelude.
     ram_patch_6503_skips: int = 0
     # 6211 requests the client sends when an injected 6204 download completes.

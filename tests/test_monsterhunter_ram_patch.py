@@ -594,7 +594,6 @@ class NaRamPatchPlanTests(unittest.TestCase):
 
     def test_plan_ignores_the_requests_the_burst_causes(self) -> None:
         self.assertEqual(self.plan.variant, 'na')
-        self.assertEqual(self.plan.ignore_6502, 1)
         self.assertEqual(self.plan.ignore_6503, 1)
         self.assertEqual(self.plan.ignore_6211, 1)
         self.assertEqual(self.plan.ignore_6403, 2)

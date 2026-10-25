@@ -66,8 +66,10 @@ The payload is written to the uncached RAM mirror `0x2039e300`, which is the
 resident patch buffer `0x0039e300` seen through `0x20000000`.  The shellcode
 follows the blob there and is entered through a second 6204 write into the
 dispatcher's 6502 reply handler (`0x0032ac0c`, normally `0x002a2420`).  The
-handler page puts the World list back in state 8, whose automatic 6502 request
-is answered normally: that reply now runs the shellcode.
+final page's completion sends the first world-status request; the service
+answers it, and because that reply is written to the stream after the burst,
+the hijacked handler runs the shellcode before the real one.  The handler
+page's duplicate 6502 is left unanswered.
 
 The shellcode copies the blob through the cached address (so the applier does
 not read stale D-cache lines), writes the `M-HUNTER` header (`0x003ae300`,
@@ -353,7 +355,6 @@ class RamPatchPlan:
     variant: str = 'eu'
     # Client requests that arrive because of the burst and must stay
     # unanswered, so the client keeps the state the next injected frame needs.
-    ignore_6502: int = 0
     ignore_6503: int = 0
     ignore_6211: int = 0
     ignore_6403: int = 0
@@ -466,9 +467,6 @@ def build_ram_patch(
         shellcode_address,
         len(payload),
         variant='eu',
-        # The first final page asks for the world status; the handler page
-        # asks again after the slot is armed, and only that one is answered.
-        ignore_6502=1,
         # The injected prelude makes the list ask for the next page.
         ignore_6503=1,
         # One 6211 for the payload download, one for the handler write.
@@ -507,9 +505,10 @@ def build_na_ram_patch(
        `base = 0x369ab4 - 0xfffc` and a 6002 frame writes the shellcode address
        over the 6502 reply handler slot;
     4. a final page re-primes `base = 0x399654 - 0xffff`, a 6002 frame writes
-       guard byte 2, and the last final page completes into state 8; its 6502
-       request is answered normally and the hijacked handler runs the
-       shellcode before the real 6502 handler.
+       guard byte 2, and the last final page completes into state 8.  Its 6502
+       is a duplicate of the first final page's, which the service already
+       answered (its reply follows the burst, so the shellcode ran); the
+       duplicate stays unanswered.
 
     With the guard clear, the handler and guard pages complete into state 54
     and keep the cursor at 8; their 6403 requests are ignored, as are the 6002
@@ -617,9 +616,6 @@ def build_na_ram_patch(
         shellcode_address,
         len(payload),
         variant='na',
-        # The first final page completes with the guard set, so it asks for the
-        # world status; the trigger page asks again after the handler slot is armed.
-        ignore_6502=1,
         ignore_6503=1,
         # The guard-clear 6204 completes into state 20, which asks for the Market.
         ignore_6211=1,
