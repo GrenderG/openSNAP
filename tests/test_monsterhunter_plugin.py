@@ -1932,7 +1932,7 @@ class AppServiceTests(unittest.TestCase):
         self.assertLess(text.index('Bren'), text.index('Aiko'))
         self.assertLess(text.index('Aiko'), text.index('Cato'))
         index = self._pages().render(b'02/DATABASE.HTM').decode()
-        self.assertIn('<a href="lbs://lbs/02/RANK_HRP_1.HTM">Hunter Rank Points</a>', index)
+        self.assertIn('<a href="RANK_HRP_1.HTM">Hunter Rank Points</a>', index)
 
     def test_hunter_rank_points_list_the_top_hundred_on_four_pages(self) -> None:
         for user in range(130):
@@ -1942,7 +1942,7 @@ class AppServiceTests(unittest.TestCase):
         # Ranks continue across pages: rank 26 is the 26th highest (HRP 104).
         self.assertIn('<td>26</td>', second)
         self.assertIn('H104', second)
-        self.assertIn('lbs://lbs/02/RANK_HRP_3.HTM', second)
+        self.assertIn('href="RANK_HRP_3.HTM"', second)
         self.assertNotIn('H029', pages.render(b'02/RANK_HRP_4.HTM').decode())
         self.assertIsNone(pages.render(b'02/RANK_HRP_5.HTM'))
 
@@ -1992,27 +1992,28 @@ class AppServiceTests(unittest.TestCase):
     def _pages(self) -> RecordPages:
         return RecordPages(self.records, 'monsterhunter', load_quests(self.data_directory))
 
-    def test_eu_record_index_links_to_its_own_directory(self) -> None:
+    def test_eu_record_index_is_served_from_its_own_directory(self) -> None:
         text = self._download_page(b'03/04/DATABASE.HTM', eu=True)
         self.assertTrue(text.startswith('<html>') and text.endswith('</html>\n'))
         self.assertIn('<body bgcolor="#101820"', text)
-        self.assertIn('<a href="lbs://lbs/03/04/RANK_MON_1.HTM">Most monsters hunted</a>', text)
-        self.assertIn('<a href="lbs://lbs/03/04/RANK_EVNT_1.HTM">Event quests</a> (0 quests)', text)
+        self.assertIn('<a href="RANK_MON_1.HTM">Most monsters hunted</a>', text)
+        self.assertIn('<a href="RANK_EVNT_1.HTM">Event quests</a> (0 quests)', text)
 
     def test_record_index_counts_ranked_quests_per_category(self) -> None:
         self._write_quests({27: ('Slay the Rathian!', 'hunt'), 201: ('Gathering - Forest and Hills', 'event')})
         self._submit('clear-27', Ranking.LOWEST, 7, 'hunter', 60)
         text = self._pages().render(b'03/04/DATABASE.HTM').decode()
-        self.assertIn('<a href="lbs://lbs/03/04/RANK_HUNT_1.HTM">Hunt quests</a> (1 quest)', text)
-        self.assertIn('<a href="lbs://lbs/03/04/RANK_EVNT_1.HTM">Event quests</a> (0 quests)', text)
+        self.assertIn('<a href="RANK_HUNT_1.HTM">Hunt quests</a> (1 quest)', text)
+        self.assertIn('<a href="RANK_EVNT_1.HTM">Event quests</a> (0 quests)', text)
         self.assertNotIn('Other quests', text)
-        self.assertIn('Unless patched, only the European release sends', text)
+        # The openSNAP patch makes NA send records too, so the EU-only note is off.
+        self.assertNotIn('only the European release', text)
         self.assertIn('<a href="AMUSA_MENU_BACK">Close</a>', text)
 
-    def test_na_record_pages_link_to_02(self) -> None:
+    def test_na_record_pages_are_served_from_02(self) -> None:
         self._submit('clear-261', Ranking.LOWEST, 7, 'hunter', 754)
         text = self._download_page(b'02/DATABASE.HTM', eu=False)
-        self.assertIn('<a href="lbs://lbs/02/RANK_OTHR_1.HTM">Other quests</a> (1 quest)', text)
+        self.assertIn('<a href="RANK_OTHR_1.HTM">Other quests</a> (1 quest)', text)
         page = self._download_page(b'02/RANK_OTHR_1.HTM', eu=False)
         self.assertIn('Quest 261', page)
         self.assertIn('<tr><td>1</td><td>hunter</td><td>12\'34"</td></tr>', page)
@@ -2024,7 +2025,7 @@ class AppServiceTests(unittest.TestCase):
         for user, totals in ((1, (3, 7)), (2, (5,))):
             for total in totals:
                 self._submit('tles-kills-20', Ranking.HIGHEST, user, f'p{user}', total)
-        self.assertIn('<a href="lbs://lbs/03/TLES_KILLS.HTM">', pages.render(b'03/DATABASE.HTM').decode())
+        self.assertIn('<a href="TLES_KILLS.HTM">', pages.render(b'03/DATABASE.HTM').decode())
         page = pages.render(b'03/TLES_KILLS.HTM').decode()
         self.assertIn('Gypceros', page)
         # Each hunter's latest (highest) total, highest first.
@@ -2043,11 +2044,11 @@ class AppServiceTests(unittest.TestCase):
         # Top 4 per quest.
         self.assertIn('<td>p3</td>', first)
         self.assertNotIn('<td>p4</td>', first)
-        self.assertIn('<a href="lbs://lbs/03/01/RANK_HUNT_2.HTM">Next</a>', first)
+        self.assertIn('<a href="RANK_HUNT_2.HTM">Next</a>', first)
         self.assertNotIn('Previous', first)
         second = pages.render(b'03/01/RANK_HUNT_2.HTM').decode()
         self.assertEqual(re.findall(r'#(\d+) Hunt', second), ['7', '8', '9', '10'])
-        self.assertIn('<a href="lbs://lbs/03/01/RANK_HUNT_1.HTM">Previous</a>', second)
+        self.assertIn('<a href="RANK_HUNT_1.HTM">Previous</a>', second)
         self.assertNotIn('Next', second)
         self.assertIsNone(pages.render(b'03/01/RANK_HUNT_3.HTM'))
 
@@ -2062,7 +2063,7 @@ class AppServiceTests(unittest.TestCase):
             re.findall(r'<tr><td>(\d)</td><td>([^<]*)</td><td>(\d+)</td></tr>', text),
             [('1', 'p&lt;0&gt;', '11'), ('2', 'p&lt;1&gt;', '9'), ('3', 'p&lt;3&gt;', '7')],
         )
-        self.assertIn('<a href="lbs://lbs/02/DATABASE.HTM">Index</a>', text)
+        self.assertIn('<a href="DATABASE.HTM">Index</a>', text)
 
     def test_monster_pages_hold_eight_monsters_in_id_order(self) -> None:
         # Monsters 1-12 without Veggie Elder (10): 11 tracked monsters.
@@ -2073,11 +2074,34 @@ class AppServiceTests(unittest.TestCase):
         self.assertIn('Page 1 of 2', first)
         self.assertEqual(first.count('>Rank</font>'), 8)
         self.assertIn('Rathian', first)
-        self.assertIn('<a href="lbs://lbs/02/RANK_MON_2.HTM">Next</a>', first)
+        self.assertIn('<a href="RANK_MON_2.HTM">Next</a>', first)
         second = pages.render(b'02/RANK_MON_2.HTM').decode()
         self.assertIn('Rathalos', second)
         self.assertNotIn('Veggie Elder', first + second)
         self.assertIsNone(pages.render(b'02/RANK_MON_3.HTM'))
+
+    def test_paged_record_pages_link_the_first_last_and_nearby_page_numbers(self) -> None:
+        self._write_quests({quest: (f'Quest name {quest}', 'hunt') for quest in range(100, 202)})
+        for quest in range(100, 202):
+            self._submit(f'clear-{quest}', Ranking.LOWEST, 1, 'p', 60)
+        pages = self._pages()
+
+        def numbers(number: int) -> str:
+            text = pages.render(f'02/RANK_HUNT_{number}.HTM'.encode()).decode()
+            lines = [line for line in text.split('<br>\n') if f'<b>{number}</b>' in line]
+            # The title panel's and the bottom bar's.
+            self.assertEqual(len(lines), 2)
+            return lines[0]
+
+        # 102 quests, 6 per page: 17 pages.
+        link = '<a href="RANK_HUNT_{0}.HTM">{0}</a>'.format
+        self.assertEqual(numbers(1), ' '.join(['<b>1</b>', link(2), link(3), '...', link(17)]))
+        self.assertEqual(
+            numbers(9), ' '.join([link(1), '...', link(7), link(8), '<b>9</b>', link(10), link(11), '...', link(17)])
+        )
+        # A gap of one page shows that page.
+        self.assertEqual(numbers(4), ' '.join([link(page) if page != 4 else '<b>4</b>' for page in range(1, 7)] + ['...', link(17)]))
+        self.assertEqual(numbers(17), ' '.join([link(1), '...', link(15), link(16), '<b>17</b>']))
 
     def test_only_record_page_names_are_generated(self) -> None:
         pages = self._pages()
@@ -2101,7 +2125,8 @@ class AppServiceTests(unittest.TestCase):
         pages = self._pages()
         for name in (
             b'03/05/DATABASE.HTM', b'03/05/RANK_HUNT_1.HTM', b'03/05/RANK_MON_1.HTM', b'03/05/RANK_MON_4.HTM',
-            b'03/05/RANK_HRP_1.HTM', b'03/05/RANK_HRP_4.HTM',
+            b'03/05/RANK_HUNT_25.HTM', b'03/05/RANK_MON_2.HTM', b'03/05/RANK_HRP_1.HTM', b'03/05/RANK_HRP_2.HTM',
+            b'03/05/RANK_HRP_4.HTM',
         ):
             page = pages.render(name, 140 if b'HRP' in name else 5)
             if b'RANK_' in name:

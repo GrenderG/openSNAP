@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 import struct
 
-from opensnap.core.browser_pages import NOTE_COLOR, data_table, document, panel
+from opensnap.core.browser_pages import data_table, document, panel
 from opensnap.core.online import OnlinePlayer
 from opensnap.core.records import RankedRecord, Ranking, Record
 from opensnap.storage.interfaces import RecordStore
@@ -65,7 +65,11 @@ HRP_BOARD = 'hrp'
 # `0x00690d80`): `lbs://` URLs (scheme 5, fetch `0x00621310`) become an APP
 # mode 3 download of the path after `lbs://lbs/` (NA `0x00622fd0` passes URL
 # + 10; EU `0x005d0800` -> `0x0029da30`), so links to other `lbs://lbs/`
-# pages are served through 6101/6102 like the Record page itself. The
+# pages are served through 6101/6102 like the Record page itself. Links
+# name the page alone: the browser joins a relative link with the current
+# page's URL up to its last `/` (NA `0x00630320` -> `0x00630140`, EU
+# `0x005ddb20` -> `0x005dd940`; exit names are matched first, NA
+# `0x0063dfa0`, EU `0x005eb970`), which keeps pages small. The
 # download buffer is 32 KB, whose last byte becomes a NUL (EU `0x005dc59c`,
 # `0x005d08b0`), but the EU browser stopped drawing a 16.7 KB page with 441
 # table cells after its 232nd cell (byte 8960); the limit is not traced.
@@ -96,6 +100,8 @@ RECORD_PAGE_KILLS_PER_MONSTER = 3
 OWN_RECORD_COLOR = '#FFFF00'
 RECORD_PAGE_QUESTS_PER_PAGE = 6
 RECORD_PAGE_MONSTERS_PER_PAGE = 8
+# Page numbers linked on each side of the current page (plus the first and last).
+PAGE_NUMBERS_AROUND = 2
 # `{"<quest number>": {"name": "...", "category": "..."}}`. The 6307 quest is
 # the quest file's number (EU quest start copies quest information +0x1e into
 # the uploaded word, `lobby.bin` `0x00577558`); EU uploads records, and NA
@@ -308,7 +314,7 @@ class RecordPages:
     """The Record pages: an index, then paged monster and quest category pages.
 
     Pages are named inside the directory the lobby asked for (NA `02/`, EU
-    `03/<language>/`), and their links point back into it. Each page reads
+    `03/<language>/`), and their relative links stay in it. Each page reads
     only the boards it shows: their top records and the viewer's own.
     """
 
@@ -326,64 +332,63 @@ class RecordPages:
         directory, _, page = name.decode('ascii', errors='replace').rpartition('/')
         if not _is_record_directory(directory):
             return None
-        links = _Links(directory)
         if page == RECORD_PAGE_NAME:
-            return document(self._index(links)).encode()
+            return document(self._index()).encode()
         if page == TEST_BUILD_KILLS_PAGE_NAME:
-            return document(self._test_build_kills(links, viewer)).encode()
+            return document(self._test_build_kills(viewer)).encode()
         parsed = _parse_paged_name(page)
         if parsed is None:
             return None
         code, number = parsed
         if code == MONSTER_PAGE_CODE:
-            content = self._monsters(number, links, viewer)
+            content = self._monsters(number, viewer)
         elif code == HRP_PAGE_CODE:
-            content = self._hunter_rank_points(number, links, viewer)
+            content = self._hunter_rank_points(number, viewer)
         else:
-            content = self._category(_CATEGORY_BY_CODE[code], number, links, viewer)
+            content = self._category(_CATEGORY_BY_CODE[code], number, viewer)
         return None if content is None else document(content).encode()
 
-    def _index(self, links: '_Links') -> str:
+    def _index(self) -> str:
         boards = self._records.boards(self._game)
         clears = self._ranked_quests(boards)
         lines = [
-            f'<a href="{links.page(HRP_PAGE_CODE, 1)}">Hunter Rank Points</a><br>\n',
-            f'<a href="{links.page(MONSTER_PAGE_CODE, 1)}">Most monsters hunted</a><br>\n',
+            f'<a href="{_page_name(HRP_PAGE_CODE, 1)}">Hunter Rank Points</a><br>\n',
+            f'<a href="{_page_name(MONSTER_PAGE_CODE, 1)}">Most monsters hunted</a><br>\n',
         ]
         for category, (code, title) in QUEST_CATEGORIES.items():
             count = len(clears.get(category, []))
             if category == 'other' and not count:
                 continue
             ranked = f'{count} quest{"s" if count != 1 else ""}'
-            lines.append(f'<a href="{links.page(code, 1)}">{title}</a> ({ranked})<br>\n')
+            lines.append(f'<a href="{_page_name(code, 1)}">{title}</a> ({ranked})<br>\n')
         if self._test_build_monsters(boards):
-            lines.append(f'<a href="{links.named(TEST_BUILD_KILLS_PAGE_NAME)}">EU test build kill totals</a><br>\n')
+            lines.append(f'<a href="{TEST_BUILD_KILLS_PAGE_NAME}">EU test build kill totals</a><br>\n')
         return panel(
             'Hunter Records',
             f'Your own records are shown in <font color="{OWN_RECORD_COLOR}">yellow</font>.<br>\n<br>\n'
             + ''.join(lines)
             + f'<br>\n<a href="{BROWSER_CLOSE_LINK}">Close</a><br>\n',
-        ) + (
-            # Only the EU build uploads quest records (6307); NA only with the openSNAP client patch.
-            f'<br>\n<font color="{NOTE_COLOR}">Unless patched, only the European release sends<br>\n'
-            'quest and monster records, so those rankings<br>\nlist EU players only.</font><br>\n'
         )
+        # Unpatched, only the EU build uploads quest records (6307); the
+        # openSNAP patch adds them to NA, so this note is no longer shown:
+        # f'<br>\n<font color="{NOTE_COLOR}">Unless patched, only the European release sends<br>\n'
+        # 'quest and monster records, so those rankings<br>\nlist EU players only.</font><br>\n'
 
-    def _hunter_rank_points(self, number: int, links: '_Links', viewer: int | None) -> str | None:
+    def _hunter_rank_points(self, number: int, viewer: int | None) -> str | None:
         """Current HRP, highest first; hunters at the maximum rank by who reached it first."""
 
         top = self._records.top(self._game, HRP_BOARD, HRP_PAGES * HRP_PAGE_HUNTERS)
         own = self._own(HRP_BOARD, viewer)
         return _paged(
-            'Hunter Rank Points', list(range(0, len(top), HRP_PAGE_HUNTERS)), number, 1, HRP_PAGE_CODE, links,
+            'Hunter Rank Points', list(range(0, len(top), HRP_PAGE_HUNTERS)), number, 1, HRP_PAGE_CODE,
             lambda start: _board(
                 'Hunters', 'HRP', top[start:start + HRP_PAGE_HUNTERS], own, str, first_rank=start + 1
             ),
             empty=_board('Hunters', 'HRP', []),
         )
 
-    def _test_build_kills(self, links: '_Links', viewer: int | None) -> str:
-        bar = f'<a href="{links.index}">Index</a><br>\n'
+    def _test_build_kills(self, viewer: int | None) -> str:
+        bar = f'<a href="{RECORD_PAGE_NAME}">Index</a><br>\n'
         boards = [
             self._ranked_board(
                 MONSTER_NAMES[monster], 'Kills', _test_build_kills_board(monster), TEST_BUILD_KILLS_PER_MONSTER,
@@ -401,22 +406,22 @@ class RecordPages:
             + f'<br>\n{bar}'
         )
 
-    def _monsters(self, number: int, links: '_Links', viewer: int | None) -> str | None:
+    def _monsters(self, number: int, viewer: int | None) -> str | None:
         boards = set(self._records.boards(self._game))
         monsters = [monster for monster in MONSTER_NAMES if _kills_board(monster) in boards]
         return _paged(
-            'Most Monsters Hunted', monsters, number, RECORD_PAGE_MONSTERS_PER_PAGE, MONSTER_PAGE_CODE, links,
+            'Most Monsters Hunted', monsters, number, RECORD_PAGE_MONSTERS_PER_PAGE, MONSTER_PAGE_CODE,
             lambda monster: self._ranked_board(
                 MONSTER_NAMES[monster], 'Kills', _kills_board(monster), RECORD_PAGE_KILLS_PER_MONSTER, viewer, str
             ),
             empty=_board('Monsters', 'Kills', []),
         )
 
-    def _category(self, category: str, number: int, links: '_Links', viewer: int | None) -> str | None:
+    def _category(self, category: str, number: int, viewer: int | None) -> str | None:
         code, title = QUEST_CATEGORIES[category]
         return _paged(
             title, self._ranked_quests(self._records.boards(self._game)).get(category, []), number,
-            RECORD_PAGE_QUESTS_PER_PAGE, code, links,
+            RECORD_PAGE_QUESTS_PER_PAGE, code,
             lambda quest_id: self._ranked_board(
                 self._quest_title(quest_id), 'Time', f'{CLEAR_BOARD_PREFIX}{quest_id}', RECORD_PAGE_CLEARS_PER_QUEST,
                 viewer, _clear_time,
@@ -455,48 +460,47 @@ class RecordPages:
         return f'#{quest_id} {html.escape(quest.name, quote=False)}' if quest else f'Quest {quest_id}'
 
 
-@dataclass(frozen=True, slots=True)
-class _Links:
-    directory: str
-
-    @property
-    def index(self) -> str:
-        return self._url(RECORD_PAGE_NAME)
-
-    def page(self, code: str, number: int) -> str:
-        return self._url(f'RANK_{code}_{number}.HTM')
-
-    def named(self, page: str) -> str:
-        return self._url(page)
-
-    def _url(self, page: str) -> str:
-        return f'lbs://lbs/{self.directory}/{page}'
-
-
 def _paged[T](
-    title: str, items: list[T], number: int, per_page: int, code: str, links: _Links,
+    title: str, items: list[T], number: int, per_page: int, code: str,
     render: Callable[[T], str], *, empty: str,
 ) -> str | None:
     """Page `number` of `items`, each rendered as a board by `render`.
 
-    A title panel with Previous / Index / Next, the page's boards, the links again.
+    A title panel with Previous / Index / Next and the page numbers, the
+    page's boards, the links again.
     """
 
     pages = max(1, -(-len(items) // per_page))
     if number > pages:
         return None
-    navigation = [f'<a href="{links.index}">Index</a>']
+    navigation = [f'<a href="{RECORD_PAGE_NAME}">Index</a>']
     if number > 1:
-        navigation.insert(0, f'<a href="{links.page(code, number - 1)}">Previous</a>')
+        navigation.insert(0, f'<a href="{_page_name(code, number - 1)}">Previous</a>')
     if number < pages:
-        navigation.append(f'<a href="{links.page(code, number + 1)}">Next</a>')
+        navigation.append(f'<a href="{_page_name(code, number + 1)}">Next</a>')
     bar = ' | '.join(navigation) + '<br>\n'
+    if pages > 1:
+        bar += _page_numbers(code, number, pages) + '<br>\n'
     shown = [render(item) for item in items[(number - 1) * per_page:number * per_page]] or [empty]
     return (
         panel(title, f'Page {number} of {pages}<br>\n{bar}')
         + ''.join(f'<br>\n{board}' for board in shown)
         + f'<br>\n{bar}'
     )
+
+
+def _page_numbers(code: str, number: int, pages: int) -> str:
+    """`1 ... 4 5 <b>6</b> 7 8 ... 17`: the first, last and nearby pages, each but `number` linked."""
+
+    shown = {1, pages, *range(max(1, number - PAGE_NUMBERS_AROUND), min(pages, number + PAGE_NUMBERS_AROUND) + 1)}
+    # A gap of one page shows that page instead of `...`.
+    shown |= {page + 1 for page in shown if page + 2 in shown}
+    parts = []
+    for previous, page in zip([0, *sorted(shown)], sorted(shown)):
+        if page > previous + 1:
+            parts.append('...')
+        parts.append(f'<b>{page}</b>' if page == number else f'<a href="{_page_name(code, page)}">{page}</a>')
+    return ' '.join(parts)
 
 
 def _is_record_directory(directory: str) -> bool:
@@ -506,6 +510,10 @@ def _is_record_directory(directory: str) -> bool:
     if parts in (['02'], ['03']):
         return True
     return len(parts) == 2 and parts[0] == '03' and len(parts[1]) == 2 and parts[1].isdigit()
+
+
+def _page_name(code: str, number: int) -> str:
+    return f'RANK_{code}_{number}.HTM'
 
 
 def _parse_paged_name(page: str) -> tuple[str, int] | None:
