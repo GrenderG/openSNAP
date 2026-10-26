@@ -2247,22 +2247,21 @@ class AppServiceTests(unittest.TestCase):
 
         # The burst leaves requests behind: the first final page's world
         # status, the upload's chunk requests, the payload completion's Market,
-        # and the prelude's next World page.  The first 6502 is answered: its
-        # reply follows the burst, so the hijacked handler runs the shellcode.
-        # The handler page's 6502 is then a duplicate and stays unanswered, as
-        # do the chunk and Market requests.  The handler write's Market request
-        # is ignored too, and later 6502/6503 requests are normal.
+        # and the prelude's next World page.  The burst already ended with the
+        # pushed 6502 reply, so the client's two world-status requests (the
+        # final page's and the handler page's) are duplicates and stay
+        # unanswered, as do the chunk and Market requests.  Later requests are
+        # normal.
         client.sendall(app_frame(1, 0x6502, sequence=6, payload=b'\x00'))
-        reply = self._receive(client, buffer)
-        self.assertEqual((frame_command(reply), frame_sequence(reply)), (0x6502, 6))
-        self.assertEqual(frame_payload(reply), b'\x01\x00\x00\x00\x01\x00\x00\x00\x00')
         client.sendall(app_frame(1, 0x6204, sequence=7, payload=b'\x00\x01' + bytes(4)))
         client.sendall(app_frame(1, 0x6211, sequence=8))
         client.sendall(app_frame(1, 0x6503, sequence=9, payload=struct.pack('>2H', 8, 8)))
         client.sendall(app_frame(1, 0x6502, sequence=10, payload=b'\x00'))
         client.sendall(app_frame(1, 0x6211, sequence=11))
         client.sendall(app_frame(1, 0x6502, sequence=12, payload=b'\x00'))
-        self.assertEqual(frame_sequence(self._receive(client, buffer)), 12)
+        reply = self._receive(client, buffer)
+        self.assertEqual((frame_command(reply), frame_sequence(reply)), (0x6502, 12))
+        self.assertEqual(frame_payload(reply), b'\x01\x00\x00\x00\x01\x00\x00\x00\x00')
 
         # The burst runs once per connection; later World pages are normal.
         client.sendall(app_frame(1, 0x6503, sequence=13, payload=struct.pack('>2H', 0, 16)))
@@ -2383,14 +2382,12 @@ class AppServiceTests(unittest.TestCase):
         # asks for the world status, the guard-clearing 6204 asks for the
         # Market, the uploads ask for the next chunk, the prelude asks for the
         # next World page, the handler and guard pages ask for the Land list,
-        # and the handler and guard writes ask for another chunk.  The first
-        # 6502 is answered - its reply follows the burst, so the shellcode runs
-        # - and the trigger page's duplicate 6502 stays unanswered.
+        # and the handler and guard writes ask for another chunk.  The burst
+        # already ended with the pushed 6502 reply, so the client's two
+        # world-status requests (the first final page's and the trigger page's)
+        # are duplicates and stay unanswered.
         sequence = 6
         client.sendall(app_frame(1, 0x6502, sequence=sequence, payload=b'\x00'))
-        reply = self._receive(client, buffer)
-        self.assertEqual((frame_command(reply), frame_sequence(reply)), (0x6502, sequence))
-        self.assertEqual(frame_payload(reply), b'\x01\x00\x00\x00\x01\x00\x00\x00\x00')
         sequence += 1
         client.sendall(app_frame(1, 0x6211, sequence=sequence))
         sequence += 1

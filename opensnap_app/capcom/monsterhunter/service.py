@@ -47,6 +47,7 @@ from opensnap_app.capcom.monsterhunter.ram_patch import (
     NA_RAM_PATCH_ENVIRONMENT_KEY,
     NA_STOCK_VERSION,
     RAM_PATCH_ENVIRONMENT_KEY,
+    WORLD_STATUS_REPLY,
     RamPatchPageTooLarge,
     RamPatchPlan,
     build_na_ram_patch,
@@ -305,7 +306,7 @@ class AppService:
         client.ram_patch = ram_patch
         if ram_patch is not None:
             client.patch = None
-            _LOGGER.info(
+            _LOGGER.debug(
                 'RAM patch delivery enabled for %s version %s.',
                 variant,
                 version.decode('ascii', errors='replace'),
@@ -393,16 +394,12 @@ class AppService:
                 client.ram_patch_6211_skips -= 1
                 _LOGGER.debug('Ignoring a 6211 request caused by the RAM patch burst.')
                 continue
-            if client.ram_patch_6502_pending and command == CMD_APP_WORLD_STATUS:
-                # The burst owes two 6502 requests.  The first, the priming
-                # page's world status, is answered: its reply is written after
-                # the burst, so the hijacked handler runs the shellcode.  The
-                # second, the handler/trigger page's duplicate, is dropped so
-                # the shellcode does not run again.
-                client.ram_patch_6502_pending -= 1
-                if not client.ram_patch_6502_pending:
-                    _LOGGER.debug('Skipping the duplicate 6502 the RAM patch burst causes.')
-                    continue
+            if client.ram_patch_6502_skips and command == CMD_APP_WORLD_STATUS:
+                # The pushed 6502 reply already answered both world-status
+                # requests; answering again would run the shellcode twice.
+                client.ram_patch_6502_skips -= 1
+                _LOGGER.debug('Skipping a 6502 request the RAM patch burst already answered.')
+                continue
             if client.ram_patch_6503_skips and command == CMD_APP_WORLD_LIST:
                 # The injected prelude puts the list back in state 6, whose
                 # automatic 6503 request is a duplicate of the next injected
@@ -466,22 +463,22 @@ class AppService:
                     # its next 6503 request (start 8) will carry the final page
                     # and the burst.
                     client.ram_patch_prelude_sent = True
-                    _LOGGER.info(
+                    _LOGGER.debug(
                         'Sent the %s RAM patch prelude page; waiting for the next World page.',
                         injection.variant.upper(),
                     )
                 else:
-                    # The client runs its own applier when the last page's
-                    # 6502 reply reaches the hijacked handler.
+                    # The client runs its own applier when it reaches the pushed
+                    # 6502 reply (the last burst frame) with the handler armed.
                     for frame in injection.frames:
                         client.app.send(frame)
                     client.ram_patch_done = True
-                    client.ram_patch_6502_pending = 2
+                    client.ram_patch_6502_skips = injection.ignore_6502
                     client.ram_patch_6503_skips = injection.ignore_6503
                     client.ram_patch_6211_skips = injection.ignore_6211
                     client.ram_patch_6403_skips = injection.ignore_6403
                     client.ram_patch_6002_skips = injection.ignore_6002
-                    _LOGGER.info(
+                    _LOGGER.debug(
                         'Sent the %s RAM patch burst: %d bytes, %d frames, shellcode at 0x%08x.',
                         injection.variant.upper(),
                         injection.payload_size,
@@ -535,7 +532,7 @@ class AppService:
                 return b'\x00'
             return b'\x01' + socket.inet_aton(advertise_host) + bytes(4)
         if command == CMD_APP_WORLD_STATUS:
-            return b'\x01\x00\x00\x00\x01\x00\x00\x00\x00'
+            return WORLD_STATUS_REPLY
         if command == CMD_APP_WORLD_LIST:
             return self._world_list(payload, advertise_host, encode_field)
         if command == CMD_APP_LAND_DESCRIPTOR:
@@ -716,6 +713,7 @@ class AppService:
                 prelude=None,
                 frames=(),
                 wait_for_next=True,
+                ignore_6502=0,
                 ignore_6503=0,
                 ignore_6211=0,
                 ignore_6403=0,
@@ -845,11 +843,9 @@ class _MhClient:
     # The first 8-record prelude page was sent; wait for the client's start-8
     # 6503 request, which carries the final page and the burst.
     ram_patch_prelude_sent: bool = False
-    # 6502 requests the burst owes the client: 2.  The first (the priming
-    # page's world status) is answered; its reply follows the burst, so the
-    # hijacked handler runs the shellcode.  The second (the handler/trigger
-    # page's duplicate) is left unanswered.  0 once both are handled.
-    ram_patch_6502_pending: int = 0
+    # 6502 requests the client sends after the burst already pushed the 6502
+    # reply: the final page's and the handler/trigger page's duplicates.
+    ram_patch_6502_skips: int = 0
     # Duplicate 6503 requests NA sends after an injected prelude.
     ram_patch_6503_skips: int = 0
     # 6211 requests the client sends when an injected 6204 download completes.

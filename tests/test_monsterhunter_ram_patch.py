@@ -53,6 +53,7 @@ from opensnap_app.capcom.monsterhunter.ram_patch import (
     RESIDENT_BLOB,
     TOTAL_RECORDS,
     WORLD_PAGE_SIZE,
+    WORLD_STATUS_REPLY,
     WRITE_BASE,
     RamPatchPageTooLarge,
     build_na_ram_patch,
@@ -397,12 +398,12 @@ class RamPatchPlanTests(unittest.TestCase):
         )
 
     def test_handler_frame_arms_the_6502_reply(self) -> None:
-        index, offset, data = download(self.plan.frames[-1])
+        index, offset, data = download(self.plan.frames[-2])
         self.assertEqual((index, offset), (DOWNLOAD_INDEX, handler_offset()))
         self.assertEqual(data, struct.pack('<I', self.plan.shellcode_address))
 
     def test_page_b_primes_the_handler_write_after_a_prelude(self) -> None:
-        prelude, page_b = self.plan.frames[-3], self.plan.frames[-2]
+        prelude, page_b = self.plan.frames[-4], self.plan.frames[-3]
         self.assertEqual(frame_command(prelude), 0x6503)
         self.assertEqual(struct.unpack_from('>2HB', frame_payload(prelude)), (16, 0, 8))
         self.assertEqual(frame_command(page_b), 0x6503)
@@ -412,6 +413,11 @@ class RamPatchPlanTests(unittest.TestCase):
         )[1][8]
         self.assertEqual(priming_key(key), (DOWNLOAD_INDEX, handler_offset(), DOWNLOAD_LIMIT))
         self.assertEqual(struct.unpack_from('<I', raw, 1)[0], handler_offset() + 4)
+
+    def test_the_burst_ends_with_a_pushed_6502_reply(self) -> None:
+        reply = self.plan.frames[-1]
+        self.assertEqual((frame_command(reply), frame_sequence(reply)), (0x6502, 0))
+        self.assertEqual(frame_payload(reply), WORLD_STATUS_REPLY)
 
     def test_world_count_limits(self) -> None:
         with self.assertRaises(ValueError):
@@ -566,9 +572,9 @@ class NaRamPatchPlanTests(unittest.TestCase):
 
     def test_handler_and_guard_writes_use_window_suffixes(self) -> None:
         # [guard 6204][uploads][prelude][handler page][handler 6002]
-        # [guard page][guard 6002][trigger page]
+        # [guard page][guard 6002][trigger page][pushed 6502]
         first = 1 + self.uploads
-        page_prelude, page_b, handler, page_b2, guard, page_c = self.plan.frames[first:]
+        page_prelude, page_b, handler, page_b2, guard, page_c, status = self.plan.frames[first:]
         self.assertEqual(
             [frame_command(frame) for frame in (page_prelude, page_b, page_b2, page_c)],
             [0x6503] * 4,
@@ -592,8 +598,12 @@ class NaRamPatchPlanTests(unittest.TestCase):
         self.assertEqual((name, offset, data), (NA_NAME, 0xFFFF, b'\x02'))
         self.assertEqual((guard_base + offset) & 0xFFFFFFFF, NA_GUARD)
 
+        self.assertEqual((frame_command(status), frame_sequence(status)), (0x6502, 0))
+        self.assertEqual(frame_payload(status), WORLD_STATUS_REPLY)
+
     def test_plan_ignores_the_requests_the_burst_causes(self) -> None:
         self.assertEqual(self.plan.variant, 'na')
+        self.assertEqual(self.plan.ignore_6502, 2)
         self.assertEqual(self.plan.ignore_6503, 1)
         self.assertEqual(self.plan.ignore_6211, 1)
         self.assertEqual(self.plan.ignore_6403, 2)

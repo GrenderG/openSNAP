@@ -102,6 +102,11 @@ class CapcomAppServer:
 
     def _serve(self, client: socket.socket, address: tuple[str, int]) -> None:
         with client:
+            # Disable Nagle: it holds the Monster Hunter RAM patch burst's
+            # trailing frames (the 6502 reply among them) for the client's
+            # delayed ACK, which on high-latency links pushes the reply past
+            # the ~235 ms world-status timeout (D901).
+            client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             connection = AppConnection(client, address, _LOGGER)
             connection.set_timeout(OPENING_TIMEOUT_SECONDS)
             try:

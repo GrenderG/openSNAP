@@ -66,10 +66,10 @@ The payload is written to the uncached RAM mirror `0x2039e300`, which is the
 resident patch buffer `0x0039e300` seen through `0x20000000`.  The shellcode
 follows the blob there and is entered through a second 6204 write into the
 dispatcher's 6502 reply handler (`0x0032ac0c`, normally `0x002a2420`).  The
-final page's completion sends the first world-status request; the service
-answers it, and because that reply is written to the stream after the burst,
-the hijacked handler runs the shellcode before the real one.  The handler
-page's duplicate 6502 is left unanswered.
+burst then ends by pushing the 6502 reply itself (sequence 0): the client
+dispatches by command, not sequence, so the shellcode runs as soon as the
+frame is reached, with no round trip to exceed the client's ~235 ms
+world-status timeout (D901).
 
 The shellcode copies the blob through the cached address (so the applier does
 not read stale D-cache lines), writes the `M-HUNTER` header (`0x003ae300`,
@@ -133,6 +133,9 @@ CHUNK_SIZE = 754
 CMD_APP_EVENT_DOWNLOAD = 0x6204
 CMD_APP_PATCH_CHUNK = 0x6002
 CMD_APP_WORLD_LIST = 0x6503
+CMD_APP_WORLD_STATUS = 0x6502
+# The 6502 (World status) reply body: one World, one player.
+WORLD_STATUS_REPLY = b'\x01\x00\x00\x00\x01\x00\x00\x00\x00'
 # The client's World array holds 16 records and its 6503 handler only accepts
 # `total < 17`, so record 16 cannot be paged in a first `start = 0` page.  A
 # normal 8-record first page moves the client's cursor to 8; the next request
@@ -355,6 +358,7 @@ class RamPatchPlan:
     variant: str = 'eu'
     # Client requests that arrive because of the burst and must stay
     # unanswered, so the client keeps the state the next injected frame needs.
+    ignore_6502: int = 0
     ignore_6503: int = 0
     ignore_6211: int = 0
     ignore_6403: int = 0
@@ -378,6 +382,14 @@ def _ensure_body_size(*payloads: bytes) -> None:
                 f'the RAM patch World page is {len(payload)} bytes; '
                 f'the client accepts at most {APP_BODY_LIMIT}'
             )
+
+
+def _world_status_frame() -> bytes:
+    """The pushed 6502 reply that ends a burst and runs the armed shellcode."""
+
+    return app_frame(
+        APP_DIRECTION_REPLY, CMD_APP_WORLD_STATUS, sequence=0, payload=WORLD_STATUS_REPLY
+    )
 
 
 def build_ram_patch(
@@ -461,12 +473,16 @@ def build_ram_patch(
             payload=_download_payload(handler_offset(), struct.pack('<I', shellcode_address)),
         )
     )
+    # The pushed 6502 reply runs the armed shellcode.
+    frames.append(_world_status_frame())
     return RamPatchPlan(
         reply,
         tuple(frames),
         shellcode_address,
         len(payload),
         variant='eu',
+        # Two 6502s (final page, handler page), answered by the pushed reply.
+        ignore_6502=2,
         # The injected prelude makes the list ask for the next page.
         ignore_6503=1,
         # One 6211 for the payload download, one for the handler write.
@@ -505,10 +521,10 @@ def build_na_ram_patch(
        `base = 0x369ab4 - 0xfffc` and a 6002 frame writes the shellcode address
        over the 6502 reply handler slot;
     4. a final page re-primes `base = 0x399654 - 0xffff`, a 6002 frame writes
-       guard byte 2, and the last final page completes into state 8.  Its 6502
-       is a duplicate of the first final page's, which the service already
-       answered (its reply follows the burst, so the shellcode ran); the
-       duplicate stays unanswered.
+       guard byte 2, and the last final page completes into state 8.  The
+       burst then ends by pushing the 6502 reply itself, so the armed
+       shellcode runs without a round trip; the client's own 6502 requests
+       (from the first final page and this trigger page) stay unanswered.
 
     With the guard clear, the handler and guard pages complete into state 54
     and keep the cursor at 8; their 6403 requests are ignored, as are the 6002
@@ -610,12 +626,16 @@ def build_na_ram_patch(
     frames.append(
         app_frame(APP_DIRECTION_REPLY, CMD_APP_WORLD_LIST, sequence=0, payload=trigger_page)
     )
+    # The pushed 6502 reply runs the armed shellcode.
+    frames.append(_world_status_frame())
     return RamPatchPlan(
         reply,
         tuple(frames),
         shellcode_address,
         len(payload),
         variant='na',
+        # Two 6502s (first final page, trigger page), answered by the pushed reply.
+        ignore_6502=2,
         ignore_6503=1,
         # The guard-clear 6204 completes into state 20, which asks for the Market.
         ignore_6211=1,

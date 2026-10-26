@@ -5,6 +5,7 @@ import socket
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 from opensnap.core.sessions import Session
 from opensnap.plugins.registry import PLUGIN_FACTORIES
@@ -88,6 +89,18 @@ class CapcomAppServerTests(unittest.TestCase):
     def test_unknown_build_is_closed(self) -> None:
         self._open(9)
         self.assertIsNone(self._receive())
+
+    def test_accepted_connections_disable_nagle(self) -> None:
+        # Nagle would delay the RAM patch burst's 6502 reply past the client's
+        # world-status timeout on high-latency links (D901).
+        host, port = self.client.getpeername()
+        with mock.patch.object(socket.socket, 'setsockopt') as setsockopt:
+            extra = socket.create_connection((host, port), timeout=5)
+            try:
+                extra.recv(1)  # the 1002 opening arrives after the option is set
+            finally:
+                extra.close()
+        setsockopt.assert_any_call(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
 
 class CapcomAppWireTests(unittest.TestCase):

@@ -120,15 +120,19 @@ client                                       server
    record 16 -> 6204 globals (X=0x32ac0c)
    completes: cursor 0, state 8
                                              handler write: 6204 -> 0x32ac0c
-   6502 -----------------------------------> ANSWERED -> shellcode runs
+                                             [pushed] 6502 reply
+   shellcode runs
+   6502 -----------------------------------> ignored
 ```
 
-The burst is `[uploads..., prelude, final B, handler write]`, sent immediately
-after final A. The client processes the handler write before the answered 6502
-reply (TCP order). The shellcode copies the blob to the cached resident buffer,
-writes the `M-HUNTER` header, calls the applier for key 0 and the loaded
-overlays, flushes the caches, restores the 6502 handler and tail-calls
-`0x002a2420`. It preserves `ra`, `a0`, `sp`, `gp`, `s0`, `s1`.
+The burst is `[uploads..., prelude, final B, handler write, 6502 reply]`, sent
+immediately after final A. The pushed 6502 reply is last: the client dispatches
+it by command (not sequence) once the handler write has armed the slot, so the
+shellcode runs with no round trip. The client's own two 6502 requests (after
+final A and after final B) stay unanswered. The shellcode copies the blob to the
+cached resident buffer, writes the `M-HUNTER` header, calls the applier for key
+0 and the loaded overlays, flushes the caches, restores the 6502 handler and
+tail-calls `0x002a2420`. It preserves `ra`, `a0`, `sp`, `gp`, `s0`, `s1`.
 
 ### NA (`SLUS_208.96`)
 
@@ -175,7 +179,9 @@ client                                       server
                                              (4) 6002 -> 0x399654 = 2 (guard on)
    [pushed] F3: total=W start=8 count=9
    completes: guard=2 -> cursor 0, state 8
-   6502 -----------------------------------> ANSWERED -> shellcode runs
+                                             [pushed] 6502 reply
+   shellcode runs
+   6502 -----------------------------------> ignored
 ```
 
 Why the guard dance:
@@ -184,8 +190,8 @@ Why the guard dance:
 - The 6204 write clears the guard; 6002 is then enabled.
 - F1 and F2 complete with guard 0, so they choose state 54 and leave the cursor
   at 8. They can therefore re-write record 16 without another prelude.
-- The guard 6002 write sets 2; F3 then chooses state 8 and sends the 6502 that
-  runs the shellcode.
+- The guard 6002 write sets 2; F3 then chooses state 8.  Its 6502 is ignored:
+  the burst already pushed the reply.
 - The guard stays 2 for the session: later World pages take the 6502 path and
   further 6002 downloads are refused until the game is reset.
 
@@ -201,11 +207,26 @@ frame. Counts per burst:
 
 | request | EU | NA | cause |
 |---|---:|---:|---|
-| `6502` World status | 1 | 1 | first final page completes to state 8 |
+| `6502` World status | 2 | 2 | two final pages complete to state 8 |
 | `6503` World page | 1 | 1 | injected prelude completes to state 6 |
 | `6211` Market | 2 | 1 | each injected 6204 download completes to state 20 (EU: payload + handler; NA: guard) |
 | `6403` Land list | 0 | 2 | NA F1/F2 complete with the guard clear |
 | `6002` patch chunk | 0 | 125 | NA 123 uploads + handler + guard writes |
+
+### Latency (D901)
+
+The client's World-status (`6502`) request times out after ~235 ms; a reply that
+arrives later makes the client abort with D901. Two things keep the burst inside
+that budget on any link:
+
+- The APP server sets `TCP_NODELAY` on every accepted socket.  Otherwise Nagle
+  holds each small trailing burst frame until the previous segment's ACK, which
+  on a high-latency link is ~2 RTT.
+- The burst ends by pushing the `6502` reply itself (sequence 0) instead of
+  answering the client's request.  The client's dispatcher matches a frame on
+  direction and command only (it never reads the sequence byte), so the armed
+  shellcode runs as soon as the client reaches that frame — no round trip, no
+  timeout.  The client's own two `6502` requests stay unanswered.
 
 ### Lifetime, safety, updating
 
@@ -218,8 +239,8 @@ frame. Counts per burst:
   should not; use a valid blob built for the same client build. A crash during a
   save can still corrupt that save, as with any game crash; back up saves before
   testing a new blob.
-- If the connection drops after the handler-slot write but before the answered
-  `6502`, the slot stays hijacked in that process; the shellcode is still
+- If the connection drops after the handler-slot write but before the pushed
+  `6502` reply, the slot stays hijacked in that process; the shellcode is still
   resident and a later `6502` reply would run it, or a reset clears it.
 - To update: replace the `.bin` at the configured path, restart the APP service
   (blobs load at startup) and reset the game (otherwise the client reports
