@@ -94,6 +94,12 @@ from dataclasses import dataclass
 import struct
 from pathlib import Path
 
+from opensnap_app.capcom.monsterhunter.constants import (
+    FINAL_PAGE_COUNT,
+    FINAL_PAGE_START,
+    WORLD_PAGE_SIZE,
+    WORLD_STATUS_REPLY,
+)
 from opensnap_app.capcom.protocol import (
     APP_DIRECTION_REPLY,
     APP_FIELD_MASK,
@@ -101,8 +107,6 @@ from opensnap_app.capcom.protocol import (
     encode_app_field,
 )
 
-RAM_PATCH_ENVIRONMENT_KEY = 'OPENSNAP_MH_RAM_PATCH'
-NA_RAM_PATCH_ENVIRONMENT_KEY = 'OPENSNAP_MH_RAM_PATCH_NA'
 # The APP client reads every frame body into a 768-byte buffer (EU
 # `[0x0050ed14]`, NA `[0x00550048]`), so a 6503 page delivered in a reply must
 # not exceed this.  Larger World lists therefore keep the normal paged reply.
@@ -134,27 +138,9 @@ CMD_APP_EVENT_DOWNLOAD = 0x6204
 CMD_APP_PATCH_CHUNK = 0x6002
 CMD_APP_WORLD_LIST = 0x6503
 CMD_APP_WORLD_STATUS = 0x6502
-# The 6502 (World status) reply body: one World, one player.
-WORLD_STATUS_REPLY = b'\x01\x00\x00\x00\x01\x00\x00\x00\x00'
-# The client's World array holds 16 records and its 6503 handler only accepts
-# `total < 17`, so record 16 cannot be paged in a first `start = 0` page.  A
-# normal 8-record first page moves the client's cursor to 8; the next request
-# is answered with a 9-record page starting at 8 whose last record is 16.
-WORLD_PAGE_SIZE = 8
-FINAL_PAGE_START = WORLD_PAGE_SIZE
-FINAL_PAGE_COUNT = WORLD_PAGE_SIZE + 1
 TOTAL_RECORDS = PRIMING_RECORD
 # The EU demo (`SLED_530.83`) uses different patch addresses.
 EU_DEMO_VERSION = b'0412241846'
-# The retail EU build stamps this route supports: stock 1000 and Capcom's
-# official 1001 patch.  Any other stamp (demo, TLES, a later revision, or the
-# already patched `M-HUNTER`) has different addresses or is already patched.
-EU_STOCK_VERSION = b'0502180939'
-EU_OFFICIAL_1001_VERSION = b'0509261742'
-
-# NA (`SLUS_208.96`).  The stock build stamp; the public beta and the TLES
-# test build use different handler addresses and are never patched in RAM.
-NA_STOCK_VERSION = b'0407251750'
 # The 10-byte name 6002 compares against `0x005529e1`, and the applier copies
 # into the runtime version (10 bytes), so the next 1002 answer is `M-HUNTER`
 # and the service does not patch this process again.
@@ -320,7 +306,7 @@ def parse_patch_blob(data: bytes) -> PatchBlob:
     return PatchBlob(data, tuple(entries))
 
 
-def load_ram_patch(path: str | Path, *, environment_key: str = RAM_PATCH_ENVIRONMENT_KEY) -> bytes:
+def load_ram_patch(path: str | Path, *, environment_key: str) -> bytes:
     """Read and validate the blob named by `environment_key`.
 
     Every failure is a `ValueError` so the CAPCOM APP entrypoint leaves just

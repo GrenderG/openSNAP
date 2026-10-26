@@ -37,17 +37,11 @@ from opensnap_app.capcom.protocol import (
     frame_payload,
     frame_sequence,
 )
+from opensnap_app.capcom.monsterhunter.constants import FINAL_PAGE_START, WORLD_STATUS_REPLY
 from opensnap_app.capcom.monsterhunter.content import EventCatalog, InformationPages, MarketState, NamedFiles
 from opensnap_app.capcom.monsterhunter.flows import AppFlowTracker, AppPhase
 from opensnap_app.capcom.monsterhunter.patch import ClientPatch, load_patches
 from opensnap_app.capcom.monsterhunter.ram_patch import (
-    EU_OFFICIAL_1001_VERSION,
-    EU_STOCK_VERSION,
-    FINAL_PAGE_START,
-    NA_RAM_PATCH_ENVIRONMENT_KEY,
-    NA_STOCK_VERSION,
-    RAM_PATCH_ENVIRONMENT_KEY,
-    WORLD_STATUS_REPLY,
     RamPatchPageTooLarge,
     RamPatchPlan,
     build_na_ram_patch,
@@ -164,6 +158,18 @@ TLES_VERSION = b'0408131008'
 # 19:56:19. It is served by its own `AppService` (its own players, Worlds and
 # data), chosen by `CapcomAppServer` from this stamp.
 NA_PUBLIC_BETA_VERSION = b'0405171956'
+# The retail EU build stamps the RAM patch route supports: stock 1000 and
+# Capcom's official 1001 patch.  Any other stamp (demo, TLES, a later revision,
+# or the already patched `M-HUNTER`) has different addresses or is already
+# patched.
+EU_STOCK_VERSION = b'0502180939'
+EU_OFFICIAL_1001_VERSION = b'0509261742'
+# NA (`SLUS_208.96`).  The stock build stamp; the public beta and the TLES
+# test build use different handler addresses and are never patched in RAM.
+NA_STOCK_VERSION = b'0407251750'
+# The files holding each region's RAM patch blob (`ram_patch.py`).
+RAM_PATCH_ENVIRONMENT_KEY = 'OPENSNAP_MH_RAM_PATCH'
+NA_RAM_PATCH_ENVIRONMENT_KEY = 'OPENSNAP_MH_RAM_PATCH_NA'
 # 6001 is a server push (direction 0x10: both builds dispatch it only with
 # that direction, NA `0x002b4b48`, EU `0x002a5060`). Only APP1 reads its
 # `u8 flag` (NA `0x002b4150`, EU `0x002a46f8`): 0 goes on to the Information
@@ -232,7 +238,10 @@ def read_app_service_config(config: AppConfig, profile: MonsterHunterProfile) ->
         data_directory=Path(data_root) / profile.data_directory,
         profile=profile,
         game_host=target.host if target is not None else config.server.game.host,
-        ram_patch=load_ram_patch(patch_path) if patch_path else None,
+        ram_patch=(
+            load_ram_patch(patch_path, environment_key=RAM_PATCH_ENVIRONMENT_KEY)
+            if patch_path else None
+        ),
         ram_patch_na=(
             load_ram_patch(patch_na_path, environment_key=NA_RAM_PATCH_ENVIRONMENT_KEY)
             if patch_na_path else None

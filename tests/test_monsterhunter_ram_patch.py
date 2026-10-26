@@ -10,6 +10,12 @@ from unittest import mock
 
 from opensnap.config import default_app_config
 from opensnap.plugins.monsterhunter.profile import MONSTER_HUNTER_NA
+from opensnap_app.capcom.monsterhunter.constants import (
+    FINAL_PAGE_COUNT,
+    FINAL_PAGE_START,
+    WORLD_PAGE_SIZE,
+    WORLD_STATUS_REPLY,
+)
 from opensnap_app.capcom.monsterhunter.ram_patch import (
     APP_BODY_LIMIT,
     BLOB_MAGIC,
@@ -19,8 +25,6 @@ from opensnap_app.capcom.monsterhunter.ram_patch import (
     EU_DESCRIPTION_BODY,
     EU_DESCRIPTION_FIELD_SIZE,
     EU_DESCRIPTION_FRAME_HEADER,
-    FINAL_PAGE_COUNT,
-    FINAL_PAGE_START,
     HANDLER_6502_REPLY,
     NA_APPLIER,
     NA_CHUNK_SIZE,
@@ -44,16 +48,12 @@ from opensnap_app.capcom.monsterhunter.ram_patch import (
     NA_LOGIN_BLOCK,
     NA_NAME,
     NA_OVERLAY_ID,
-    NA_RAM_PATCH_ENVIRONMENT_KEY,
     NA_RECORD_DESCRIPTION,
     NA_UNCACHED_BLOB,
     NA_WINDOW,
     NA_WRITE_BASE,
-    RAM_PATCH_ENVIRONMENT_KEY,
     RESIDENT_BLOB,
     TOTAL_RECORDS,
-    WORLD_PAGE_SIZE,
-    WORLD_STATUS_REPLY,
     WRITE_BASE,
     RamPatchPageTooLarge,
     build_na_ram_patch,
@@ -65,7 +65,11 @@ from opensnap_app.capcom.monsterhunter.ram_patch import (
     offset_to,
     parse_patch_blob,
 )
-from opensnap_app.capcom.monsterhunter.service import read_app_service_config
+from opensnap_app.capcom.monsterhunter.service import (
+    NA_RAM_PATCH_ENVIRONMENT_KEY,
+    RAM_PATCH_ENVIRONMENT_KEY,
+    read_app_service_config,
+)
 from opensnap_app.capcom.protocol import (
     APP_FIELD_MASK,
     decode_app_field,
@@ -219,7 +223,7 @@ class RamPatchBlobTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             good = Path(directory) / 'good.bin'
             good.write_bytes(CUSTOM_BLOB)
-            self.assertEqual(load_ram_patch(good), CUSTOM_BLOB)
+            self.assertEqual(load_ram_patch(good, environment_key=RAM_PATCH_ENVIRONMENT_KEY), CUSTOM_BLOB)
             bad = Path(directory) / 'bad.bin'
             bad.write_bytes(b'M-HUNTER' + bytes(20))
             with self.assertRaises(ValueError) as caught:
@@ -232,9 +236,9 @@ class RamPatchBlobTests(unittest.TestCase):
             # The APP entrypoint catches ValueError, so an unusable path must
             # not surface as OSError.
             with self.assertRaises(ValueError):
-                load_ram_patch(Path(directory) / 'missing.bin')
+                load_ram_patch(Path(directory) / 'missing.bin', environment_key=RAM_PATCH_ENVIRONMENT_KEY)
             with self.assertRaises(ValueError):
-                load_ram_patch(Path(directory))
+                load_ram_patch(Path(directory), environment_key=RAM_PATCH_ENVIRONMENT_KEY)
 
     def test_blob_that_does_not_fit_the_resident_buffer_is_rejected(self) -> None:
         # Entry data just large enough that the blob plus the longer (EU)
