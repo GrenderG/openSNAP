@@ -68,8 +68,7 @@ follows the blob there and is entered through a second 6204 write into the
 dispatcher's 6502 reply handler (`0x0032ac0c`, normally `0x002a2420`).  The
 burst then ends by pushing the 6502 reply itself (sequence 0): the client
 dispatches by command, not sequence, so the shellcode runs as soon as the
-frame is reached, with no round trip to exceed the client's ~235 ms
-world-status timeout (D901).
+frame is reached, with no round trip for the client to wait on.
 
 The shellcode copies the blob through the cached address (so the applier does
 not read stale D-cache lines), writes the `M-HUNTER` header (`0x003ae300`,
@@ -181,7 +180,8 @@ NA_DOWNLOAD_OFFSET_OFFSET = 0x00552994 - NA_RECORD_NAME
 # Record 16's description (`0x005529a7`) overlaps 6204's end-offset table
 # (`0x005529bc`); `NA_DOWNLOAD_INDEX`'s entry is four bytes in.
 NA_DESCRIPTION_TABLE = 0x005529BC - 0x005529A7
-# `[0x00399654]`: 6002 only writes while this byte is 0.
+# `[0x00399654]`: 6002 only writes while this byte is 0, and it is also the APP
+# mode byte the 6510 reply handler reads (2 is an invalid mode: D901).
 NA_GUARD = 0x00399654
 # 6204's base is `0x00a7a200`, so this offset wraps to the guard.
 NA_GUARD_OFFSET = (NA_GUARD - NA_DOWNLOAD_BASE) & 0xFFFFFFFF
@@ -507,10 +507,13 @@ def build_na_ram_patch(
        `base = 0x369ab4 - 0xfffc` and a 6002 frame writes the shellcode address
        over the 6502 reply handler slot;
     4. a final page re-primes `base = 0x399654 - 0xffff`, a 6002 frame writes
-       guard byte 2, and the last final page completes into state 8.  The
-       burst then ends by pushing the 6502 reply itself, so the armed
-       shellcode runs without a round trip; the client's own 6502 requests
-       (from the first final page and this trigger page) stay unanswered.
+       guard byte 2 (also the APP mode byte), and the last final page completes
+       into state 8.  The burst then ends by pushing the 6502 reply itself, so
+       the armed shellcode runs without a round trip; the client's own 6502
+       requests (from the first final page and this trigger page) stay
+       unanswered.  The shellcode restores the mode byte to 1 (the World-flow
+       value) before it resumes, because the 6510 reply handler treats 2 as an
+       invalid mode and aborts with D901.
 
     With the guard clear, the handler and guard pages complete into state 54
     and keep the cursor at 8; their 6403 requests are ignored, as are the 6002
@@ -989,6 +992,9 @@ class _Assembler:
     def sw(self, rt: int, offset: int, base: int) -> None:
         self.word((0x2B << 26) | (base << 21) | (rt << 16) | (offset & 0xFFFF))
 
+    def sb(self, rt: int, offset: int, base: int) -> None:
+        self.word((0x28 << 26) | (base << 21) | (rt << 16) | (offset & 0xFFFF))
+
     def ld(self, rt: int, offset: int, base: int) -> None:
         self.word((0x37 << 26) | (base << 21) | (rt << 16) | (offset & 0xFFFF))
 
@@ -1144,6 +1150,14 @@ def build_na_shellcode(blob_length: int) -> bytes:
     code.li(_T0, NA_HANDLER_6502_REPLY)
     code.li(_T1, NA_HANDLER_6502)
     code.sw(_T1, 0, _T0)
+    # The burst leaves the APP mode byte (also the 6002 guard, 0x00399654) at
+    # 2; the 6510 reply handler treats 2 as an invalid mode and aborts with
+    # code -1 (D901).  Restore the World-flow value 1 so the connection ends
+    # with 1004.  The trigger page already completed into state 8 by now, so
+    # the guard has done its job.
+    code.li(_T0, NA_GUARD)
+    code.addiu(_T1, _ZERO, 1)
+    code.sb(_T1, 0, _T0)
     _flush(code, 0, address=NA_FLUSH_CACHE)
     _flush(code, 2, address=NA_FLUSH_CACHE)
 

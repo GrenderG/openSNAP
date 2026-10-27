@@ -192,12 +192,16 @@ Why the guard dance:
   at 8. They can therefore re-write record 16 without another prelude.
 - The guard 6002 write sets 2; F3 then chooses state 8.  Its 6502 is ignored:
   the burst already pushed the reply.
-- The guard stays 2 for the session: later World pages take the 6502 path and
-  further 6002 downloads are refused until the game is reset.
+- The shellcode restores the guard (the APP mode byte) to 1 before it resumes,
+  because the 6510 reply handler treats mode 2 as an invalid mode and aborts
+  with D901.  Mode 1 still blocks 6002 for the rest of the connection; each
+  new connection reloads the mode from the pending byte `0x00399660` when it
+  is not -1 (`0x002b45e4..0x002b45f4`).
 
 The NA shellcode is the same idea as EU: copy the blob to the cached resident
 buffer, write the header at `0x003e9980`, call `0x00258400` for key 0 and the
-loaded overlays, flush, restore `0x002b2270` and tail-call it.
+loaded overlays, flush, restore `0x002b2270` and the mode byte, and tail-call
+the handler.
 
 ### Requests the burst ignores
 
@@ -213,11 +217,10 @@ frame. Counts per burst:
 | `6403` Land list | 0 | 2 | NA F1/F2 complete with the guard clear |
 | `6002` patch chunk | 0 | 125 | NA 123 uploads + handler + guard writes |
 
-### Latency (D901)
+### D901 and latency
 
-The client's World-status (`6502`) request times out after ~235 ms; a reply that
-arrives later makes the client abort with D901. Two things keep the burst inside
-that budget on any link:
+The D901 on the patched connection is the NA mode-byte bug above, not a timeout.
+Separately, two things keep the burst delivered without a round trip on any link:
 
 - The APP server sets `TCP_NODELAY` on every accepted socket.  Otherwise Nagle
   holds each small trailing burst frame until the previous segment's ACK, which
@@ -225,8 +228,8 @@ that budget on any link:
 - The burst ends by pushing the `6502` reply itself (sequence 0) instead of
   answering the client's request.  The client's dispatcher matches a frame on
   direction and command only (it never reads the sequence byte), so the armed
-  shellcode runs as soon as the client reaches that frame — no round trip, no
-  timeout.  The client's own two `6502` requests stay unanswered.
+  shellcode runs as soon as the client reaches that frame — no round trip.  The
+  client's own two `6502` requests stay unanswered.
 
 ### Lifetime, safety, updating
 

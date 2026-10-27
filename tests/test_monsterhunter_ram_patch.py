@@ -652,10 +652,10 @@ class RamPatchPageLimitTests(unittest.TestCase):
 class NaShellcodeTests(unittest.TestCase):
     def test_shellcode_is_stable(self) -> None:
         code = build_na_shellcode(len(NA_BLOB))
-        self.assertEqual(len(code), 444)
+        self.assertEqual(len(code), 460)
         self.assertEqual(
             hashlib.sha256(code).hexdigest(),
-            '8af4a02fe305dbe5e7d6d27598a04483f603b198bd9644483081e3c1bcb2668e',
+            '348807f9cd90f712230a6338f23cb1a7a65341a9876589f7cb47802311d77179',
         )
         words = struct.unpack(f'<{len(code) // 4}I', code)
         # li t1, 0x203d9980 (uncached source) and li t2, 0x003d9980 (cached copy).
@@ -666,6 +666,13 @@ class NaShellcodeTests(unittest.TestCase):
         for address in (NA_APPLIER, NA_OVERLAY_ID, NA_FLUSH_CACHE, NA_HANDLER_6502, NA_HANDLER_6502_REPLY):
             pair = (0x3C080000 | (address >> 16), 0x35080000 | (address & 0xFFFF))
             self.assertIn(pair, set(zip(words, words[1:])), hex(address))
+        # The tail restores the APP mode byte (also the 6002 guard) to 1 so the
+        # 6510 reply handler ends the connection with 1004 instead of code -1 (D901):
+        # `li t0, 0x399654; addiu t1, zero, 1; sb t1, 0(t0)`.
+        self.assertIn(
+            (0x3C080039, 0x35089654, 0x24090001, 0xA1090000),
+            set(zip(words, words[1:], words[2:], words[3:])),
+        )
         # The tail call restores the real 6502 handler (`jr` plus its delay slot).
         self.assertEqual(words[-4:-1], (0x3C08002B, 0x35082270, 0x01000008))
 

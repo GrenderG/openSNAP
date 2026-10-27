@@ -400,6 +400,11 @@ class SnapUdpServer:
 
         if pending.message is not None:
             return pending.framed_wait
+        # Unlike the client, which freezes the estimate into each send's wait
+        # (`0x001fe5f0`), this reads the current one. Neither the client's
+        # MAX_RETRIES cap (error 300, `0x001fd358`) nor its login timeout
+        # (`L*32 + 4000`, `0x00203688`) is modelled; `reliable_timeout_seconds` ends
+        # the resends instead.
         return self._rtt_estimate(pending.endpoint) + (len(pending.datagram) + 131) // 100 / 1000 + self._backoff(pending)
 
     def _backoff(self, pending: _ReliablePending) -> float:
