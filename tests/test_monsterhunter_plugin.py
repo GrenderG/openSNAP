@@ -2102,6 +2102,12 @@ class AppServiceTests(unittest.TestCase):
         # A gap of one page shows that page.
         self.assertEqual(numbers(4), ' '.join([link(page) if page != 4 else '<b>4</b>' for page in range(1, 7)] + ['...', link(17)]))
         self.assertEqual(numbers(17), ' '.join([link(1), '...', link(15), link(16), '<b>17</b>']))
+        # Outside the title panel's cell the browser strips a space after a tag,
+        # so the bottom bar spaces with `&nbsp;`.
+        bottom = pages.render(b'02/RANK_HUNT_9.HTM').decode().rpartition('</table>\n<br>\n')[2]
+        self.assertTrue(bottom.startswith('<a href="RANK_HUNT_8.HTM">Previous</a>&nbsp;| <a href="DATABASE.HTM">Index</a>'))
+        self.assertIn(f'{link(8)}&nbsp;<b>9</b>&nbsp;{link(10)}', bottom)
+        self.assertNotIn('> ', bottom)
 
     def test_only_record_page_names_are_generated(self) -> None:
         pages = self._pages()

@@ -467,7 +467,7 @@ def _paged[T](
     """Page `number` of `items`, each rendered as a board by `render`.
 
     A title panel with Previous / Index / Next and the page numbers, the
-    page's boards, the links again.
+    page's boards, the links again (spaced with `&nbsp;`).
     """
 
     pages = max(1, -(-len(items) // per_page))
@@ -482,10 +482,16 @@ def _paged[T](
     if pages > 1:
         bar += _page_numbers(code, number, pages) + '<br>\n'
     shown = [render(item) for item in items[(number - 1) * per_page:number * per_page]] or [empty]
+    # Outside a table cell the browser strips the spaces that start the text
+    # after a tag (NA `lobby.bin` `0x006445d0`), so `</a> |` shows `</a>|`.
+    # `&nbsp;` becomes 0x07, which is not stripped and is drawn as a space
+    # (`0x00642384`, `0x00646670`). The trailing `<br>` is dropped to keep the
+    # largest page within RECORD_PAGE_SAFE_SIZE.
+    bottom = bar.replace('> ', '>&nbsp;').removesuffix('<br>\n')
     return (
         panel(title, f'Page {number} of {pages}<br>\n{bar}')
         + ''.join(f'<br>\n{board}' for board in shown)
-        + f'<br>\n{bar}'
+        + f'<br>\n{bottom}'
     )
 
 
