@@ -38,7 +38,7 @@ from opensnap.core.records import Ranking
 from opensnap.storage.sql import SqlOnlinePlayerStore, SqlRecordStore
 from opensnap.storage.sqlite import SqliteConnection
 from opensnap_app.capcom.monsterhunter.content import EventCatalog, InformationPages, MarketState
-from opensnap_app.capcom.monsterhunter.flows import AppFlowTracker, AppPhase
+from opensnap_app.capcom.monsterhunter.flows import MAX_FALLBACK_CLIENTS, AppFlowTracker, AppPhase
 from opensnap_app.capcom.monsterhunter.records import (
     RECORD_PAGE_SAFE_CELLS,
     RECORD_PAGE_SAFE_SIZE,
@@ -1315,6 +1315,18 @@ class AppFlowTrackerTests(unittest.TestCase):
         self.assertEqual(flows.claim(other), (2, AppPhase.POSTWORLD))
         # A client without a login yet (first-ever APP1) owns no flow.
         self.assertEqual(flows.claim(('10.0.0.1', '')), (None, AppPhase.APP1))
+
+    def test_released_phases_are_kept_for_the_most_recent_clients(self) -> None:
+        flows = AppFlowTracker()
+        first = ('10.0.0.1', 'first')
+        flows.release(first, None)
+        for index in range(MAX_FALLBACK_CLIENTS - 1):
+            flows.release((f'10.1.{index // 256}.{index % 256}', 'p'), None)
+        # Seen again, so the oldest other client is dropped instead.
+        self.assertEqual(flows.claim(first), (None, AppPhase.LAND))
+        flows.release(('10.2.0.1', 'new'), None)
+        self.assertEqual(flows.claim(first), (None, AppPhase.LAND))
+        self.assertEqual(flows.claim(('10.1.0.0', 'p')), (None, AppPhase.APP1))
 
     def test_client_restarts_at_app1_when_it_leaves(self) -> None:
         flows = AppFlowTracker()

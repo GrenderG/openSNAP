@@ -1,5 +1,6 @@
 """APP connection phase tracking for the NA public beta, fed by the game server's logins."""
 
+from collections import OrderedDict
 from collections.abc import Iterable
 from enum import StrEnum
 import threading
@@ -10,6 +11,9 @@ from opensnap.core.online import OnlinePlayer
 # username it logs in to SN@P with (beta `0x002acd30`, `0x0024798c`). The
 # login tells apart consoles that share one address.
 FlowKey = tuple[str, str]
+# Clients whose last released phase is kept. Only the least recently seen is
+# dropped, so a client loses its phase only after this many others connected.
+MAX_FALLBACK_CLIENTS = 1024
 
 
 class AppPhase(StrEnum):
@@ -40,7 +44,9 @@ class AppFlowTracker:
         self._key_by_session: dict[int, FlowKey] = {}
         self._pending_by_key: dict[FlowKey, list[int]] = {}
         self._active_by_key: dict[FlowKey, int] = {}
-        self._fallback_by_key: dict[FlowKey, AppPhase] = {}
+        # Flows continue without a session after MH's logout before World
+        # selection, so these outlive sessions; bounded by recency instead.
+        self._fallback_by_key: OrderedDict[FlowKey, AppPhase] = OrderedDict()
 
     def sync(self, players: Iterable[OnlinePlayer]) -> None:
         """Catch up with the game server: arm each login not seen yet, in login order, and forget logged-out players."""
@@ -97,14 +103,18 @@ class AppFlowTracker:
                 if session_id in self._phase_by_session:
                     self._active_by_key[key] = session_id
                     return session_id, self._phase_by_session[session_id]
-            return None, self._fallback_by_key.get(key, AppPhase.APP1)
+            phase = self._fallback_by_key.get(key)
+            if phase is None:
+                return None, AppPhase.APP1
+            self._fallback_by_key.move_to_end(key)
+            return None, phase
 
     def advance(self, key: FlowKey, session_id: int | None, phase: AppPhase) -> None:
         """Record the phase the next connection of this flow will use."""
 
         with self._lock:
             if session_id is None:
-                self._fallback_by_key[key] = phase
+                self._remember_fallback(key, phase)
             elif session_id in self._phase_by_session:
                 self._phase_by_session[session_id] = phase
 
@@ -117,4 +127,10 @@ class AppFlowTracker:
                     self._phase_by_session[session_id] = AppPhase.LAND
                 if self._active_by_key.get(key) == session_id:
                     self._active_by_key.pop(key, None)
-            self._fallback_by_key[key] = AppPhase.LAND
+            self._remember_fallback(key, AppPhase.LAND)
+
+    def _remember_fallback(self, key: FlowKey, phase: AppPhase) -> None:
+        self._fallback_by_key[key] = phase
+        self._fallback_by_key.move_to_end(key)
+        while len(self._fallback_by_key) > MAX_FALLBACK_CLIENTS:
+            self._fallback_by_key.popitem(last=False)
