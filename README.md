@@ -78,6 +78,8 @@ its own game server.
 - `OPENSNAP_SERVER_SECRET`, `OPENSNAP_BOOTSTRAP_KEY` (default `SNAP-SWAN`): bootstrap login secrets.
 - `OPENSNAP_MAX_ROOMS_PER_LOBBY`, `OPENSNAP_MAX_PLAYERS_PER_ROOM`: room limits.
 - `OPENSNAP_TICK_INTERVAL_SECONDS`: housekeeping interval (default `10.0`).
+- `OPENSNAP_SESSION_MAX_IDLE_SECONDS`: end a game session silent this long where its game sets no idle limit
+  (default `7200`, `0` for never), so vanished clients don't stay online forever.
 
 ### Web service
 
@@ -350,7 +352,10 @@ A game adds announcements by extending `opensnap.webhooks.GameWebhooks` in its p
 ## Logging
 
 - `OPENSNAP_LOG_LEVEL`: `debug` (default), `info`, `warning`, `error` or `critical`. `debug` adds packet hexdumps.
-- `OPENSNAP_LOG_PATH`: also write logs to this directory, one file per service (`opensnap-game.log`, ...).
+- `OPENSNAP_LOG_PATH`: also write logs to this directory, one file per service (`opensnap-bootstrap.log`, ...;
+  game servers use `opensnap-game-<plugin>.log`, so several can share the directory).
+- `OPENSNAP_LOG_MAX_MB`: rotate each log file at this size in MiB (default `50`, `0` to never rotate).
+- `OPENSNAP_LOG_BACKUP_COUNT`: rotated files kept per service (default `5`), so a service uses at most 300 MiB of disk by default.
 - `OPENSNAP_LOG_HEXDUMP_LIMIT`: bytes per hexdump (default `16384`, `0` for no limit).
 
 ## Tests

@@ -99,6 +99,14 @@ class AutoModellistaPlugin(GamePlugin):
         router.register(commands.CMD_CHANGE_ATTRIBUTE, self._handle_change_attribute)
         router.register(commands.CMD_LOGOUT_CLIENT, self._handle_logout)
 
+    def on_tick(self, context: HandlerContext) -> list[SnapMessage]:
+        """Drop post-game state of rooms that closed on a path that didn't reset it."""
+
+        for room_id in self._room_game_states.keys() | self._post_game_reports.keys():
+            if context.rooms.get(room_id) is None:
+                self._reset_post_game_state(room_id)
+        return []
+
     def on_session_timeout(self, context: HandlerContext, session: Session) -> list[SnapMessage]:
         """Clean up room state after one client-side transport timeout."""
 

@@ -8,10 +8,14 @@ import unittest
 
 from opensnap.logging_utils import (
     DEFAULT_HEXDUMP_LIMIT,
+    DEFAULT_LOG_BACKUP_COUNT,
+    DEFAULT_LOG_MAX_MB,
     configure_logging,
     format_hexdump,
     parse_hexdump_limit,
+    parse_log_backup_count,
     parse_log_level,
+    parse_log_max_mb,
 )
 
 
@@ -47,10 +51,10 @@ class LoggingUtilsTests(unittest.TestCase):
     def test_configure_logging_writes_service_log_in_configured_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             log_dir = Path(temp_dir) / 'logs'
-            log_path = log_dir / 'opensnap-game.log'
+            log_path = log_dir / 'opensnap-game-outbreak.log'
             os.environ['OPENSNAP_LOG_PATH'] = str(log_dir)
             try:
-                configure_logging('info', service_name='game')
+                configure_logging('info', service_name='game', instance_name='outbreak')
                 logger = logging.getLogger('opensnap.test')
                 logger.info('file-output-check')
                 for handler in logging.getLogger().handlers:
@@ -60,6 +64,36 @@ class LoggingUtilsTests(unittest.TestCase):
             finally:
                 os.environ.pop('OPENSNAP_LOG_PATH', None)
                 configure_logging('info', service_name='game')
+
+    def test_configure_logging_rotates_at_configured_size(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / 'opensnap-web.log'
+            os.environ.update(
+                OPENSNAP_LOG_PATH=temp_dir,
+                OPENSNAP_LOG_MAX_MB='1',
+                OPENSNAP_LOG_BACKUP_COUNT='2',
+            )
+            try:
+                configure_logging('info', service_name='web')
+                logger = logging.getLogger('opensnap.test')
+                for _ in range(4 * 1024):
+                    logger.info('x' * 1024)
+                for handler in logging.getLogger().handlers:
+                    handler.flush()
+                files = sorted(path.name for path in Path(temp_dir).iterdir())
+                self.assertEqual(files, ['opensnap-web.log', 'opensnap-web.log.1', 'opensnap-web.log.2'])
+                self.assertLessEqual(log_path.stat().st_size, 1024 * 1024)
+            finally:
+                for key in ('OPENSNAP_LOG_PATH', 'OPENSNAP_LOG_MAX_MB', 'OPENSNAP_LOG_BACKUP_COUNT'):
+                    os.environ.pop(key, None)
+                configure_logging('info', service_name='web')
+
+    def test_parse_log_rotation_settings_fall_back_on_invalid_values(self) -> None:
+        self.assertEqual(parse_log_max_mb('abc'), DEFAULT_LOG_MAX_MB)
+        self.assertEqual(parse_log_max_mb('-5'), DEFAULT_LOG_MAX_MB)
+        self.assertEqual(parse_log_max_mb('0'), 0)
+        self.assertEqual(parse_log_backup_count('0'), DEFAULT_LOG_BACKUP_COUNT)
+        self.assertEqual(parse_log_backup_count('3'), 3)
 
 
 if __name__ == '__main__':

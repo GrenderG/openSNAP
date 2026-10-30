@@ -358,6 +358,7 @@ class SnapUdpServer:
                                 len(tick_messages),
                             )
                         self._send_messages(udp_socket, tick_messages)
+                        self._forget_idle_endpoints(now)
                         next_tick = now + self._tick_interval_seconds
 
                     self._retransmit_due(udp_socket)
@@ -716,6 +717,26 @@ class SnapUdpServer:
 
         self._deferred_reliable.pop((endpoint.host, endpoint.port, session_id), None)
         self._framed_links.pop(session_id, None)
+
+    def _forget_idle_endpoints(self, now: float) -> None:
+        """Drop transport state of endpoints silent past the timeout that no session uses.
+
+        Every source address gets an entry (port scanners, logins that moved
+        on to the game server), so without this the tables grow forever.
+        """
+
+        busy = {key[:2] for key in self._reliable_pending} | {key[:2] for key in self._deferred_reliable}
+        timeout = self._engine.reliable_timeout_seconds
+        for key in (
+            self._last_inbound_at_by_endpoint.keys()
+            | self._footer_bytes_by_endpoint.keys()
+            | self._rtt_estimate_by_endpoint.keys()
+        ):
+            if key in busy or now - self._last_inbound_at_by_endpoint.get(key, 0.0) < timeout:
+                continue
+            endpoint = Endpoint(host=key[0], port=key[1])
+            if not self._engine.has_session_at(endpoint):
+                self._clear_session_runtime(endpoint)
 
     def _clear_session_runtime(self, endpoint: Endpoint) -> None:
         """Drop cached transport-side state for one endpoint."""

@@ -2,7 +2,7 @@
 
 import logging
 
-from opensnap.config import default_app_config
+from opensnap.config import default_app_config, read_game_plugin_name
 from opensnap.core.engine import SnapProtocolEngine
 from opensnap.env_loader import load_env_file
 from opensnap.logging_utils import configure_logging, exit_with_logged_os_error
@@ -15,7 +15,7 @@ def main() -> None:
     """CLI entrypoint for the game UDP service."""
 
     load_env_file()
-    configure_logging(service_name='game')
+    configure_logging(service_name='game', instance_name=read_game_plugin_name())
     logger = logging.getLogger('opensnap.game')
 
     config = default_app_config()

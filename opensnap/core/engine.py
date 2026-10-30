@@ -332,6 +332,7 @@ class SnapProtocolEngine:
         """Run periodic plugin tasks and end sessions idle past their plugin's limit."""
 
         if self._plugin is None:
+            self._forget_idle_bootstrap_sessions()
             return []
         return self._end_idle_sessions() + self._keep_idle_sessions_alive() + self._plugin.on_tick(self._context)
 
@@ -379,8 +380,11 @@ class SnapProtocolEngine:
         assert self._plugin is not None
         now = self._clock()
         messages: list[SnapMessage] = []
+        fallback_limit = self._config.server.session_max_idle_seconds or None
         for session in self._sessions.all():
             limit = self._plugin.session_idle_limit(self._context, session)
+            if limit is None:
+                limit = fallback_limit
             if limit is None or now - session.last_inbound_at < limit:
                 continue
             self._logger.warning(
@@ -392,6 +396,21 @@ class SnapProtocolEngine:
             )
             messages.extend(self._end_session(session))
         return messages
+
+    def _forget_idle_bootstrap_sessions(self) -> None:
+        """Drop bootstrap sessions silent past the idle ceiling.
+
+        A login's session is done once the client moves to the game server.
+        Only the session goes: its handoff stays for the game server's KICS.
+        """
+
+        limit = self._config.server.session_max_idle_seconds
+        if not limit:
+            return
+        now = self._clock()
+        for session in self._sessions.all():
+            if now - session.last_inbound_at >= limit:
+                self._sessions.remove(session.session_id)
 
     def handle_transport_timeout(self, endpoint: Endpoint, session_id: int) -> list[SnapMessage]:
         """Tear down one timed-out session and return any cleanup callbacks."""
@@ -421,6 +440,11 @@ class SnapProtocolEngine:
         self._sessions.remove(session.session_id)
         self._handoffs.remove(session.session_id)
         return messages
+
+    def has_session_at(self, endpoint: Endpoint) -> bool:
+        """Whether a session is bound to `endpoint`."""
+
+        return self._sessions.get_by_endpoint(endpoint) is not None
 
     def resolve_session(self, endpoint: Endpoint, session_id: int) -> Session | None:
         """Resolve one session by id first, then by bound endpoint."""

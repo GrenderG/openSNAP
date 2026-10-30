@@ -3270,6 +3270,33 @@ class EngineFlowTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from('>L', replies[0].payload, 8)[0], 24)
         self.assertLessEqual(len(_encode(replies[0])), 896)
 
+    def test_session_without_plugin_idle_limit_ends_at_the_ceiling(self) -> None:
+        config = replace(self._config, server=replace(self._config.server, session_max_idle_seconds=7200.0))
+        engine = SnapProtocolEngine(config=config, plugin=AutoModellistaPlugin())
+        now = [1000.0]
+        engine._clock = lambda: now[0]  # noqa: SLF001
+        session_id = _create_session_via_login(engine, Endpoint(host='127.0.0.1', port=50000), 'test')
+        engine._sessions.get(session_id).last_inbound_at = now[0]  # noqa: SLF001
+
+        now[0] += 7199.0
+        engine.tick()
+        self.assertIsNotNone(engine._sessions.get(session_id))  # noqa: SLF001
+        now[0] += 1.0
+        engine.tick()
+        self.assertIsNone(engine._sessions.get(session_id))  # noqa: SLF001
+
+    def test_bootstrap_forgets_idle_sessions_but_keeps_their_handoff(self) -> None:
+        engine = SnapProtocolEngine(config=self._config, role='bootstrap')
+        now = [1000.0]
+        engine._clock = lambda: now[0]  # noqa: SLF001
+        session_id = _create_session_via_login(engine, Endpoint(host='127.0.0.1', port=50000), 'test')
+        engine._sessions.get(session_id).last_inbound_at = now[0]  # noqa: SLF001
+
+        now[0] += self._config.server.session_max_idle_seconds
+        self.assertEqual(engine.tick(), [])
+        self.assertIsNone(engine._sessions.get(session_id))  # noqa: SLF001
+        self.assertIsNotNone(engine._handoffs.get(session_id))  # noqa: SLF001
+
 def _encode(message: SnapMessage) -> bytes:
     """Encode request message as datagram."""
 

@@ -1021,6 +1021,23 @@ class UdpReliabilityTests(unittest.TestCase):
             self.assertEqual(len(decoded), 1)
             self.assertEqual(decoded[0].command, commands.CMD_QUERY_ATTRIBUTE)
 
+    def test_idle_endpoints_without_a_session_are_forgotten(self) -> None:
+        server = self._server()
+        scanner = Endpoint(host='10.0.0.1', port=40000)
+        player = Endpoint(host='10.0.0.2', port=40001)
+        server._engine.has_session_at.side_effect = lambda endpoint: endpoint == player
+        for endpoint in (scanner, player):
+            self._mark_inbound_active(server, endpoint, 0.0)
+            server._footer_bytes_by_endpoint[(endpoint.host, endpoint.port)] = FOOTER_BYTES_KAGE
+
+        server._forget_idle_endpoints(59.0)
+        self.assertIn(('10.0.0.1', 40000), server._last_inbound_at_by_endpoint)
+        server._forget_idle_endpoints(60.0)
+        self.assertNotIn(('10.0.0.1', 40000), server._last_inbound_at_by_endpoint)
+        self.assertNotIn(('10.0.0.1', 40000), server._footer_bytes_by_endpoint)
+        self.assertIn(('10.0.0.2', 40001), server._last_inbound_at_by_endpoint)
+        self.assertIn(('10.0.0.2', 40001), server._footer_bytes_by_endpoint)
+
 
 if __name__ == '__main__':
     unittest.main()

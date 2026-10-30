@@ -2,6 +2,7 @@
 
 from collections.abc import Iterable
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
 from typing import NoReturn
@@ -9,6 +10,8 @@ from typing import NoReturn
 DEFAULT_LOG_LEVEL = 'debug'
 DEFAULT_HEXDUMP_LIMIT = 16384
 DEFAULT_LOG_PATH = ''
+DEFAULT_LOG_MAX_MB = 50
+DEFAULT_LOG_BACKUP_COUNT = 5
 SERVICE_LOG_FILENAMES = {
     'bootstrap': 'opensnap-bootstrap.log',
     'game': 'opensnap-game.log',
@@ -26,14 +29,24 @@ LOG_LEVELS: dict[str, int] = {
 }
 
 
-def configure_logging(level_name: str | None = None, *, service_name: str) -> None:
-    """Configure process logging for openSNAP services."""
+def configure_logging(
+    level_name: str | None = None,
+    *,
+    service_name: str,
+    instance_name: str | None = None,
+) -> None:
+    """Configure process logging for openSNAP services.
+
+    `instance_name` gives each process of one service its own log file
+    (`opensnap-game-<instance>.log`), so concurrent processes never rotate
+    the same file.
+    """
 
     configured_level = parse_log_level(level_name or os.getenv('OPENSNAP_LOG_LEVEL', DEFAULT_LOG_LEVEL))
     configured_log_path = os.getenv('OPENSNAP_LOG_PATH', DEFAULT_LOG_PATH).strip()
     handlers: list[logging.Handler] = [logging.StreamHandler()]
     resolved_log_file_path: str | None = None
-    file_handler = _build_file_handler(configured_log_path, service_name)
+    file_handler = _build_file_handler(configured_log_path, service_name, instance_name)
     if file_handler is not None:
         handlers.append(file_handler[0])
         resolved_log_file_path = file_handler[1]
@@ -100,20 +113,51 @@ def parse_hexdump_limit(limit_value: str | None) -> int:
     return limit
 
 
-def _build_file_handler(log_path: str, service_name: str) -> tuple[logging.FileHandler, str] | None:
-    """Build optional file handler for runtime logging."""
+def parse_log_max_mb(value: str | None) -> int:
+    """Parse the per-file log size cap in MiB; 0 disables rotation."""
+
+    try:
+        max_mb = int((value or '').strip())
+    except ValueError:
+        return DEFAULT_LOG_MAX_MB
+    return max_mb if max_mb >= 0 else DEFAULT_LOG_MAX_MB
+
+
+def parse_log_backup_count(value: str | None) -> int:
+    """Parse how many rotated log files to keep (at least one)."""
+
+    try:
+        count = int((value or '').strip())
+    except ValueError:
+        return DEFAULT_LOG_BACKUP_COUNT
+    return count if count >= 1 else DEFAULT_LOG_BACKUP_COUNT
+
+
+def _build_file_handler(
+    log_path: str,
+    service_name: str,
+    instance_name: str | None,
+) -> tuple[logging.FileHandler, str] | None:
+    """Build optional size-rotated file handler for runtime logging."""
 
     if not log_path:
         return None
 
     try:
         filename = SERVICE_LOG_FILENAMES[service_name]
+        if instance_name:
+            filename = filename.replace('.log', f'-{instance_name}.log')
         path = Path(log_path).expanduser()
         if not path.is_absolute():
             path = (Path.cwd() / path).resolve()
         path.mkdir(parents=True, exist_ok=True)
         file_path = path / filename
-        handler = logging.FileHandler(file_path, encoding='utf-8')
+        handler = RotatingFileHandler(
+            file_path,
+            maxBytes=parse_log_max_mb(os.getenv('OPENSNAP_LOG_MAX_MB')) * 1024 * 1024,
+            backupCount=parse_log_backup_count(os.getenv('OPENSNAP_LOG_BACKUP_COUNT')),
+            encoding='utf-8',
+        )
     except (KeyError, OSError):
         return None
 

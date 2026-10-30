@@ -9,7 +9,9 @@ from opensnap.env_loader import load_env_file
 from opensnap.logging_utils import configure_logging, exit_with_logged_os_error
 from opensnap_web.app import create_web_app
 from opensnap_web.config import WebServerConfig, default_web_server_config
-from werkzeug.serving import BaseWSGIServer, ThreadedWSGIServer, make_server
+from werkzeug.serving import BaseWSGIServer, ThreadedWSGIServer, WSGIRequestHandler, make_server
+
+WEB_IDLE_TIMEOUT_SECONDS = 30
 
 
 def main(*, web_plugin: str | None = None) -> None:
@@ -25,6 +27,7 @@ def main(*, web_plugin: str | None = None) -> None:
             config = replace(config, game_plugin=normalized)
     app = create_web_app(config)
     _enable_web_reuse_address(logger)
+    _limit_idle_web_connections()
     http_server = None
     https_server = None
     try:
@@ -121,6 +124,16 @@ def _enable_web_reuse_address(logger: logging.Logger) -> None:
     BaseWSGIServer.allow_reuse_address = True
     ThreadedWSGIServer.allow_reuse_address = True
     logger.debug('Enabled SO_REUSEADDR for Werkzeug HTTP servers.')
+
+
+def _limit_idle_web_connections() -> None:
+    """Close Werkzeug connections silent for `WEB_IDLE_TIMEOUT_SECONDS`.
+
+    Threaded servers keep HTTP/1.1 connections alive with no timeout, so a
+    client that vanishes would hold its thread and socket forever.
+    """
+
+    WSGIRequestHandler.timeout = WEB_IDLE_TIMEOUT_SECONDS
 
 
 if __name__ == '__main__':

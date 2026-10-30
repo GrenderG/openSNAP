@@ -19,6 +19,7 @@ BOOTSTRAP_GAMES_GENERIC = 'generic'
 DEFAULT_SERVER_SECRET = 'Totally secret server secret!'
 DEFAULT_BOOTSTRAP_KEY = 'SNAP-SWAN'
 DEFAULT_TICK_INTERVAL_SECONDS = 10.0
+DEFAULT_SESSION_MAX_IDLE_SECONDS = 2 * 60 * 60.0
 DEFAULT_MAX_LOBBIES = 20
 DEFAULT_MAX_ROOMS_PER_LOBBY = 50
 DEFAULT_MAX_PLAYERS_PER_ROOM = 8
@@ -94,6 +95,9 @@ class ServerConfig:
     server_secret: str = DEFAULT_SERVER_SECRET
     bootstrap_key: bytes = DEFAULT_BOOTSTRAP_KEY.encode('utf-8')
     tick_interval_seconds: float = DEFAULT_TICK_INTERVAL_SECONDS
+    # Silence after which a game session is ended when its plugin sets no idle
+    # limit for its state (0: never), so vanished clients don't linger forever.
+    session_max_idle_seconds: float = DEFAULT_SESSION_MAX_IDLE_SECONDS
     max_lobbies: int = DEFAULT_MAX_LOBBIES
     max_rooms_per_lobby: int = DEFAULT_MAX_ROOMS_PER_LOBBY
     max_players_per_room: int = DEFAULT_MAX_PLAYERS_PER_ROOM
@@ -184,13 +188,16 @@ def default_app_config() -> AppConfig:
         ('OPENSNAP_GAME_PORT', 'OPENSNAP_PORT'),
         DEFAULT_GAME_PORT,
     )
-    game_plugin = os.getenv('OPENSNAP_GAME_PLUGIN', DEFAULT_GAME_PLUGIN).strip().lower() or DEFAULT_GAME_PLUGIN
+    game_plugin = read_game_plugin_name()
     bootstrap_games = _read_bootstrap_games(os.getenv('OPENSNAP_BOOTSTRAP_GAMES', ''))
     server_secret = os.getenv('OPENSNAP_SERVER_SECRET', DEFAULT_SERVER_SECRET) or DEFAULT_SERVER_SECRET
     bootstrap_key = (
         os.getenv('OPENSNAP_BOOTSTRAP_KEY', DEFAULT_BOOTSTRAP_KEY).strip() or DEFAULT_BOOTSTRAP_KEY
     ).encode('utf-8')
     tick_interval_seconds = _read_float_env('OPENSNAP_TICK_INTERVAL_SECONDS', DEFAULT_TICK_INTERVAL_SECONDS)
+    session_max_idle_seconds = max(
+        0.0, _read_float_env('OPENSNAP_SESSION_MAX_IDLE_SECONDS', DEFAULT_SESSION_MAX_IDLE_SECONDS)
+    )
     max_lobbies = _read_positive_int_env(
         ('OPENSNAP_MAX_LOBBIES',),
         DEFAULT_MAX_LOBBIES,
@@ -231,6 +238,7 @@ def default_app_config() -> AppConfig:
             server_secret=server_secret,
             bootstrap_key=bootstrap_key,
             tick_interval_seconds=tick_interval_seconds,
+            session_max_idle_seconds=session_max_idle_seconds,
             max_lobbies=max_lobbies,
             max_rooms_per_lobby=max_rooms_per_lobby,
             max_players_per_room=max_players_per_room,
@@ -255,6 +263,12 @@ def default_app_config() -> AppConfig:
         # m-* is mountain, c-* is city, s-* is circuit, plus event and cm.
         lobbies=_default_lobbies()[:max_lobbies],
     )
+
+
+def read_game_plugin_name() -> str:
+    """Return the game plugin this game server process runs."""
+
+    return os.getenv('OPENSNAP_GAME_PLUGIN', DEFAULT_GAME_PLUGIN).strip().lower() or DEFAULT_GAME_PLUGIN
 
 
 def _default_lobbies() -> tuple[LobbyConfig, ...]:
