@@ -5,6 +5,7 @@ from typing import Protocol
 from flask import Blueprint
 
 from opensnap.storage.interfaces import StorageBundle
+from opensnap.webhooks import WebhookDispatcher
 
 
 class GameWebModule(Protocol):
@@ -12,5 +13,5 @@ class GameWebModule(Protocol):
 
     name: str
 
-    def blueprint(self, storage: StorageBundle) -> Blueprint:
-        """Return the game's routes."""
+    def blueprint(self, storage: StorageBundle, dispatcher: WebhookDispatcher) -> Blueprint:
+        """Return the game's routes; announcements go through `dispatcher`."""

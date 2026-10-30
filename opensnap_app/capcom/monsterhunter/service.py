@@ -38,7 +38,13 @@ from opensnap_app.capcom.protocol import (
     frame_sequence,
 )
 from opensnap_app.capcom.monsterhunter.constants import FINAL_PAGE_START, WORLD_STATUS_REPLY
-from opensnap_app.capcom.monsterhunter.content import EventCatalog, InformationPages, MarketState, NamedFiles
+from opensnap_app.capcom.monsterhunter.content import (
+    MARKET_DAY_NAMES,
+    EventCatalog,
+    InformationPages,
+    MarketState,
+    NamedFiles,
+)
 from opensnap_app.capcom.monsterhunter.flows import AppFlowTracker, AppPhase
 from opensnap_app.capcom.monsterhunter.patch import ClientPatch, load_patches
 from opensnap_app.capcom.monsterhunter.ram_patch import (
@@ -64,7 +70,9 @@ from opensnap.core.online import OnlinePlayer
 from opensnap.core.records import Ranking
 from opensnap.plugins.monsterhunter.directory import Directory
 from opensnap.plugins.monsterhunter.profile import MonsterHunterProfile
+from opensnap.plugins.monsterhunter.webhooks import MonsterHunterWebhooks
 from opensnap.storage.interfaces import OnlinePlayerStore, RecordStore
+from opensnap.webhooks import WebhookDispatcher
 
 _LOGGER = logging.getLogger('opensnap_app.capcom.monsterhunter')
 
@@ -260,8 +268,10 @@ class AppService:
         directory: Directory,
         online_players: OnlinePlayerStore,
         records: RecordStore,
+        webhooks: MonsterHunterWebhooks | None = None,
     ) -> None:
         self._config = config
+        self._webhooks = webhooks or MonsterHunterWebhooks(WebhookDispatcher(), config.profile.identifier)
         self._flows = flows
         self._directory = directory
         self._online_players = online_players
@@ -274,6 +284,13 @@ class AppService:
         self._patches = load_patches(config.data_directory)
         self._ram_patch = config.ram_patch
         self._ram_patch_na = config.ram_patch_na
+
+    def announce_day(self) -> None:
+        """Announce today's Market day and Event quest (run on each date change)."""
+
+        self._webhooks.market_day(MARKET_DAY_NAMES[self._market.current()])
+        event = self._events.current()
+        self._webhooks.event_quest(event.title if event is not None else None)
 
     def serve(self, connection: AppConnection, answer: ConnectAnswer) -> None:
         host = connection.host

@@ -1,6 +1,7 @@
 """Shared UDP transport server for openSNAP services."""
 
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 import logging
 import socket
@@ -255,9 +256,12 @@ class SnapUdpServer:
         engine: SnapProtocolEngine,
         tick_interval_seconds: float = DEFAULT_TICK_INTERVAL_SECONDS,
         logger_name: str = 'opensnap.game',
+        on_bound: Callable[[], None] | None = None,
     ) -> None:
         self._config = config
         self._engine = engine
+        # Called once the socket is bound, i.e. the service is up.
+        self._on_bound = on_bound
         self._tick_interval_seconds = tick_interval_seconds
         self._stopped = False
         self._logger = logging.getLogger(logger_name)
@@ -297,6 +301,8 @@ class SnapUdpServer:
                     self._config.host,
                     self._config.port,
                 )
+                if self._on_bound is not None:
+                    self._on_bound()
                 next_tick = time.monotonic() + self._tick_interval_seconds
 
                 while not self._stopped:

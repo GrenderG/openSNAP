@@ -4,6 +4,7 @@ from flask import Flask, Response
 
 from opensnap.config import default_app_config
 from opensnap.storage.factory import create_storage
+from opensnap.webhooks import WebhookDispatcher
 from opensnap_web.common import dump_request, text_response
 from opensnap_web.config import WebServerConfig, default_web_server_config
 from opensnap_web.games import select_web_modules
@@ -15,9 +16,10 @@ def create_web_app(config: WebServerConfig | None = None) -> Flask:
     web_config = config or default_web_server_config()
     modules = select_web_modules(web_config.game_plugin)
     storage = create_storage(default_app_config())
+    dispatcher = WebhookDispatcher.from_env()
     app = Flask(__name__)
     for module in modules:
-        app.register_blueprint(module.blueprint(storage))
+        app.register_blueprint(module.blueprint(storage, dispatcher))
 
     @app.errorhandler(404)
     def unknown_route(_error: Exception) -> Response:

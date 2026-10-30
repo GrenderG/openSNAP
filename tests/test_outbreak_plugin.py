@@ -39,7 +39,7 @@ from opensnap_app.capcom.protocol import (
     pop_app_frame,
 )
 from opensnap_app.capcom.server import CapcomAppServer
-from tests.support import create_accounts, login_client_payload, serving
+from tests.support import RecordingDispatcher, create_accounts, login_client_payload, serving
 
 OUTBREAK_TITLE_CODE = 0xCAE0
 LOBBY_FLAGS = FLAG_CHANNEL_BITS | FLAG_RELIABLE
@@ -341,6 +341,22 @@ class OutbreakLobbyTests(OutbreakEngineHarness):
         self.assertFalse(self._to(again, host, commands.CMD_LEAVE))
         created = self._send(guest, commands.CMD_CREATE_GAME_ROOM, _create_payload(), LOBBY_FLAGS)
         self.assertTrue(self._to(created, host, commands.CMD_CREATE_GAME_ROOM))
+
+    def test_scenario_start_is_announced_once_per_launch(self) -> None:
+        dispatcher = RecordingDispatcher()
+        self.plugin.attach_webhooks(dispatcher)
+        host, guest, _watcher = self.players
+        room_id = self._create_room(host)
+        self._send(guest, commands.CMD_JOIN, _join_payload(room_id))
+        for _launch in range(2):
+            for player in (host, guest):
+                self._send(player, commands.CMD_CHANGE_USER_STATUS, struct.pack('>L', STATUS_IN_SCENARIO))
+            for player in (host, guest):
+                self._send(player, commands.CMD_CHANGE_USER_STATUS, struct.pack('>L', self.lobby_status))
+
+        self.assertEqual([(event.game, event.kind) for event in dispatcher.events],
+                         [(self.plugin_class.name, 'scenario_started')] * 2)
+        self.assertEqual(dispatcher.events[0].data['players'], ['jill0', 'jill1'])
 
     def test_chat_reaches_peers_but_not_the_sender(self) -> None:
         host, guest, watcher = self.players

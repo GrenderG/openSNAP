@@ -3,6 +3,7 @@
 from flask import Blueprint
 
 from opensnap.storage.interfaces import StorageBundle
+from opensnap.webhooks import WebhookDispatcher
 from opensnap_web.signup import SignupService, add_signup_routes
 
 
@@ -11,7 +12,8 @@ class MonsterHunterWebModule:
 
     name = 'monsterhunter'
 
-    def blueprint(self, storage: StorageBundle) -> Blueprint:
+    def blueprint(self, storage: StorageBundle, dispatcher: WebhookDispatcher) -> Blueprint:
+        del dispatcher
         blueprint = Blueprint(self.name, __name__)
         add_signup_routes(blueprint, SignupService(storage.accounts), ('mhweb', 'mheuweb', 'reweb'))
         return blueprint

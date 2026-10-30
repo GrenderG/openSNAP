@@ -5,6 +5,7 @@ from flask import Blueprint, abort
 from opensnap.plugins.outbreak.ranking_pages import BOARDS
 from opensnap.plugins.outbreak.scenario_rankings import ScenarioBoards
 from opensnap.storage.interfaces import StorageBundle
+from opensnap.webhooks import WebhookDispatcher
 from opensnap_web.common import add_routes, html_response
 from opensnap_web.games.outbreak.notice_board import (
     CLEAR_RANKING_PATH,
@@ -33,7 +34,8 @@ class OutbreakWebModule:
         self._boards = boards
         self._title = title
 
-    def blueprint(self, storage: StorageBundle) -> Blueprint:
+    def blueprint(self, storage: StorageBundle, dispatcher: WebhookDispatcher) -> Blueprint:
+        del dispatcher
         blueprint = Blueprint(self.name, __name__)
         add_signup_routes(blueprint, SignupService(storage.accounts), (SIGNUP_PREFIX,))
         rankings = notice_board_rankings(storage.records, self._boards)

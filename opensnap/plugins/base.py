@@ -8,6 +8,9 @@ from opensnap.core.sessions import Session
 from opensnap.protocol.codec import decode_datagram as decode_snap_datagram, encode_messages as encode_snap_messages
 from opensnap.protocol.enums import GameTags, PostGameReportMask, RoomSubcommand
 from opensnap.protocol.models import Endpoint, SnapMessage
+from opensnap.webhooks import GameWebhooks, WebhookDispatcher
+
+_NO_WEBHOOKS = WebhookDispatcher()
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +64,19 @@ class GamePlugin:
     # `SnapUdpServer._FramedLink`): at most one datagram per 60 Hz frame, paced
     # by the client's line speed, ACKs folded into the next queued datagram.
     framed_sender: bool = False
+    # Announcements this game posts; `attach_webhooks` binds them to the
+    # process's dispatcher. Until then they go nowhere.
+    webhooks_class: type[GameWebhooks] = GameWebhooks
+    webhooks: GameWebhooks = GameWebhooks(_NO_WEBHOOKS, '')
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        cls.webhooks = cls.webhooks_class(_NO_WEBHOOKS, cls.name)
+
+    def attach_webhooks(self, dispatcher: WebhookDispatcher) -> None:
+        """Post this game's announcements through `dispatcher`."""
+
+        self.webhooks = self.webhooks_class(dispatcher, self.name)
 
     def register_handlers(self, router: CommandRouter, context: HandlerContext) -> None:
         """Register game-specific command handlers."""

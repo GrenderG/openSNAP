@@ -36,6 +36,13 @@ MARKET_ROTATION = (
     MARKET_NORMAL,
     MARKET_FOOD_DAY,
 )
+MARKET_DAY_NAMES = {
+    MARKET_NORMAL: 'a Normal Day',
+    MARKET_CLAW_DAY: 'Claw Day',
+    MARKET_TOOLS_DAY: 'Tools Day',
+    MARKET_FOOD_DAY: 'Food Day',
+    MARKET_HALF_PRICE_DAY: 'Half Price Day',
+}
 EVENTS_DIRECTORY = 'events'
 EVENT_MANIFEST_FILE = 'manifest.json'
 EVENT_RESOURCE_MAX_SIZE = 0x8000
@@ -58,11 +65,16 @@ class MarketState:
     def __init__(self, today: Callable[[], date] = date.today) -> None:
         self._today = today
 
+    def current(self) -> int:
+        """Return today's Market day value."""
+
+        day_of_year = self._today().timetuple().tm_yday
+        return MARKET_ROTATION[(day_of_year - 1) % len(MARKET_ROTATION)]
+
     def native_response(self) -> bytes:
         """Return the 6211 payload: one big-endian Market day word."""
 
-        day_of_year = self._today().timetuple().tm_yday
-        return struct.pack('>L', MARKET_ROTATION[(day_of_year - 1) % len(MARKET_ROTATION)])
+        return struct.pack('>L', self.current())
 
 
 @dataclass(frozen=True, slots=True)

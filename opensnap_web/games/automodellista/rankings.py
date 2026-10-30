@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 import logging
 
 from opensnap.core.records import Ranking, Record
+from opensnap.plugins.automodellista.webhooks import AutoModellistaWebhooks
 from opensnap.storage.interfaces import AccountStore, RecordStore
 
 # Ranking page contract (`/amusa/am_rank.html`, Beta1 `/amusa/rank.html`).
@@ -220,11 +221,13 @@ class AutoModellistaRankings:
         accounts: AccountStore,
         records: RecordStore,
         rows_by_board: Mapping[str, int],
+        webhooks: AutoModellistaWebhooks,
     ) -> None:
         self._game = game
         self._accounts = accounts
         self._records = records
         self._rows_by_board = rows_by_board
+        self._webhooks = webhooks
         self._logger = logging.getLogger('opensnap.web.rankings')
 
     def submit(self, course: str, utl: str) -> None:
@@ -233,6 +236,7 @@ class AutoModellistaRankings:
         Only boards the ranking page shows are kept: the club meeting upload
         (`S`) carries a literal 0 instead of a lap, and 0 is never a lap time.
         The login ID, right-aligned like the team, must name an existing account.
+        A lap that beats the board's best is announced.
         """
 
         lap = utl[30:40]
@@ -243,16 +247,21 @@ class AutoModellistaRankings:
         if account is None:
             self._logger.warning('Ignoring ranking upload for unknown login ID %r.', utl[:15])
             return
+        team = utl[15:30].lstrip(' ')
+        lap_ms = int(lap)
+        best = self._records.top(self._game, course, 1)
         self._records.submit(
             game=self._game,
             board=course,
             ranking=Ranking.LOWEST,
             user_id=account.user_id,
             player=account.username,
-            score=int(lap),
-            details={'team': utl[15:30].lstrip(' ')},
+            score=lap_ms,
+            details={'team': team},
         )
-        self._logger.info('Stored %s lap %s ms on course %s.', account.username, int(lap), course)
+        self._logger.info('Stored %s lap %s ms on course %s.', account.username, lap_ms, course)
+        if not best or lap_ms < best[0].score:
+            self._webhooks.course_record(account.username, team, course, lap_ms)
 
     def page(self) -> str:
         """Render the current boards."""

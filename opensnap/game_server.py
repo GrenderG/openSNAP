@@ -8,6 +8,7 @@ from opensnap.env_loader import load_env_file
 from opensnap.logging_utils import configure_logging, exit_with_logged_os_error
 from opensnap.plugins import create_game_plugin
 from opensnap.udp_server import SnapUdpServer
+from opensnap.webhooks import WebhookDispatcher
 
 
 def main() -> None:
@@ -19,12 +20,14 @@ def main() -> None:
 
     config = default_app_config()
     plugin = create_game_plugin(config.server.game_plugin)
+    plugin.attach_webhooks(WebhookDispatcher.from_env())
     engine = SnapProtocolEngine(config=config, plugin=plugin, role='game')
     server = SnapUdpServer(
         config=config.server.game,
         engine=engine,
         tick_interval_seconds=config.server.tick_interval_seconds,
         logger_name='opensnap.game',
+        on_bound=plugin.webhooks.server_started,
     )
     logger.info(
         'Starting openSNAP game server on %s:%d using plugin %s.',

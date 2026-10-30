@@ -5,6 +5,7 @@ import struct
 
 from opensnap.config import AppConfig, GameServerTargetConfig
 from opensnap.storage.factory import create_storage
+from opensnap.webhooks import WebhookDispatcher, WebhookEvent
 
 # SN@P title codes passed to `kkLoginClient` (see `opensnap.plugins` `snap_titles`).
 AUTO_MODELLISTA_TITLE_CODE = 0xCAAD
@@ -48,3 +49,14 @@ def create_accounts(config: AppConfig, *usernames: str, password: str = '1111', 
                 storage.accounts.set_kage_login_key(account, password.encode('utf-8'))
     finally:
         storage.close()
+
+
+class RecordingDispatcher(WebhookDispatcher):
+    """Keep sent webhook events instead of posting them."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[WebhookEvent] = []
+
+    def send(self, event: WebhookEvent) -> None:
+        self.events.append(event)

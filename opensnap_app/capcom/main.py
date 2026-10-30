@@ -9,9 +9,11 @@ from opensnap.env_loader import load_env_file
 from opensnap.logging_utils import configure_logging, exit_with_logged_os_error
 from opensnap.plugins.monsterhunter.directory import read_directory
 from opensnap.plugins.monsterhunter.profile import MONSTER_HUNTER_NA, MONSTER_HUNTER_NA_BETA, MonsterHunterProfile
+from opensnap.plugins.monsterhunter.webhooks import MonsterHunterWebhooks
 from opensnap.plugins.outbreak2.directory import read_directory as read_outbreak2_directory
 from opensnap.storage.factory import create_storage
 from opensnap.storage.interfaces import StorageBundle
+from opensnap.webhooks import DayChangeTimer, WebhookDispatcher
 from opensnap_app.capcom import monsterhunter, outbreak, outbreak2
 from opensnap_app.capcom.server import CapcomAppServer, TitleService
 
@@ -28,15 +30,16 @@ def main() -> None:
 
     config = default_app_config()
     storage = create_storage(config)
+    dispatcher = WebhookDispatcher.from_env()
     titles: dict[int, TitleService] = {}
     stamped_builds: dict[bytes, TitleService] = {}
     _add_title(
         titles, (monsterhunter.APP_BUILD_NA, monsterhunter.APP_BUILD_EU), 'Monster Hunter',
-        lambda: _monster_hunter_service(config, storage, MONSTER_HUNTER_NA),
+        lambda: _monster_hunter_service(config, storage, MONSTER_HUNTER_NA, dispatcher),
     )
     _add_title(
         stamped_builds, (monsterhunter.NA_PUBLIC_BETA_VERSION,), 'Monster Hunter NA public beta',
-        lambda: _monster_hunter_service(config, storage, MONSTER_HUNTER_NA_BETA),
+        lambda: _monster_hunter_service(config, storage, MONSTER_HUNTER_NA_BETA, dispatcher),
     )
     _add_title(titles, (outbreak.APP_BUILD,), 'Resident Evil Outbreak', lambda: _outbreak_service(storage))
     _add_title(
@@ -78,11 +81,14 @@ def _add_title[K](
 
 
 def _monster_hunter_service(
-    config: AppConfig, storage: StorageBundle, profile: MonsterHunterProfile
+    config: AppConfig, storage: StorageBundle, profile: MonsterHunterProfile, dispatcher: WebhookDispatcher
 ) -> monsterhunter.AppService:
-    """One Monster Hunter deployment: its own players, Worlds and data folder."""
+    """One Monster Hunter deployment: its own players, Worlds and data folder.
 
-    return monsterhunter.AppService(
+    Each announces its Market day and Event quest when the date changes.
+    """
+
+    service = monsterhunter.AppService(
         config=monsterhunter.read_app_service_config(config, profile),
         flows=monsterhunter.AppFlowTracker(),
         directory=read_directory(
@@ -91,7 +97,11 @@ def _monster_hunter_service(
         ),
         online_players=storage.online_players,
         records=storage.records,
+        webhooks=MonsterHunterWebhooks(dispatcher, profile.identifier),
     )
+    if dispatcher.enabled:
+        DayChangeTimer(service.announce_day).start()
+    return service
 
 
 def _outbreak_service(storage: StorageBundle, *, public_beta: bool = False) -> outbreak.AppService:

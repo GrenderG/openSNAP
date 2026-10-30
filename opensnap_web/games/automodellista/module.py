@@ -2,7 +2,9 @@
 
 from flask import Blueprint, request
 
+from opensnap.plugins.automodellista.webhooks import AutoModellistaWebhooks
 from opensnap.storage.interfaces import StorageBundle
+from opensnap.webhooks import WebhookDispatcher
 from opensnap_web.common import add_routes, dump_request, html_response, page_view, text_response
 from opensnap_web.games.automodellista.pages import AM_INFO_PAGE, AM_PATCH_PAGE, AM_PATCH_PAGE_NUMBERS, AM_TABOO_PAGE
 from opensnap_web.games.automodellista.rankings import (
@@ -34,7 +36,7 @@ class AutoModellistaWebModule:
         AM_RANK_EVENT_BOARD: AM_RANK_EVENT_ROWS,
     }
 
-    def blueprint(self, storage: StorageBundle) -> Blueprint:
+    def blueprint(self, storage: StorageBundle, dispatcher: WebhookDispatcher) -> Blueprint:
         blueprint = Blueprint(self.name, __name__)
         add_signup_routes(
             blueprint,
@@ -70,6 +72,7 @@ class AutoModellistaWebModule:
             accounts=storage.accounts,
             records=storage.records,
             rows_by_board=self.rank_boards,
+            webhooks=AutoModellistaWebhooks(dispatcher, self.name),
         )
         add_routes(blueprint, [self.rank_path], lambda: html_response(rankings.page()))
 

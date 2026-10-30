@@ -330,6 +330,23 @@ Behaviour:
   `data/outbreak2/files/06/<language>/TOP_INFOR.HTM` (PAL: `01` English, `02` French, `03` Spanish, `04` German,
   `05` Italian). Included; at most 4095 bytes.
 
+## Webhooks
+
+Announcements posted to one webhook, for example a Discord channel's:
+
+- Every game server: it has started.
+- Monster Hunter (Capcom APP): the Market day and the Event quest, at each date change.
+- Auto Modellista (web): a lap upload that sets a new course record (courses named by board letter).
+- Resident Evil Outbreak, File#2 and the beta (game server): a room starting a scenario, with its players.
+
+Settings:
+
+- `OPENSNAP_WEBHOOK_URL`: the webhook URL; empty (default) disables announcements.
+- `OPENSNAP_WEBHOOK_FORMAT`: `discord` (default, `{"content": ...}`) or `json` (`{"game", "event", "content",
+  "data"}`) for any other consumer.
+
+A game adds announcements by extending `opensnap.webhooks.GameWebhooks` in its plugin package (`webhooks.py`).
+
 ## Logging
 
 - `OPENSNAP_LOG_LEVEL`: `debug` (default), `info`, `warning`, `error` or `critical`. `debug` adds packet hexdumps.
@@ -349,6 +366,7 @@ Replay tests use local packet captures and are skipped when those are missing.
 - `opensnap/protocol`: packet format and codec.
 - `opensnap/core`: engine, login, routing and shared state.
 - `opensnap/storage`: shared-store backends.
+- `opensnap/webhooks`: webhook transport and the announcement base class.
 - `opensnap/plugins`: one package per game, plus `common` helpers.
 - `opensnap_web`: web service; one module per game in `games/`, shared signup in `signup.py`.
 - `opensnap_dns`: DNS service.

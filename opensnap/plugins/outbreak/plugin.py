@@ -47,6 +47,7 @@ from opensnap.plugins.common import (
     send_target_relay_flags,
 )
 from opensnap.plugins.outbreak.directory import Area, Directory, read_directory
+from opensnap.plugins.outbreak.webhooks import OutbreakWebhooks
 from opensnap.protocol import commands
 from opensnap.protocol.constants import (
     FLAG_CHANNEL_BITS,
@@ -124,6 +125,8 @@ class OutbreakPlugin(GamePlugin):
     name = 'outbreak'
     snap_titles = (SnapTitle(title_code=TITLE_CODE, footer_marker=FOOTER_MARKER, name='Resident Evil Outbreak NA'),)
     companion_app = 'capcom'
+    webhooks_class = OutbreakWebhooks
+    webhooks: OutbreakWebhooks
     # The status a client reports once it is back in the lobby.
     lobby_status = STATUS_IN_LOBBY
     max_listed_rooms = MAX_LISTED_ROOMS
@@ -448,6 +451,8 @@ class OutbreakPlugin(GamePlugin):
         status = get_u32(message.payload, 0)
         deferred: list[SnapMessage] = []
         if player is not None and status in (STATUS_IN_SCENARIO, self.lobby_status):
+            if status == STATUS_IN_SCENARIO and not player.in_scenario:
+                self._announce_scenario_start(context, session)
             player.in_scenario = status == STATUS_IN_SCENARIO
             if not player.in_scenario:
                 deferred = [
@@ -744,6 +749,20 @@ class OutbreakPlugin(GamePlugin):
     def _member_record(self, session: Session) -> bytes:
         profile = self._players[session.session_id].profile if session.session_id in self._players else bytes(PROFILE_SIZE)
         return pack_fixed(session.username, 16) + struct.pack('>2L', session.session_id, len(profile)) + profile
+
+    def _announce_scenario_start(self, context: HandlerContext, session: Session) -> None:
+        """Announce a launch once: when the first member of its room enters the scenario."""
+
+        room = context.rooms.get(session.room_id) if session.room_id > 0 else None
+        if room is None:
+            return
+        members = context.sessions.list_room_members(room.room_id)
+        if any(self._players[member.session_id].in_scenario for member in members if member.session_id in self._players):
+            return
+        area = self.directory.area(session.lobby_id)
+        self.webhooks.scenario_started(
+            area.name if area is not None else str(session.lobby_id), room.name, [member.username for member in members]
+        )
 
     def _reachable(self, session: Session) -> bool:
         """Whether lobby callbacks may reach the player (not in a scenario)."""
