@@ -137,21 +137,21 @@ class OnlinePlayerChannelTests(unittest.TestCase):
         flows = AppFlowTracker()
         self.online.login('monsterhunter', _session(1))
         flows.sync(self.online.list('monsterhunter'))
-        self.assertEqual(flows.claim('10.0.0.1'), (1, AppPhase.WORLD))
-        flows.release('10.0.0.1', 1)
+        self.assertEqual(flows.claim(('10.0.0.1', 'p1')), (1, AppPhase.WORLD))
+        flows.release(('10.0.0.1', 'p1'), 1)
 
         # Seen logins are not armed again: a later reconnect stays unattributed.
         flows.sync(self.online.list('monsterhunter'))
-        self.assertEqual(flows.claim('10.0.0.1'), (None, AppPhase.LAND))
+        self.assertEqual(flows.claim(('10.0.0.1', 'p1')), (None, AppPhase.LAND))
 
         # A repeated KICS (Land entry) hands the next connection to the player again.
         self.online.login('monsterhunter', _session(1))
         flows.sync(self.online.list('monsterhunter'))
-        self.assertEqual(flows.claim('10.0.0.1'), (1, AppPhase.LAND))
+        self.assertEqual(flows.claim(('10.0.0.1', 'p1')), (1, AppPhase.LAND))
 
         self.online.logout(1)
         flows.sync(self.online.list('monsterhunter'))
-        self.assertEqual(flows.claim('10.0.0.1'), (None, AppPhase.APP1))
+        self.assertEqual(flows.claim(('10.0.0.1', 'p1')), (None, AppPhase.APP1))
 
 
 if __name__ == '__main__':

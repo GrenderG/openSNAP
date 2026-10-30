@@ -1303,30 +1303,29 @@ class AppCodecTests(unittest.TestCase):
         self.assertIsNone(pop_app_frame(buffer))
 
 class AppFlowTrackerTests(unittest.TestCase):
-    def test_sessions_on_one_host_keep_their_own_phase(self) -> None:
+    def test_consoles_on_one_address_keep_their_own_flow(self) -> None:
         flows = AppFlowTracker()
-        self.assertEqual(flows.claim('10.0.0.1'), (None, AppPhase.APP1))
+        hunter, other = ('10.0.0.1', 'hunter'), ('10.0.0.1', 'other')
+        flows.arm_world(1, hunter)
+        flows.arm_world(2, other)
+        # The second console's connection takes its own flow, not the first login's.
+        self.assertEqual(flows.claim(other), (2, AppPhase.WORLD))
+        flows.advance(other, 2, AppPhase.POSTWORLD)
+        self.assertEqual(flows.claim(hunter), (1, AppPhase.WORLD))
+        self.assertEqual(flows.claim(other), (2, AppPhase.POSTWORLD))
+        # A client without a login yet (first-ever APP1) owns no flow.
+        self.assertEqual(flows.claim(('10.0.0.1', '')), (None, AppPhase.APP1))
 
-        flows.arm_world(1, '10.0.0.1')
-        flows.arm_world(2, '10.0.0.1')
-        self.assertEqual(flows.claim('10.0.0.1'), (1, AppPhase.WORLD))
-        flows.advance('10.0.0.1', 1, AppPhase.POSTWORLD)
-        flows.release('10.0.0.1', 1)
-        self.assertEqual(flows.claim('10.0.0.1'), (2, AppPhase.WORLD))
-
-        flows.arm_world(1, '10.0.0.1')
-        flows.release('10.0.0.1', 2)
-        self.assertEqual(flows.claim('10.0.0.1'), (1, AppPhase.LAND))
-
-    def test_host_restarts_at_app1_when_its_players_leave(self) -> None:
+    def test_client_restarts_at_app1_when_it_leaves(self) -> None:
         flows = AppFlowTracker()
-        flows.arm_world(1, '10.0.0.1')
-        flows.claim('10.0.0.1')
-        flows.release('10.0.0.1', 1)
-        self.assertEqual(flows.claim('10.0.0.1'), (None, AppPhase.LAND))
+        hunter = ('10.0.0.1', 'hunter')
+        flows.arm_world(1, hunter)
+        flows.claim(hunter)
+        flows.release(hunter, 1)
+        self.assertEqual(flows.claim(hunter), (None, AppPhase.LAND))
 
         flows.forget(1)
-        self.assertEqual(flows.claim('10.0.0.1'), (None, AppPhase.APP1))
+        self.assertEqual(flows.claim(hunter), (None, AppPhase.APP1))
 
 
 class AppContentTests(unittest.TestCase):
@@ -1442,7 +1441,6 @@ class AppServiceTests(unittest.TestCase):
             1: Session(session_id=1, user_id=7, username='hunter', endpoint=Endpoint('127.0.0.1', 4000)),
             2: Session(session_id=2, user_id=8, username='other', endpoint=Endpoint('127.0.0.1', 4001)),
         }
-        self.flows = AppFlowTracker()
         worlds = {
             'Brave World': {'description': 'First', 'lands': [
                 {'key': 'AAA', 'name': 'First', 'areas': 2},
@@ -1458,7 +1456,7 @@ class AppServiceTests(unittest.TestCase):
                 profile=MONSTER_HUNTER_NA,
                 game_host='192.0.2.10',
             ),
-            flows=self.flows,
+            flows=None,
             directory=self.directory,
             online_players=self.online,
             records=self.records,
@@ -1484,11 +1482,10 @@ class AppServiceTests(unittest.TestCase):
         self.port = server.address[1]
 
     def _login(self, session: Session, area_id: int = 0) -> None:
-        """Publish a KICS login (and the player's Area) like the game server, and let the tracker see it."""
+        """Publish a KICS login (and the player's Area) like the game server."""
 
         self.online.login('monsterhunter', session)
         self.online.set_area(session.session_id, area_id)
-        self.flows.sync(self.online.list('monsterhunter'))
 
     def _connect(self) -> tuple[socket.socket, bytearray]:
         client = socket.create_connection(('127.0.0.1', self.port), timeout=5)
@@ -1542,24 +1539,16 @@ class AppServiceTests(unittest.TestCase):
         return frame_payload(reply)
 
     def test_world_then_land_progression(self) -> None:
+        # Retail names each connection with its first request (NA `0x002aeb40`):
+        # 1007 for World, then 6501 for the post-World connection, served as Land.
         self._login(self.sessions[1])
         client, buffer = self._connect()
         self._open(client, buffer)
-        client.sendall(app_frame(1, 0x6103, sequence=4))
-        self.assertEqual(self._receive(client, buffer), app_frame(2, 0x6103, sequence=4, payload=b'\x00\x00'))
-        client.sendall(app_frame(1, 0x1004, sequence=5))
-        self.assertEqual(self._receive(client, buffer), app_frame(2, 0x1004, sequence=5))
+        self.assertEqual(self._exchange(client, buffer, 0x1007), b'\x00')
+        self.assertEqual(self._exchange(client, buffer, 0x6103), b'\x00\x00')
+        self.assertEqual(self._exchange(client, buffer, 0x1004), b'')
         client.close()
 
-        done = threading.Event()
-        for _ in range(100):
-            if self.flows.claim('127.0.0.1') == (1, AppPhase.POSTWORLD):
-                done.set()
-                break
-            threading.Event().wait(0.05)
-        self.assertTrue(done.is_set())
-
-        self.flows.advance('127.0.0.1', 1, AppPhase.LAND)
         land, buffer = self._connect()
         self._open(land, buffer)
         land.sendall(app_frame(1, 0x6501, sequence=6))
@@ -1568,9 +1557,36 @@ class AppServiceTests(unittest.TestCase):
         land.sendall(app_frame(1, 0x6211, sequence=7))
         self.assertEqual(frame_payload(self._receive(land, buffer)), MarketState().native_response())
 
+    def test_beta_consoles_on_one_address_keep_their_own_flow(self) -> None:
+        # The beta opens its post-World and Land connections alike (6501,
+        # `0x002acd00`), so its flow is tracked, per 1002 login.
+        for session in self.sessions.values():
+            self.online.login('monsterhunter_na_beta', session)
+
+        def land_tail(login: bytes) -> bytes:
+            client, buffer = self._connect()
+            self._open(client, buffer, version=NA_PUBLIC_BETA_VERSION, login=login)
+            request = struct.pack('>2H', 1, 8) + encode_app_field(b'192.0.2.20', 5)
+            return self._exchange(client, buffer, 0x6504, request)[-8:]
+
+        client, buffer = self._connect()
+        self._open(client, buffer, version=NA_PUBLIC_BETA_VERSION)
+        self.assertEqual(self._exchange(client, buffer, 0x1007), b'\x00')
+        self.assertEqual(self._exchange(client, buffer, 0x6103), b'\x00\x00')
+        self.assertEqual(self._exchange(client, buffer, 0x1004), b'')
+        client.close()
+
+        # The other console is still in its own World flow: Lands with Area words.
+        self.assertEqual(land_tail(b'other'), struct.pack('>2HL', 3, 750, 0x4080C0))
+        # The first console's next connection is its post-World one: no Area words.
+        for _ in range(100):
+            if land_tail(b'hunter') == bytes(8):
+                break
+            threading.Event().wait(0.05)
+        self.assertEqual(land_tail(b'hunter'), bytes(8))
+
     def test_world_list_pages_configured_worlds(self) -> None:
         self._login(self.sessions[1])
-        self.flows.advance('127.0.0.1', 1, AppPhase.LAND)
         client, buffer = self._connect()
         self._open(client, buffer)
 
@@ -1596,7 +1612,6 @@ class AppServiceTests(unittest.TestCase):
         for session_id, area in ((10, second.areas[0]), (11, second.areas[2])):
             self._login(Session(session_id=session_id, user_id=session_id, username=f'p{session_id}',
                                 endpoint=Endpoint('10.0.0.9', 4000)), area.area_id)
-        self.flows.advance('127.0.0.1', 1, AppPhase.LAND)
         client, buffer = self._connect()
         self._open(client, buffer)
 
@@ -1698,8 +1713,6 @@ class AppServiceTests(unittest.TestCase):
         self.assertEqual(self._exchange(client, buffer, 0x1004), b'')
         # APP1 comes before the KICS login: no player to rank yet.
         self.assertEqual(self.records.top('monsterhunter', 'hrp', 10), [])
-        # APP1 does not advance any online flow.
-        self.assertEqual(self.flows.claim('127.0.0.1'), (None, AppPhase.APP1))
 
     def test_stock_eu_downloads_the_description_patch(self) -> None:
         client, buffer = self._connect()
@@ -1715,7 +1728,6 @@ class AppServiceTests(unittest.TestCase):
             downloaded += decode_app_field(chunk[len(field) + 4:], 5)[0]
         self.assertEqual(downloaded, EU_PATCH.blob)
         self.assertEqual(self._exchange(client, buffer, 0x1004), b'')
-        self.assertEqual(self.flows.claim('127.0.0.1'), (None, AppPhase.APP1))
 
     def test_stock_na_downloads_its_patch_then_continues_app1(self) -> None:
         client, buffer = self._connect()
@@ -1740,7 +1752,16 @@ class AppServiceTests(unittest.TestCase):
         client, buffer = self._connect()
         self._open(client, buffer, version=NA_PATCH.name)
         self._receive_version(client, buffer)
+        self._exchange(client, buffer, 0x6101, bytes(4) + encode_app_field(b'02/TOP_INFOR.HTM', 5))
         self.assertEqual(self._exchange(client, buffer, 0x6501), b'\x00')
+
+    def test_na_online_opener_after_the_wait_is_still_online(self) -> None:
+        # The opener went out with the 1002 answer (`0x002aeb40`) but reached us
+        # after the wait; the client ignores the 6001 (`0x002b415c`).
+        client, buffer = self._connect()
+        self._open(client, buffer)
+        self._receive_version(client, buffer)
+        self.assertEqual(self._exchange(client, buffer, 0x6501), b'\x01' + socket.inet_aton('192.0.2.10') + bytes(4))
 
     def test_patched_eu_and_the_demo_get_no_patch(self) -> None:
         for version in (EU_PATCH.name, SLED_STAMP):
@@ -1792,7 +1813,6 @@ class AppServiceTests(unittest.TestCase):
     def test_tles_runs_the_na_flow(self) -> None:
         # Its LAND connection speaks first and gets no 6001, which NA code would take as a patch offer.
         self._login(self.sessions[1])
-        self.flows.advance('127.0.0.1', 1, AppPhase.LAND)
         client, buffer = self._connect()
         self._open(client, buffer, build=3, flags=0x11, version=TLES_STAMP)
         self.assertEqual(self._exchange(client, buffer, 0x6306), b'')
@@ -1800,11 +1820,11 @@ class AppServiceTests(unittest.TestCase):
         client, buffer = self._connect()
         self._open(client, buffer, build=3, flags=0x11, version=TLES_STAMP)
         self._receive_version(client, buffer)
+        self._exchange(client, buffer, 0x6101, bytes(4) + encode_app_field(b'03/TOP_INFOR.HTM', 5))
         self.assertEqual(self._exchange(client, buffer, 0x6501), b'\x00')
 
     def test_tles_quest_records_are_acknowledged_and_stored(self) -> None:
         self._login(self.sessions[1])
-        self.flows.advance('127.0.0.1', 1, AppPhase.LAND)
         client, buffer = self._connect()
         self._open(client, buffer, build=3, flags=0x11, version=TLES_STAMP)
         self.assertEqual(self._exchange(client, buffer, 0x6306), b'')
@@ -1823,7 +1843,6 @@ class AppServiceTests(unittest.TestCase):
 
     def test_eu_quest_records_are_acknowledged_and_stored(self) -> None:
         self._login(self.sessions[1])
-        self.flows.advance('127.0.0.1', 1, AppPhase.LAND)
         client, buffer = self._connect()
         self._open(client, buffer, build=3, flags=0x15)
 
@@ -1900,7 +1919,6 @@ class AppServiceTests(unittest.TestCase):
 
     def test_na_quest_return_uploads_the_hunter_rank_points(self) -> None:
         self._login(self.sessions[1])
-        self.flows.advance('127.0.0.1', 1, AppPhase.LAND)
         client, buffer = self._connect()
         self._open(client, buffer)
         self.assertEqual(self._exchange(client, buffer, 0x6306, bytes(32)), b'')
@@ -1915,7 +1933,6 @@ class AppServiceTests(unittest.TestCase):
 
     def test_malformed_hunter_summary_is_acknowledged_and_ignored(self) -> None:
         self._login(self.sessions[1])
-        self.flows.advance('127.0.0.1', 1, AppPhase.LAND)
         client, buffer = self._connect()
         self._open(client, buffer)
         for payload in (b'\x01', self._hunter_summary(10_000_000), self._hunter_summary(10, size=16)):
@@ -2140,21 +2157,14 @@ class AppServiceTests(unittest.TestCase):
             self.assertLessEqual(len(page), RECORD_PAGE_SAFE_SIZE, name)
             self.assertLessEqual(page.count(b'<td'), RECORD_PAGE_SAFE_CELLS, name)
 
-    def test_na_world_connection_is_recognised_without_a_tracked_session(self) -> None:
-        # MH logs out of SNAP between KICS and World selection, which resets the
-        # host to APP1; the NA client's immediate 1007 still marks a WORLD connection.
-        self.assertEqual(self.flows.claim('127.0.0.1'), (None, AppPhase.APP1))
+    def test_na_world_connection_is_recognised_without_a_logged_in_player(self) -> None:
+        # MH logs out of SNAP between KICS and World selection; the NA client's
+        # immediate 1007 still marks a WORLD connection.
         client, buffer = self._connect()
         self._open(client, buffer)
         self.assertEqual(self._exchange(client, buffer, 0x1007), b'\x00')
         self.assertEqual(self._exchange(client, buffer, 0x6103), b'\x00\x00')
         self.assertEqual(self._exchange(client, buffer, 0x1004), b'')
-        client.close()
-        for _ in range(100):
-            if self.flows.claim('127.0.0.1') == (None, AppPhase.POSTWORLD):
-                break
-            threading.Event().wait(0.05)
-        self.assertEqual(self.flows.claim('127.0.0.1'), (None, AppPhase.POSTWORLD))
 
     def test_na_online_connection_gets_no_version_push(self) -> None:
         self._login(self.sessions[1])
@@ -2173,7 +2183,7 @@ class AppServiceTests(unittest.TestCase):
                 game_host='192.0.2.10',
                 ram_patch=(DATA_DIRECTORY / 'patches' / 'eu_custom_1002.bin').read_bytes(),
             ),
-            flows=AppFlowTracker(),
+            flows=None,
             directory=directory or self.directory,
             online_players=self.online,
             records=self.records,
@@ -2315,7 +2325,7 @@ class AppServiceTests(unittest.TestCase):
                 game_host='192.0.2.10',
                 ram_patch_na=(DATA_DIRECTORY / 'patches' / 'na_custom_1002.bin').read_bytes(),
             ),
-            flows=AppFlowTracker(),
+            flows=None,
             directory=directory or self.directory,
             online_players=self.online,
             records=self.records,

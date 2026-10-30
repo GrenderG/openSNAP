@@ -45,7 +45,7 @@ from opensnap_app.capcom.monsterhunter.content import (
     MarketState,
     NamedFiles,
 )
-from opensnap_app.capcom.monsterhunter.flows import AppFlowTracker, AppPhase
+from opensnap_app.capcom.monsterhunter.flows import AppFlowTracker, AppPhase, FlowKey
 from opensnap_app.capcom.monsterhunter.patch import ClientPatch, load_patches
 from opensnap_app.capcom.monsterhunter.ram_patch import (
     RamPatchPageTooLarge,
@@ -264,7 +264,7 @@ class AppService:
         self,
         *,
         config: AppServiceConfig,
-        flows: AppFlowTracker,
+        flows: AppFlowTracker | None,
         directory: Directory,
         online_players: OnlinePlayerStore,
         records: RecordStore,
@@ -294,12 +294,16 @@ class AppService:
 
     def serve(self, connection: AppConnection, answer: ConnectAnswer) -> None:
         host = connection.host
-        self._flows.sync(self._players())
-        owner, phase = self._flows.claim(host)
+        login = answer.login.split(b'\x00', 1)[0].decode('ascii', errors='replace')
+        # Retail builds name each connection kind with their first request
+        # (below); only the NA public beta needs its flow tracked.
+        owner, phase = None, AppPhase.APP1
+        if self._flows is not None:
+            self._flows.sync(self._players())
+            owner, phase = self._flows.claim((host, login))
         test_build = answer.build == APP_BUILD_EU and answer.version[:len(TLES_VERSION)] == TLES_VERSION
         client = _MhClient(
-            connection, phase, owner, APP_BUILD_NA if test_build else answer.build, test_build,
-            login=answer.login.split(b'\x00', 1)[0].decode('ascii', errors='replace'),
+            connection, phase, owner, APP_BUILD_NA if test_build else answer.build, test_build, login=login,
         )
         version = answer.version.split(b'\x00', 1)[0]
         client.patch = self._patches.get(version)
@@ -359,10 +363,17 @@ class AppService:
                 if client.build == APP_BUILD_NA:
                     # Only NA APP1 (mode 0) waits for 6001.
                     client.phase = AppPhase.APP1
-                # EU names its mode with its first request (APP1 opens with 6110,
-                # or with 6002 when it downloads the offered patch).
-                elif client.phase is AppPhase.APP1 and connection.poll(CONNECTION_TIMEOUT_SECONDS):
-                    if connection.peek_command() not in (CMD_APP_NETWORK_SETTINGS, CMD_APP_PATCH_CHUNK):
+                # Retail names its mode with its first request: APP1 opens with
+                # 6101 (NA `0x002b4150`) or 6110 (EU `0x002a4630`), or with 6002
+                # when it downloads the offered patch. An NA online opener that
+                # reached us after the wait went out with the 1002 answer
+                # (`0x002aeb40`) and the client ignores the 6001 (`0x002b415c`).
+                app1_openers = (
+                    (CMD_APP_FILE_INFO, CMD_APP_PATCH_CHUNK) if client.build == APP_BUILD_NA
+                    else (CMD_APP_NETWORK_SETTINGS, CMD_APP_PATCH_CHUNK)
+                )
+                if self._flows is None and connection.poll(CONNECTION_TIMEOUT_SECONDS):
+                    if connection.peek_command() not in app1_openers:
                         client.phase = self._online_phase(connection.peek_command())
             self._serve_online(client)
         except (ConnectionError, socket.timeout) as exc:
@@ -385,11 +396,17 @@ class AppService:
     def _online_phase(command: int) -> AppPhase:
         """Connection kind of a client that is not in APP1, from its first request.
 
-        The client's own mode decides it, whatever the flow tracker last saw (a
-        logout between KICS and World selection resets the host to APP1).
+        The client's own mode decides it (NA `0x002aeb40` mode table, EU
+        `0x002a4630`): 1007 opens a WORLD connection. Every other online
+        connection is served as LAND, the post-World one (6501, mode 5)
+        included, which retail clients complete.
         """
 
         return AppPhase.WORLD if command == CMD_APP_WORLD else AppPhase.LAND
+
+    def _advance(self, flow: FlowKey, owner: int | None, phase: AppPhase) -> None:
+        if self._flows is not None:
+            self._flows.advance(flow, owner, phase)
 
     def _serve_online(self, client: '_MhClient') -> None:
         """Answer one client-driven connection of the APP state machine.
@@ -405,6 +422,7 @@ class AppService:
         """
 
         host, owner = client.app.host, client.owner
+        flow = (host, client.login)
         advertise_host = _resolve_advertise_host(
             configured_host=self._config.game_host,
             bind_host=self._config.game_host,
@@ -448,20 +466,20 @@ class AppService:
                 continue
             if command == CMD_APP_WORLD:
                 client.phase = AppPhase.WORLD
-                self._flows.advance(host, owner, AppPhase.WORLD)
+                self._advance(flow, owner, AppPhase.WORLD)
             elif command in (CMD_APP_SERVER_ADDRESS, CMD_APP_WORLD_STATUS) and client.phase is AppPhase.WORLD:
                 client.phase = AppPhase.LAND
-                self._flows.advance(host, owner, AppPhase.LAND)
+                self._advance(flow, owner, AppPhase.LAND)
             elif command == CMD_APP_COMPLETE:
                 client.app.reply(request)
-                if client.phase is AppPhase.APP1:
+                if self._flows is None or client.phase is AppPhase.APP1:
                     pass
                 elif client.phase is AppPhase.WORLD:
-                    self._flows.advance(host, owner, AppPhase.POSTWORLD)
+                    self._flows.advance(flow, owner, AppPhase.POSTWORLD)
                 elif client.phase is AppPhase.POSTWORLD:
-                    self._flows.advance(host, owner, AppPhase.LAND)
+                    self._flows.advance(flow, owner, AppPhase.LAND)
                 else:
-                    self._flows.release(host, owner)
+                    self._flows.release(flow, owner)
                 client.app.linger(PHASE_CLOSE_LINGER_SECONDS)
                 return
 

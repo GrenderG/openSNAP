@@ -1,10 +1,15 @@
-"""APP connection phase tracking, fed by the game server's logins."""
+"""APP connection phase tracking for the NA public beta, fed by the game server's logins."""
 
 from collections.abc import Iterable
 from enum import StrEnum
 import threading
 
 from opensnap.core.online import OnlinePlayer
+
+# A client: its address and the login of its 1002 answer, which is the
+# username it logs in to SN@P with (beta `0x002acd30`, `0x0024798c`). The
+# login tells apart consoles that share one address.
+FlowKey = tuple[str, str]
 
 
 class AppPhase(StrEnum):
@@ -17,22 +22,25 @@ class AppPhase(StrEnum):
 
 
 class AppFlowTracker:
-    """Classify APP TCP connections, which carry no SNAP session id.
+    """Classify the NA public beta's APP connections, which carry no SNAP session id.
 
-    APP1 runs before SNAP login. After KICS login a session owns its own
-    WORLD -> POSTWORLD -> LAND progression; connections from one host are
-    attributed to that host's pending sessions in login order. Later LAND
-    reconnects that cannot be attributed use the host's last released phase.
+    Retail builds open each connection kind with its own request, so they need
+    no tracker. The beta (`SLUS_291.10`) opens both its post-World and its Land
+    connection with 6501 (modes 4-6, `0x002acd00`), so only the order tells
+    them apart. After KICS login a session owns its own WORLD -> POSTWORLD ->
+    LAND progression; connections from one client are attributed to that
+    client's pending sessions in login order. Later LAND reconnects that cannot
+    be attributed use the client's last released phase.
     """
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._login_serial_by_session: dict[int, int] = {}
         self._phase_by_session: dict[int, AppPhase] = {}
-        self._host_by_session: dict[int, str] = {}
-        self._pending_by_host: dict[str, list[int]] = {}
-        self._active_by_host: dict[str, int] = {}
-        self._fallback_by_host: dict[str, AppPhase] = {}
+        self._key_by_session: dict[int, FlowKey] = {}
+        self._pending_by_key: dict[FlowKey, list[int]] = {}
+        self._active_by_key: dict[FlowKey, int] = {}
+        self._fallback_by_key: dict[FlowKey, AppPhase] = {}
 
     def sync(self, players: Iterable[OnlinePlayer]) -> None:
         """Catch up with the game server: arm each login not seen yet, in login order, and forget logged-out players."""
@@ -45,68 +53,68 @@ class AppFlowTracker:
             for player in online.values():
                 if self._login_serial_by_session.get(player.session_id) != player.login_serial:
                     self._login_serial_by_session[player.session_id] = player.login_serial
-                    self.arm_world(player.session_id, player.host)
+                    self.arm_world(player.session_id, (player.host, player.username))
 
-    def arm_world(self, session_id: int, host: str) -> None:
+    def arm_world(self, session_id: int, key: FlowKey) -> None:
         """Start the online APP flow for one logged-in session without rewinding it."""
 
         with self._lock:
-            self._host_by_session[session_id] = host
+            self._key_by_session[session_id] = key
             self._phase_by_session.setdefault(session_id, AppPhase.WORLD)
-            pending = self._pending_by_host.setdefault(host, [])
-            if self._active_by_host.get(host) != session_id and session_id not in pending:
+            pending = self._pending_by_key.setdefault(key, [])
+            if self._active_by_key.get(key) != session_id and session_id not in pending:
                 pending.append(session_id)
 
     def forget(self, session_id: int) -> None:
-        """Drop one logged-out session; a host with no sessions restarts at APP1."""
+        """Drop one logged-out session; a client with no sessions restarts at APP1."""
 
         with self._lock:
-            host = self._host_by_session.pop(session_id, None)
+            key = self._key_by_session.pop(session_id, None)
             self._phase_by_session.pop(session_id, None)
-            if host is None:
+            if key is None:
                 return
-            if self._active_by_host.get(host) == session_id:
-                self._active_by_host.pop(host, None)
-            pending = self._pending_by_host.get(host, [])
+            if self._active_by_key.get(key) == session_id:
+                self._active_by_key.pop(key, None)
+            pending = self._pending_by_key.get(key, [])
             if session_id in pending:
                 pending.remove(session_id)
-            if host not in self._host_by_session.values():
-                self._pending_by_host.pop(host, None)
-                self._fallback_by_host.pop(host, None)
+            if key not in self._key_by_session.values():
+                self._pending_by_key.pop(key, None)
+                self._fallback_by_key.pop(key, None)
 
-    def claim(self, host: str) -> tuple[int | None, AppPhase]:
+    def claim(self, key: FlowKey) -> tuple[int | None, AppPhase]:
         """Return the owner session and phase for one new APP connection."""
 
         with self._lock:
-            active = self._active_by_host.get(host)
+            active = self._active_by_key.get(key)
             if active is not None and active in self._phase_by_session:
                 return active, self._phase_by_session[active]
-            self._active_by_host.pop(host, None)
+            self._active_by_key.pop(key, None)
 
-            pending = self._pending_by_host.get(host, [])
+            pending = self._pending_by_key.get(key, [])
             while pending:
                 session_id = pending.pop(0)
                 if session_id in self._phase_by_session:
-                    self._active_by_host[host] = session_id
+                    self._active_by_key[key] = session_id
                     return session_id, self._phase_by_session[session_id]
-            return None, self._fallback_by_host.get(host, AppPhase.APP1)
+            return None, self._fallback_by_key.get(key, AppPhase.APP1)
 
-    def advance(self, host: str, session_id: int | None, phase: AppPhase) -> None:
+    def advance(self, key: FlowKey, session_id: int | None, phase: AppPhase) -> None:
         """Record the phase the next connection of this flow will use."""
 
         with self._lock:
             if session_id is None:
-                self._fallback_by_host[host] = phase
+                self._fallback_by_key[key] = phase
             elif session_id in self._phase_by_session:
                 self._phase_by_session[session_id] = phase
 
-    def release(self, host: str, session_id: int | None) -> None:
+    def release(self, key: FlowKey, session_id: int | None) -> None:
         """Finish one LAND connection; later unattributed reconnects use LAND."""
 
         with self._lock:
             if session_id is not None:
                 if session_id in self._phase_by_session:
                     self._phase_by_session[session_id] = AppPhase.LAND
-                if self._active_by_host.get(host) == session_id:
-                    self._active_by_host.pop(host, None)
-            self._fallback_by_host[host] = AppPhase.LAND
+                if self._active_by_key.get(key) == session_id:
+                    self._active_by_key.pop(key, None)
+            self._fallback_by_key[key] = AppPhase.LAND

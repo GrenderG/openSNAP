@@ -35,11 +35,13 @@ def main() -> None:
     stamped_builds: dict[bytes, TitleService] = {}
     _add_title(
         titles, (monsterhunter.APP_BUILD_NA, monsterhunter.APP_BUILD_EU), 'Monster Hunter',
-        lambda: _monster_hunter_service(config, storage, MONSTER_HUNTER_NA, dispatcher),
+        lambda: _monster_hunter_service(config, storage, MONSTER_HUNTER_NA, dispatcher, flows=None),
     )
     _add_title(
         stamped_builds, (monsterhunter.NA_PUBLIC_BETA_VERSION,), 'Monster Hunter NA public beta',
-        lambda: _monster_hunter_service(config, storage, MONSTER_HUNTER_NA_BETA, dispatcher),
+        lambda: _monster_hunter_service(
+            config, storage, MONSTER_HUNTER_NA_BETA, dispatcher, flows=monsterhunter.AppFlowTracker()
+        ),
     )
     _add_title(titles, (outbreak.APP_BUILD,), 'Resident Evil Outbreak', lambda: _outbreak_service(storage))
     _add_title(
@@ -81,16 +83,24 @@ def _add_title[K](
 
 
 def _monster_hunter_service(
-    config: AppConfig, storage: StorageBundle, profile: MonsterHunterProfile, dispatcher: WebhookDispatcher
+    config: AppConfig,
+    storage: StorageBundle,
+    profile: MonsterHunterProfile,
+    dispatcher: WebhookDispatcher,
+    *,
+    flows: monsterhunter.AppFlowTracker | None,
 ) -> monsterhunter.AppService:
     """One Monster Hunter deployment: its own players, Worlds and data folder.
+
+    Only the NA public beta tracks its APP flow (`flows`); retail builds name
+    each connection kind with its first request.
 
     Each announces its Market day and Event quest when the date changes.
     """
 
     service = monsterhunter.AppService(
         config=monsterhunter.read_app_service_config(config, profile),
-        flows=monsterhunter.AppFlowTracker(),
+        flows=flows,
         directory=read_directory(
             max_players_per_town=config.server.max_players_per_room,
             environment_key=profile.worlds_environment_key,
